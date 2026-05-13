@@ -7,6 +7,7 @@ mod gen;
 mod lexer;
 mod lsp;
 mod parser;
+mod registry;
 mod repl;
 mod runner;
 mod skillgen;
@@ -48,13 +49,17 @@ enum Commands {
         /// Path to the .brief file
         file: PathBuf,
 
-        /// Output binary path (defaults to ./<stem>)
+        /// Output binary path (defaults to ./<stem> or ./<stem>.wasm for wasm targets)
         #[arg(short, long)]
         output: Option<PathBuf>,
 
         /// Emit LLVM IR to a .ll file instead of a binary
         #[arg(long)]
         emit_ir: bool,
+
+        /// Compilation target triple (e.g. wasm32-unknown-unknown, arm64-apple-macos)
+        #[arg(long)]
+        target: Option<String>,
     },
 
     /// Interactive REPL (coming in v0.2)
@@ -107,6 +112,25 @@ enum Commands {
         #[arg(long)]
         check: bool,
     },
+
+    /// Add a skill from the registry or a local path
+    Add {
+        #[command(subcommand)]
+        resource: AddResource,
+    },
+}
+
+#[derive(Subcommand)]
+enum AddResource {
+    /// Install a skill from the Brief registry or a local directory
+    Skill {
+        /// Skill name (e.g. GraphQL) or local path (e.g. ./my-skills/GraphQL)
+        name_or_path: String,
+
+        /// List all available skills in the registry instead of installing
+        #[arg(long)]
+        list: bool,
+    },
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -127,9 +151,9 @@ fn main() {
             std::process::exit(if ok { 0 } else { 1 });
         }
 
-        Commands::Build { file, output, emit_ir } => {
+        Commands::Build { file, output, emit_ir, target } => {
             print_brief_banner();
-            let ok = codegen::build_file(&file, output.as_deref(), emit_ir);
+            let ok = codegen::build_file(&file, output.as_deref(), emit_ir, target.as_deref());
             std::process::exit(if ok { 0 } else { 1 });
         }
 
@@ -169,6 +193,22 @@ fn main() {
             print_brief_banner();
             let ok = fmt::fmt_file(&file, write, check);
             std::process::exit(if ok { 0 } else { 1 });
+        }
+
+        Commands::Add { resource } => {
+            print_brief_banner();
+            match resource {
+                AddResource::Skill { name_or_path, list } => {
+                    if list {
+                        let ok = registry::list_registry_skills();
+                        std::process::exit(if ok { 0 } else { 1 });
+                    } else {
+                        let root = registry::find_install_root();
+                        let ok   = registry::add_skill(&name_or_path, &root);
+                        std::process::exit(if ok { 0 } else { 1 });
+                    }
+                }
+            }
         }
     }
 }

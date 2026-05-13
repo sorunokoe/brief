@@ -184,6 +184,7 @@ mod backend {
         source_path: &std::path::Path,
         output:      Option<&std::path::Path>,
         emit_ir:     bool,
+        target:      Option<&str>,
     ) -> bool {
         use colored::Colorize;
         use crate::lexer::lex;
@@ -238,13 +239,20 @@ mod backend {
         }
 
         // ── Compile with clang ────────────────────────────────────────────
+        let is_wasm = target.map(|t| t.starts_with("wasm")).unwrap_or(false);
+
+        let default_out = if is_wasm {
+            format!("./{stem}.wasm")
+        } else {
+            format!("./{stem}")
+        };
         let out_path = output.map(|p| p.display().to_string())
-            .unwrap_or_else(|| format!("./{stem}"));
+            .unwrap_or(default_out);
 
         let clang = std::env::var("BRIEF_CLANG")
             .unwrap_or_else(|_| {
                 // Prefer LLVM 18 clang if it's in the known Homebrew location
-                let homebrew = "/opt/homebrew/Cellar/llvm@18/18.1.8.reinstall/bin/clang";
+                let homebrew = "/opt/homebrew/Cellar/llvm@18/18.1.8/bin/clang";
                 if std::path::Path::new(homebrew).exists() {
                     homebrew.to_string()
                 } else {
@@ -252,8 +260,41 @@ mod backend {
                 }
             });
 
-        // Inline a minimal runtime stub so the binary links without brief_rt.c
-        let rt_stub = r#"
+        let ok = if is_wasm {
+            // WASM32 target: compile IR directly — no libc, task functions exported.
+            // Host environment provides brief_rt_* imports.
+            let wasm_target = target.unwrap_or("wasm32-unknown-unknown");
+            let status = std::process::Command::new(&clang)
+                .args([
+                    ll_path.to_str().unwrap(),
+                    "--target", wasm_target,
+                    "-nostdlib",
+                    "-Wl,--no-entry",
+                    "-Wl,--export-dynamic",
+                    "-Wl,--allow-undefined",
+                    "-o", &out_path,
+                ])
+                .status();
+            let _ = std::fs::remove_file(&ll_path);
+            match status {
+                Ok(s) if s.success() => {
+                    println!("{} {} (wasm32)", "✅ binary:".green(), out_path.green());
+                    true
+                }
+                Ok(s) => {
+                    eprintln!("{}: clang exited with {s}", "error".red().bold());
+                    eprintln!("  Install wasm-ld: brew install llvm");
+                    false
+                }
+                Err(e) => {
+                    eprintln!("{}: could not run clang: {e}", "error".red().bold());
+                    eprintln!("  Set BRIEF_CLANG to the full path of your clang binary.");
+                    false
+                }
+            }
+        } else {
+            // Native target: link with an inline runtime stub.
+            let rt_stub = r#"
 #include <stdio.h>
 #include <stdlib.h>
 void brief_rt_print(const char *msg)              { printf("%s", msg); }
@@ -262,35 +303,47 @@ void brief_rt_perform(const char *sk, const char *fn, int argc) {
 void brief_rt_exit(int code)                       { exit(code); }
 "#;
 
-        let rt_path = std::path::PathBuf::from(format!("{stem}_rt.c"));
-        if let Err(e) = std::fs::write(&rt_path, rt_stub) {
-            eprintln!("{}: cannot write runtime stub: {e}", "error".red().bold());
+            let rt_path = std::path::PathBuf::from(format!("{stem}_rt.c"));
+            if let Err(e) = std::fs::write(&rt_path, rt_stub) {
+                eprintln!("{}: cannot write runtime stub: {e}", "error".red().bold());
+                let _ = std::fs::remove_file(&ll_path);
+                return false;
+            }
+
+            let mut args = vec![
+                ll_path.to_str().unwrap().to_string(),
+                rt_path.to_str().unwrap().to_string(),
+                "-o".to_string(),
+                out_path.clone(),
+            ];
+            if let Some(t) = target {
+                args.insert(0, format!("--target={t}"));
+            }
+
+            let status = std::process::Command::new(&clang)
+                .args(&args)
+                .status();
+
             let _ = std::fs::remove_file(&ll_path);
-            return false;
-        }
+            let _ = std::fs::remove_file(&rt_path);
 
-        let status = std::process::Command::new(&clang)
-            .args([ll_path.to_str().unwrap(), rt_path.to_str().unwrap(), "-o", &out_path])
-            .status();
-
-        let _ = std::fs::remove_file(&ll_path);
-        let _ = std::fs::remove_file(&rt_path);
-
-        match status {
-            Ok(s) if s.success() => {
-                println!("{} {}", "✅ binary:".green(), out_path.green());
-                true
+            match status {
+                Ok(s) if s.success() => {
+                    println!("{} {}", "✅ binary:".green(), out_path.green());
+                    true
+                }
+                Ok(s) => {
+                    eprintln!("{}: clang exited with {s}", "error".red().bold());
+                    false
+                }
+                Err(e) => {
+                    eprintln!("{}: could not run clang: {e}", "error".red().bold());
+                    eprintln!("  Set BRIEF_CLANG to the full path of your clang binary.");
+                    false
+                }
             }
-            Ok(s) => {
-                eprintln!("{}: clang exited with {s}", "error".red().bold());
-                false
-            }
-            Err(e) => {
-                eprintln!("{}: could not run clang: {e}", "error".red().bold());
-                eprintln!("  Set BRIEF_CLANG to the full path of your clang binary.");
-                false
-            }
-        }
+        };
+        ok
     }
 } // mod backend
 
@@ -302,14 +355,15 @@ pub fn build_file(
     source_path: &std::path::Path,
     output:      Option<&std::path::Path>,
     emit_ir:     bool,
+    target:      Option<&str>,
 ) -> bool {
     #[cfg(feature = "llvm-backend")]
-    { return backend::build_file(source_path, output, emit_ir); }
+    { return backend::build_file(source_path, output, emit_ir, target); }
 
     #[cfg(not(feature = "llvm-backend"))]
     {
         use colored::Colorize;
-        let _ = (source_path, output, emit_ir);
+        let _ = (source_path, output, emit_ir, target);
         eprintln!("{} LLVM backend is not enabled.", "error".red().bold());
         eprintln!("  {}", "cargo build --features llvm-backend".cyan());
         eprintln!("  See docs/llvm-setup.md for details.");

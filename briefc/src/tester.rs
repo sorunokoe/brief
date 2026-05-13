@@ -51,6 +51,7 @@ pub struct TestBlock {
     pub name:     String,
     pub mocks:    Vec<MockDecl>,
     pub commands: Vec<TestCmd>,
+    #[allow(dead_code)]
     pub span:     Span,
 }
 

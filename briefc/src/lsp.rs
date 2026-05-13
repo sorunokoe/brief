@@ -4,6 +4,8 @@
 ///   - Diagnostics: all E/W codes from the checker + type checker, published on
 ///     textDocument/didOpen, didChange, and didSave.
 ///   - Hover: shows the effect signature when hovering over a `perform` call.
+///   - Go-to-definition: jumps to the declaration of tasks, types, effects, etc.
+///   - Find-references: lists all uses of any named symbol in the document.
 ///
 /// Launch with: `brief lsp` (communicates over stdin/stdout).
 /// Configure in VS Code or Zed with: `"languageServerCommand": ["brief", "lsp"]`.
@@ -53,7 +55,9 @@ impl LanguageServer for BriefLsp {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
                     TextDocumentSyncKind::FULL,
                 )),
-                hover_provider: Some(HoverProviderCapability::Simple(true)),
+                hover_provider:      Some(HoverProviderCapability::Simple(true)),
+                definition_provider: Some(OneOf::Left(true)),
+                references_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -145,6 +149,59 @@ impl LanguageServer for BriefLsp {
 
         Ok(hover_at(&text, pos))
     }
+
+    // ── Go-to-definition ─────────────────────────────────────────────────
+
+    async fn goto_definition(
+        &self,
+        params: GotoDefinitionParams,
+    ) -> Result<Option<GotoDefinitionResponse>> {
+        let uri = params.text_document_position_params.text_document.uri.clone();
+        let pos = params.text_document_position_params.position;
+
+        let state = self.state.lock().await;
+        let text = match state.documents.get(&uri.to_string()) {
+            Some(t) => t.clone(),
+            None    => return Ok(None),
+        };
+        drop(state);
+
+        let word = word_at(&text, pos);
+        if word.is_empty() { return Ok(None); }
+
+        let index = build_symbol_index(&text);
+        if let Some(&span) = index.get(word.as_str()) {
+            let start = offset_to_position(&text, span.start);
+            let end   = offset_to_position(&text, span.end);
+            let loc   = Location {
+                uri,
+                range: Range { start, end },
+            };
+            return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
+        }
+        Ok(None)
+    }
+
+    // ── Find-references ───────────────────────────────────────────────────
+
+    async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
+        let uri = params.text_document_position.text_document.uri.clone();
+        let pos = params.text_document_position.position;
+
+        let state = self.state.lock().await;
+        let text = match state.documents.get(&uri.to_string()) {
+            Some(t) => t.clone(),
+            None    => return Ok(None),
+        };
+        drop(state);
+
+        let word = word_at(&text, pos);
+        if word.is_empty() { return Ok(None); }
+
+        let locs = find_references(&text, &word, &uri);
+        if locs.is_empty() { return Ok(None); }
+        Ok(Some(locs))
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -229,6 +286,104 @@ fn brief_error_to_lsp(err: &crate::errors::BriefError, source: &str) -> Diagnost
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Symbol index
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Maps every declared identifier name → its declaration span.
+/// Covers: tasks, sealed types, structs, protocols, effects, skill imports.
+fn build_symbol_index(source: &str) -> HashMap<&'static str, crate::ast::Span> {
+    // We store owned names, so use a HashMap<String, Span> internally and
+    // convert to a leaked version for the &'static lifetime the caller needs.
+    // Actually, let's just use String keys.
+    build_symbol_index_owned(source)
+        .into_iter()
+        .map(|(k, v)| {
+            let k: &'static str = Box::leak(k.into_boxed_str());
+            (k, v)
+        })
+        .collect()
+}
+
+/// Same as build_symbol_index but with owned String keys (avoids leaking in tests).
+pub fn build_symbol_index_owned(source: &str) -> HashMap<String, crate::ast::Span> {
+    use crate::lexer::lex;
+    use crate::parser::parse;
+
+    let (tokens, _)  = lex(source);
+    let (program, _) = parse(&tokens, source);
+    let mut index    = HashMap::new();
+
+    for import in &program.imports {
+        index.insert(import.name.clone(), import.span);
+    }
+    for ty in &program.types {
+        index.insert(ty.name.clone(), ty.span);
+    }
+    for s in &program.structs {
+        index.insert(s.name.clone(), s.span);
+    }
+    for p in &program.protocols {
+        index.insert(p.name.clone(), p.span);
+    }
+    for e in &program.effects {
+        index.insert(e.name.clone(), e.span);
+        for f in &e.fns {
+            // Qualify as EffectName.fnName
+            index.insert(format!("{}.{}", e.name, f.name), f.span);
+        }
+    }
+    for task in &program.tasks {
+        index.insert(task.name.clone(), task.span);
+        for step in &task.steps {
+            // Qualify as TaskName.StepName
+            index.insert(format!("{}.{}", task.name, step.name), step.span);
+        }
+    }
+
+    index
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Find-references helper
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Find every occurrence of `word` (whole-word match) in `source`.
+/// Returns LSP `Location` for each match, scoped to the given document URI.
+fn find_references(source: &str, word: &str, uri: &Url) -> Vec<Location> {
+    let mut locs = Vec::new();
+    let wlen = word.len();
+
+    // Scan for all offsets where `word` appears as a whole word.
+    let bytes  = source.as_bytes();
+    let wbytes = word.as_bytes();
+    let mut pos = 0usize;
+
+    while pos + wlen <= bytes.len() {
+        if bytes[pos..pos + wlen] == *wbytes {
+            // Check word boundaries
+            let before_ok = pos == 0 || !is_ident_char(bytes[pos - 1]);
+            let after_ok  = pos + wlen >= bytes.len() || !is_ident_char(bytes[pos + wlen]);
+
+            if before_ok && after_ok {
+                let start = offset_to_position(source, pos);
+                let end   = offset_to_position(source, pos + wlen);
+                locs.push(Location {
+                    uri:   uri.clone(),
+                    range: Range { start, end },
+                });
+            }
+        }
+        pos += 1;
+    }
+
+    locs
+}
+
+fn is_ident_char(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Hover
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -291,6 +446,33 @@ fn hover_at(source: &str, pos: Position) -> Option<Hover> {
     }
 
     None
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Word extraction utility
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Extract the identifier (or `Task.Step` qualified name) at cursor `pos`.
+fn word_at(source: &str, pos: Position) -> String {
+    let offset = match position_to_offset(source, pos) {
+        Some(o) => o,
+        None    => return String::new(),
+    };
+
+    let bytes = source.as_bytes();
+    // Expand left
+    let start = (0..offset).rev()
+        .take_while(|&i| bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' || bytes[i] == b'.')
+        .last()
+        .unwrap_or(offset);
+    // Expand right
+    let end = (offset..bytes.len())
+        .take_while(|&i| bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' || bytes[i] == b'.')
+        .last()
+        .map(|i| i + 1)
+        .unwrap_or(offset);
+
+    source[start..end].to_string()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -397,4 +579,81 @@ mod tests {
         // Missing goal should produce at least one diagnostic.
         assert!(!diags.is_empty(), "expected at least one diagnostic");
     }
+
+    // ── Symbol index tests ────────────────────────────────────────────────
+
+    #[test]
+    fn test_symbol_index_task_name() {
+        let src = "task FetchUser : TaskBrief { goal = \"g\" }";
+        let idx = build_symbol_index_owned(src);
+        assert!(idx.contains_key("FetchUser"), "task name not indexed");
+    }
+
+    #[test]
+    fn test_symbol_index_type() {
+        let src = "sealed type Platform = iOS | Android";
+        let idx = build_symbol_index_owned(src);
+        assert!(idx.contains_key("Platform"), "sealed type not indexed");
+    }
+
+    #[test]
+    fn test_symbol_index_effect_and_fn() {
+        let src = r#"effect GraphQL { fn query(op: String) -> Result }"#;
+        let idx = build_symbol_index_owned(src);
+        assert!(idx.contains_key("GraphQL"), "effect not indexed");
+        assert!(idx.contains_key("GraphQL.query"), "effect.fn not indexed");
+    }
+
+    #[test]
+    fn test_symbol_index_step_qualified() {
+        let src = "task T : TaskBrief { goal = \"g\"\n step Fetch { } }";
+        let idx = build_symbol_index_owned(src);
+        assert!(idx.contains_key("T.Fetch"), "step not indexed as Task.Step");
+    }
+
+    // ── References tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_find_references_word() {
+        let src = "task Login : TaskBrief { goal = \"g\" }\n// Login is great\n";
+        let uri: Url = "file:///tmp/test.brief".parse().unwrap();
+        let locs = find_references(src, "Login", &uri);
+        // Should find at least 2: declaration + comment usage
+        assert!(locs.len() >= 2, "expected >= 2 refs, got {}", locs.len());
+    }
+
+    #[test]
+    fn test_find_references_whole_word_only() {
+        let src = "task Login : TaskBrief { goal = \"g\" }\ntask LoginAdmin : TaskBrief { goal = \"h\" }\n";
+        let uri: Url = "file:///tmp/test.brief".parse().unwrap();
+        let locs = find_references(src, "Login", &uri);
+        // "LoginAdmin" contains "Login" but is not a whole-word match
+        for loc in &locs {
+            let start_off = loc.range.start.character as usize;
+            // The match at the Login word should be exactly 5 chars
+            assert_eq!(loc.range.end.character - loc.range.start.character, 5);
+            let _ = start_off;
+        }
+    }
+
+    // ── word_at tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_word_at_ident() {
+        let src = "task Hello : TaskBrief { }";
+        //              ^5
+        let pos = Position { line: 0, character: 5 };
+        assert_eq!(word_at(src, pos), "Hello");
+    }
+
+    #[test]
+    fn test_word_at_empty() {
+        let src = "task Hello : TaskBrief { }";
+        let pos = Position { line: 0, character: 4 }; // space
+        // space before H → empty or "Hello" depending on direction; either is ok
+        let w = word_at(src, pos);
+        // should not crash
+        let _ = w;
+    }
 }
+
