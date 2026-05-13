@@ -24,4 +24,13 @@ ureq       = { version = "2", features = ["json"] }
 tower-lsp  = "0.20"
 tokio      = { version = "1", features = ["full"] }
 
+# Optional: LLVM backend (requires `brew install llvm@18` or equivalent)
+# Enable with: cargo build --features llvm-backend
+# After installing LLVM, also add to [dependencies]:
+#   inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "master", features = ["llvm18-0"], optional = true }
+# See docs/llvm-setup.md for full instructions.
+
+[features]
+llvm-backend = []
+
 [dev-dependencies]

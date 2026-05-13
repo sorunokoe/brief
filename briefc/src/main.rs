@@ -1,5 +1,6 @@
 mod ast;
 mod checker;
+mod codegen;
 mod errors;
 mod gen;
 mod lexer;
@@ -38,6 +39,20 @@ enum Commands {
     Run {
         /// Path to the .brief file
         file: PathBuf,
+    },
+
+    /// Compile a .brief file to a native binary (requires --features llvm-backend + LLVM 18)
+    Build {
+        /// Path to the .brief file
+        file: PathBuf,
+
+        /// Output binary path (defaults to ./<stem>)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Emit LLVM IR to a .ll file instead of a binary
+        #[arg(long)]
+        emit_ir: bool,
     },
 
     /// Interactive REPL (coming in v0.2)
@@ -83,6 +98,12 @@ fn main() {
         Commands::Run { file } => {
             print_brief_banner();
             let ok = runner::run_file(&file, runner::RunMode::Run);
+            std::process::exit(if ok { 0 } else { 1 });
+        }
+
+        Commands::Build { file, output, emit_ir } => {
+            print_brief_banner();
+            let ok = codegen::build_file(&file, output.as_deref(), emit_ir);
             std::process::exit(if ok { 0 } else { 1 });
         }
 
