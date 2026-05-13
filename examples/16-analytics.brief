@@ -1,0 +1,68 @@
+// 16-analytics.brief — event tracking with batching and flush.
+//
+// Demonstrates:
+//   - Lightweight single-skill task
+//   - `extras` encoding analytics configuration
+//   - A utility task (FlushEvents) that runs on a timer
+//
+// Expected results:
+//   brief check  16-analytics.brief   → ✅ (W101 warnings for missing .briefskill — expected)
+//   brief run    16-analytics.brief   → prints each step
+
+import skill "Analytics"
+
+sealed type EventCategory = UserAction | SystemEvent | PerformanceMetric | Error
+
+struct AnalyticsEvent {
+    name:      @nonEmpty String
+    category:  @nonEmpty String
+    userId:    @nonEmpty String
+    sessionId: @nonEmpty String
+    timestamp: @nonEmpty String
+}
+
+@BriefBuilder
+task TrackUserAction : TaskBrief uses [Analytics] {
+    goal   = "Record a user interaction event and add it to the outgoing batch"
+    extras = ["domain": "analytics", "batchSize": "50", "flushInterval": "30s"]
+
+    step BuildEvent {
+        let event = perform Analytics.buildEvent(name, userId, sessionId)?;
+    }
+
+    step Enqueue {
+        let queued = perform Analytics.enqueue(event)?;
+    }
+}
+
+@BriefBuilder
+task FlushEvents : TaskBrief uses [Analytics] {
+    goal   = "Drain the event queue and send all pending events to the analytics backend"
+    extras = ["domain": "analytics", "trigger": "timer", "maxRetries": "3"]
+
+    step Drain {
+        let batch = perform Analytics.drainQueue()?;
+    }
+
+    step Send {
+        let result = perform Analytics.sendBatch(batch)?;
+    }
+
+    step AckOrRetry {
+        let ack = perform Analytics.acknowledge(result)?;
+    }
+}
+
+@BriefBuilder
+task TrackError : TaskBrief uses [Analytics] {
+    goal   = "Record an application error with stack trace and session context"
+    extras = ["domain": "analytics", "severity": "error", "alertThreshold": "5/min"]
+
+    step CaptureError {
+        let report = perform Analytics.captureError(error, stackTrace, context)?;
+    }
+
+    step Ship {
+        let sent = perform Analytics.sendImmediate(report)?;
+    }
+}

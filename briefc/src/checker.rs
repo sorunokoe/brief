@@ -118,7 +118,7 @@ fn check_step(step: &Step, uses_set: &HashSet<&str>, imported: &HashSet<&str>, d
 fn check_expr_for_perform(expr: &Expr, uses_set: &HashSet<&str>, imported: &HashSet<&str>, diags: &mut Vec<BriefError>) {
     match expr {
         Expr::Perform { skill, span, .. } => {
-            if imported.contains(skill.as_str()) && !uses_set.contains(skill.as_str()) {
+            if !uses_set.contains(skill.as_str()) {
                 diags.push(BriefError {
                     code:    ErrorCode::PerformWithoutUses,
                     message: format!("effect '{}' is performed but not declared in `uses [...]`", skill),

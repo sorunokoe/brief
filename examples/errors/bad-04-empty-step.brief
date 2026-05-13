@@ -1,0 +1,20 @@
+// errors/bad-04-empty-step.brief — intentional edge-case: step with no body.
+//
+// PURPOSE: Demonstrates that `brief check` and `brief run` handle empty steps
+// gracefully (no crash), while `brief fmt` canonicalises the empty block.
+//
+// Expected results:
+//   brief check  examples/errors/bad-04-empty-step.brief  → ✅ All ingredients present. Ready for AI.
+//   brief run    examples/errors/bad-04-empty-step.brief  → ✅ runs, prints nothing for empty step
+//   brief fmt    examples/errors/bad-04-empty-step.brief  → ✅ reformats to canonical style
+
+task EmptyStepTask : TaskBrief {
+    goal = "A task where one step has no body (edge case — should not crash)"
+
+    step Empty {
+    }
+
+    step AfterEmpty {
+        let result = "done";
+    }
+}

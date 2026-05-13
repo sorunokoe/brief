@@ -1,0 +1,71 @@
+// 19-otp-verification.brief — SMS/email OTP verification flow.
+//
+// Demonstrates:
+//   - Time-boxed security flows with expiry metadata
+//   - Two-channel delivery (SMS + email fallback)
+//   - Separate tasks for send and verify (separation of concerns)
+//
+// Expected results:
+//   brief check  19-otp-verification.brief   → ✅ (W101 warnings for missing .briefskill — expected)
+//   brief run    19-otp-verification.brief   → prints each step
+
+import skill "OTP"
+import skill "Messaging"
+
+sealed type OTPChannel = SMS | Email | WhatsApp | AuthenticatorApp
+
+sealed type VerificationResult = Verified | Expired | InvalidCode | TooManyAttempts
+
+struct OTPRequest {
+    userId:    @nonEmpty String
+    channel:   @nonEmpty String
+    expiresIn: @nonEmpty String
+    purpose:   @nonEmpty String
+}
+
+@BriefBuilder
+task SendOTP : TaskBrief uses [OTP, Messaging] {
+    goal   = "Generate a one-time password and deliver it via the user's preferred channel"
+    extras = [
+        "domain":      "auth",
+        "otpLength":   "6",
+        "expirySeconds": "300",
+        "maxAttempts": "3",
+        "purpose":     "login"
+    ]
+
+    step Generate {
+        let code    = perform OTP.generate(userId, expirySeconds)?;
+        let request = perform OTP.store(userId, code, purpose)?;
+    }
+
+    step Deliver {
+        let sent = perform Messaging.send(channel, userId, code)?;
+    }
+
+    step FallbackIfFailed {
+        let fallback = perform Messaging.sendFallback(userId, code)?;
+    }
+}
+
+@BriefBuilder
+task VerifyOTP : TaskBrief uses [OTP] {
+    goal   = "Verify a submitted OTP code and return a short-lived session token on success"
+    extras = [
+        "domain":        "auth",
+        "sessionTTL":    "3600",
+        "auditLog":      "true"
+    ]
+
+    step CheckCode {
+        let result = perform OTP.verify(userId, submittedCode)?;
+    }
+
+    step IssueSession {
+        let session = perform OTP.issueSession(userId, result)?;
+    }
+
+    step Audit {
+        let log = perform OTP.logAttempt(userId, result)?;
+    }
+}

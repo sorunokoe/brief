@@ -1,0 +1,72 @@
+// 17-localization.brief — i18n string lookup, locale detection, pluralisation.
+//
+// Demonstrates:
+//   - Locale-aware tasks with `extras` declaring supported locales
+//   - Optional types (Locale?) with fallback chain
+//   - Two-skill composition (Locale + CMS)
+//
+// Expected results:
+//   brief check  17-localization.brief   → ✅ (W101 warnings for missing .briefskill — expected)
+//   brief run    17-localization.brief   → prints each step
+
+import skill "Locale"
+import skill "CMS"
+
+sealed type SupportedLocale = EnUS | EnGB | FrFR | DeDE | JaJP | ZhCN | ArSA
+
+struct LocaleConfig {
+    locale:        @nonEmpty String
+    fallback:      @nonEmpty String
+    pluralRules:   @nonEmpty String
+    rtl:           @nonEmpty String
+}
+
+@BriefBuilder
+task DetectLocale : TaskBrief uses [Locale] {
+    goal   = "Detect the user's preferred locale from device settings, falling back to en-US"
+    extras = ["domain": "i18n", "defaultLocale": "en-US", "supportedLocales": "en-US,en-GB,fr-FR,de-DE,ja-JP"]
+
+    step ReadDevice {
+        let preferred = perform Locale.fromDevice()?;
+    }
+
+    step Negotiate {
+        let resolved = perform Locale.negotiate(preferred, supportedLocales)?;
+    }
+
+    step StorePreference {
+        let saved = perform Locale.save(resolved, userId)?;
+    }
+}
+
+@BriefBuilder
+task LoadStrings : TaskBrief uses [CMS, Locale] {
+    goal   = "Fetch all UI strings for the resolved locale from the CMS"
+    extras = ["domain": "i18n", "cachePolicy": "stale-while-revalidate", "ttl": "3600"]
+
+    step FetchBundle {
+        let bundle = perform CMS.fetchStringBundle(locale)?;
+    }
+
+    step ValidateBundle {
+        let validated = perform Locale.validateBundle(bundle)?;
+    }
+
+    step CacheBundle {
+        let cached = perform CMS.cacheBundle(validated, ttl)?;
+    }
+}
+
+@BriefBuilder
+task TranslateString : TaskBrief uses [Locale] {
+    goal   = "Resolve a translation key with optional plural form and variable interpolation"
+    extras = ["domain": "i18n"]
+
+    step Lookup {
+        let raw = perform Locale.lookup(key, locale)?;
+    }
+
+    step Interpolate {
+        let result = perform Locale.interpolate(raw, variables)?;
+    }
+}

@@ -1,0 +1,93 @@
+// 22-permissions.brief — role-based access control (RBAC) check before action.
+//
+// Demonstrates:
+//   - Sealed types as a first-class permission model
+//   - Guard tasks (CheckAccess) composing with action tasks
+//   - `extras` making policy decisions explicit and auditable
+//
+// Expected results:
+//   brief check  22-permissions.brief   → ✅ (W101 warnings for missing .briefskill — expected)
+//   brief run    22-permissions.brief   → prints each step
+
+import skill "Auth"
+import skill "RBAC"
+import skill "AuditLog"
+
+sealed type Role = SuperAdmin | Admin | Editor | Viewer | Guest
+
+sealed type Resource = Document | MediaAsset | UserProfile | SystemConfig | BillingRecord
+
+sealed type Permission = Read | Write | Delete | Publish | Admin
+
+sealed type AccessDecision = Allowed | Denied(String) | ConditionallyAllowed(String)
+
+@BriefBuilder
+task CheckAccess : TaskBrief uses [Auth, RBAC] {
+    goal   = "Verify the caller has the required permission for the requested resource"
+    extras = [
+        "domain":           "rbac",
+        "enforcementMode":  "strict",
+        "cacheDecisionsTTL": "30"
+    ]
+
+    step LoadIdentity {
+        let identity = perform Auth.resolveToken(bearerToken)?;
+    }
+
+    step LoadRoles {
+        let roles = perform RBAC.getRoles(userId)?;
+    }
+
+    step EvaluatePolicy {
+        let decision = perform RBAC.evaluate(roles, resource, permission)?;
+    }
+}
+
+@BriefBuilder
+task GrantRole : TaskBrief uses [RBAC, AuditLog] {
+    goal   = "Assign a role to a user, subject to the caller having admin permission"
+    extras = [
+        "domain":     "rbac",
+        "requireRole": "Admin",
+        "auditAction": "ROLE_GRANTED"
+    ]
+
+    step VerifyGranter {
+        let callerRoles = perform RBAC.getRoles(callerId)?;
+        let allowed     = perform RBAC.evaluate(callerRoles, Resource, Permission)?;
+    }
+
+    step Assign {
+        let updated = perform RBAC.assignRole(targetUserId, role)?;
+    }
+
+    step LogChange {
+        let log = perform AuditLog.record(callerId, targetUserId, role, action)?;
+    }
+}
+
+@BriefBuilder
+task RevokeRole : TaskBrief uses [Auth, RBAC, AuditLog] {
+    goal   = "Remove a role from a user and invalidate their active sessions"
+    extras = [
+        "domain":      "rbac",
+        "requireRole": "Admin",
+        "auditAction": "ROLE_REVOKED"
+    ]
+
+    step VerifyRevoker {
+        let allowed = perform RBAC.evaluate(callerRoles, Resource, Permission)?;
+    }
+
+    step Remove {
+        let updated = perform RBAC.removeRole(targetUserId, role)?;
+    }
+
+    step InvalidateSessions {
+        let revoked = perform Auth.revokeAllSessions(targetUserId)?;
+    }
+
+    step LogChange {
+        let log = perform AuditLog.record(callerId, targetUserId, role, action)?;
+    }
+}

@@ -1,0 +1,90 @@
+// 21-error-recovery.brief — retry logic, fallbacks and circuit-breaker patterns.
+//
+// Demonstrates:
+//   - `extras` encoding resilience policy (retries, timeout, fallback URL)
+//   - Fallback chain: primary → secondary → cache → degraded mode
+//   - Separate concerns: fetch, fallback, degrade
+//
+// Expected results:
+//   brief check  21-error-recovery.brief   → ✅ (W101 warnings for missing .briefskill — expected)
+//   brief run    21-error-recovery.brief   → prints each step
+
+import skill "DataService"
+import skill "FallbackCache"
+import skill "CircuitBreaker"
+import skill "Alerting"
+
+sealed type ServiceHealth = Healthy | Degraded | CircuitOpen | Unknown
+
+sealed type FallbackStrategy = StaleCache | DefaultValue | EmptyState | ErrorPage
+
+struct ResiliencePolicy {
+    maxRetries:     @nonEmpty String
+    backoffMs:      @nonEmpty String
+    timeoutMs:      @nonEmpty String
+    circuitThreshold: @nonEmpty String
+}
+
+@BriefBuilder
+task FetchWithRetry : TaskBrief uses [DataService, CircuitBreaker] {
+    goal   = "Fetch data from the primary service with exponential backoff on transient failures"
+    extras = [
+        "domain":       "resilience",
+        "maxRetries":   "3",
+        "backoffMs":    "200",
+        "timeoutMs":    "5000",
+        "jitter":       "true"
+    ]
+
+    step CheckCircuit {
+        let status = perform CircuitBreaker.check(serviceName)?;
+    }
+
+    step AttemptFetch {
+        let data = perform DataService.fetch(resourceId, timeoutMs)?;
+    }
+
+    step RecordSuccess {
+        let recorded = perform CircuitBreaker.recordSuccess(serviceName)?;
+    }
+}
+
+@BriefBuilder
+task FetchWithFallback : TaskBrief uses [DataService, FallbackCache, CircuitBreaker, Alerting] {
+    goal   = "Attempt primary fetch; fall back to stale cache on failure; alert on circuit open"
+    extras = [
+        "domain":            "resilience",
+        "staleCacheTTL":     "300",
+        "fallbackStrategy":  "StaleCache",
+        "alertChannel":      "pagerduty"
+    ]
+
+    step TryPrimary {
+        let primary = perform DataService.fetch(resourceId, timeoutMs)?;
+    }
+
+    step OnFailure {
+        let stale = perform FallbackCache.get(resourceId)?;
+    }
+
+    step RecordFailure {
+        let trip = perform CircuitBreaker.recordFailure(serviceName)?;
+    }
+
+    step Alert {
+        let alert = perform Alerting.fire(serviceName, errorCode, alertChannel)?;
+    }
+}
+
+@BriefBuilder
+task DegradedModeResponse : TaskBrief uses [FallbackCache] {
+    goal   = "Return a safe degraded response when all upstream services are unavailable"
+    extras = [
+        "domain":    "resilience",
+        "strategy":  "EmptyState"
+    ]
+
+    step ServeDefault {
+        let response = perform FallbackCache.getDefault(resourceType)?;
+    }
+}

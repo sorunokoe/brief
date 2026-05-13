@@ -1,0 +1,91 @@
+// 20-search-filters.brief — cursor-based search with facets, sorting and pagination.
+//
+// Demonstrates:
+//   - Complex query-building across multiple steps
+//   - `extras` encoding pagination/sort/filter defaults
+//   - Separate tasks for fresh search vs. loading next page
+//
+// Expected results:
+//   brief check  20-search-filters.brief   → ✅ (W101 warnings for missing .briefskill — expected)
+//   brief run    20-search-filters.brief   → prints each step
+
+import skill "Search"
+import skill "Cache"
+
+sealed type SortOrder = Relevance | DateDesc | DateAsc | PriceAsc | PriceDesc | Popularity
+
+sealed type FilterType = Category | DateRange | PriceRange | Tag | Author | Status
+
+struct SearchQuery {
+    text:     @nonEmpty String
+    filters:  @nonEmpty String
+    sort:     @nonEmpty String
+    cursor:   @nonEmpty String
+    pageSize: @nonEmpty String
+}
+
+struct SearchPage {
+    items:      @nonEmpty String
+    totalCount: @nonEmpty String
+    nextCursor: @nonEmpty String
+    hasMore:    @nonEmpty String
+    facets:     @nonEmpty String
+}
+
+@BriefBuilder
+task ExecuteSearch : TaskBrief uses [Search, Cache] {
+    goal   = "Run a full-text search with facet filters and return the first page of results"
+    extras = [
+        "domain":    "search",
+        "pageSize":  "20",
+        "cacheTTL":  "60",
+        "timeout":   "3000ms"
+    ]
+
+    step BuildQuery {
+        let query = perform Search.buildQuery(text, filters, sort)?;
+    }
+
+    step CheckCache {
+        let cached = perform Cache.get(cacheKey)?;
+    }
+
+    step RunSearch {
+        let results = perform Search.execute(query)?;
+    }
+
+    step LoadFacets {
+        let facets = perform Search.aggregateFacets(results)?;
+    }
+
+    step CacheResults {
+        let stored = perform Cache.set(cacheKey, results, cacheTTL)?;
+    }
+}
+
+@BriefBuilder
+task LoadNextPage : TaskBrief uses [Search] {
+    goal   = "Fetch the next cursor page of an existing search session"
+    extras = [
+        "domain":   "search",
+        "pageSize": "20"
+    ]
+
+    step FetchPage {
+        let page = perform Search.nextPage(sessionId, cursor, pageSize)?;
+    }
+}
+
+@BriefBuilder
+task GetSuggestions : TaskBrief uses [Search] {
+    goal   = "Return autocomplete suggestions for a partial search query"
+    extras = [
+        "domain":      "search",
+        "maxResults":  "8",
+        "minQueryLen": "2"
+    ]
+
+    step Suggest {
+        let suggestions = perform Search.autocomplete(partialText, context)?;
+    }
+}

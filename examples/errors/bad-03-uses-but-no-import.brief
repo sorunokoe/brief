@@ -1,0 +1,20 @@
+// errors/bad-03-uses-but-no-import.brief — intentional error: task declares
+// a skill in `uses [...]` but never imports it with `import skill`.
+//
+// PURPOSE: Demonstrates the E001/W101 diagnostic when `uses` references
+// a skill name that has no corresponding `import skill` declaration.
+//
+// Expected result:
+//   brief check  errors/bad-03-uses-but-no-import.brief
+//   → ⚠ warning[W101]: skill 'Analytics' used in `uses` but not imported
+//        hint: add  import skill "Analytics"  at the top of the file
+//
+// This file SHOULD produce at least one diagnostic.
+
+task TrackEvent : TaskBrief uses [Analytics] {
+    goal = "Track a user event — but Analytics is not imported"
+
+    step Record {
+        let event = perform Analytics.track(name, props)?;
+    }
+}

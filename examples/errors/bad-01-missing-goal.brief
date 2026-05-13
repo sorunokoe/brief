@@ -1,0 +1,16 @@
+// errors/bad-01-missing-goal.brief — intentional error: task has no goal.
+//
+// PURPOSE: Demonstrates the E002 compiler error when a task is missing a goal.
+//
+// Expected result:
+//   brief check  errors/bad-01-missing-goal.brief
+//   → ❌ error[E002]: task 'BrokenTask' has no goal
+//        hint: add  goal = "..."  inside the task body
+//
+// This file SHOULD fail. If it passes, the checker has a bug.
+
+task BrokenTask : TaskBrief {
+    step DoWork {
+        let x = perform SomeSkill.run()?;
+    }
+}

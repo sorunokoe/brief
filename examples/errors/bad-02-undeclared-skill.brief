@@ -1,0 +1,22 @@
+// errors/bad-02-undeclared-skill.brief — intentional error: perform references
+// a skill that is NOT declared in the `uses` clause (E103).
+//
+// PURPOSE: Demonstrates error[E103] — effect performed but not declared in uses.
+// The task declares uses [Http] but then calls perform GraphQL.query(...).
+//
+// Expected result:
+//   brief check  examples/errors/bad-02-undeclared-skill.brief
+//   → error[E103]: effect 'GraphQL' is performed but not declared in `uses [...]`
+//
+// Fix: add GraphQL to the uses clause:
+//   task FetchUser : TaskBrief uses [Http, GraphQL] { ... }
+
+import skill "Http"
+
+task FetchUser : TaskBrief uses [Http] {
+    goal = "Fetch a user — missing GraphQL in uses clause"
+
+    step Load {
+        let user = perform GraphQL.query(userQuery)?;
+    }
+}
