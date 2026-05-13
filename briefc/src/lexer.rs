@@ -1,5 +1,27 @@
 use logos::Logos;
 
+/// Unescape a Brief string literal body (content between the quotes).
+/// Converts `\\` → `\` and `\"` → `"`. Other escape sequences are passed through.
+fn unescape_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('\\') => out.push('\\'),
+                Some('"')  => out.push('"'),
+                Some('n')  => out.push('\n'),
+                Some('t')  => out.push('\t'),
+                Some(other) => { out.push('\\'); out.push(other); }
+                None        => out.push('\\'),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// All tokens in the Brief language (v0.1).
 /// Keywords take priority over Ident because they are declared first in the enum
 /// and logos applies the longest-then-first-declared rule.
@@ -24,12 +46,13 @@ pub enum Token {
     #[token("async")]    Async,
     #[token("await")]    Await,
     #[token("return")]   Return,
+    #[token("test")]     Test,
 
     // ── Literals ──────────────────────────────────────────────────────────
-    /// String literal — logos captures the full `"..."` slice; we strip quotes below.
+    /// String literal — logos captures the full `"..."` slice; we strip quotes and unescape below.
     #[regex(r#""([^"\\]|\\.)*""#, |lex| {
         let s = lex.slice();
-        s[1..s.len()-1].to_string()
+        unescape_str(&s[1..s.len()-1])
     })]
     Str(String),
 

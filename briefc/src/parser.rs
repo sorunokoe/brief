@@ -167,6 +167,7 @@ impl<'a> Parser<'a> {
         let mut protocols     = Vec::new();
         let mut effects       = Vec::new();
         let mut tasks         = Vec::new();
+        let mut tests         = Vec::new();
 
         while !self.at_end() {
             match self.peek() {
@@ -184,6 +185,7 @@ impl<'a> Parser<'a> {
                 Some(Token::Effect)   => { if let Some(e) = self.parse_effect() { effects.push(e); } }
                 Some(Token::Task)
                 | Some(Token::At)     => { if let Some(t) = self.parse_task() { tasks.push(t); } }
+                Some(Token::Test)     => { if let Some(t) = self.parse_test() { tests.push(t); } }
                 _ => {
                     let span = self.current_span();
                     let got  = self.peek().cloned();
@@ -191,14 +193,14 @@ impl<'a> Parser<'a> {
                         code:    ErrorCode::ParseError,
                         message: format!("unexpected token `{got:?}` at top level"),
                         span,
-                        hint:    Some("expected `import skill`, `type`, `sealed type`, `struct`, `protocol`, `effect`, or `task`".to_string()),
+                        hint:    Some("expected `import skill`, `type`, `sealed type`, `struct`, `protocol`, `effect`, `task`, or `test`".to_string()),
                     });
                     self.advance();
                 }
             }
         }
 
-        Program { imports, types, type_aliases, effect_groups, structs, protocols, effects, tasks }
+        Program { imports, types, type_aliases, effect_groups, structs, protocols, effects, tasks, tests }
     }
 
     // ── import skill "Name" ──────────────────────────────────────────────
@@ -614,6 +616,34 @@ impl<'a> Parser<'a> {
 
         self.expect(&Token::RBracket);
         pairs
+    }
+
+    // ── test "name" { ... } ───────────────────────────────────────────────
+
+    fn parse_test(&mut self) -> Option<TestDecl> {
+        let start = self.current_span().start;
+        self.expect(&Token::Test)?;
+        let (name, _) = self.expect_str()?;
+        self.expect(&Token::LBrace)?;
+
+        // Test bodies use mock/run/assert syntax parsed by tester.rs.
+        // Skip tokens with brace-depth tracking so check/fmt don't error.
+        let mut depth = 1usize;
+        while !self.at_end() {
+            match self.peek() {
+                Some(Token::LBrace) => { depth += 1; self.advance(); }
+                Some(Token::RBrace) => {
+                    depth -= 1;
+                    if depth == 0 { break; }
+                    self.advance();
+                }
+                _ => { self.advance(); }
+            }
+        }
+
+        let end = self.current_span().end;
+        self.expect(&Token::RBrace);
+        Some(TestDecl { name, body: vec![], span: Span::new(start, end) })
     }
 
     // ── step FetchData { ... } ────────────────────────────────────────────

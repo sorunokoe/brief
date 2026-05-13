@@ -105,8 +105,13 @@ impl Formatter {
 
     fn fmt_stmt(&mut self, stmt: &Stmt) {
         match stmt {
-            Stmt::Let { name, value, .. } => {
-                self.line(&format!("let {name} = {};", Self::fmt_expr(value)));
+            Stmt::Let { name, value, attrs, .. } => {
+                let prefix = if attrs.is_empty() {
+                    String::new()
+                } else {
+                    format!("{} ", attrs.iter().map(|a| format!("@{a}")).collect::<Vec<_>>().join(" "))
+                };
+                self.line(&format!("{prefix}let {name} = {};", Self::fmt_expr(value)));
             }
             Stmt::Expr { value, .. } => {
                 self.line(&format!("{};", Self::fmt_expr(value)));
@@ -140,7 +145,10 @@ impl Formatter {
             if attrs.is_empty() { format!("{}: {ty}", p.name) }
             else                { format!("{}: {attrs} {ty}", p.name) }
         }).collect::<Vec<_>>().join(", ");
-        format!("fn {}{tp}({params}) -> {}", sig.name, Self::fmt_type_ref(&sig.ret))
+        let ret_attrs = Self::fmt_attrs(&sig.ret_attrs);
+        let ret_ty    = Self::fmt_type_ref(&sig.ret);
+        let ret = if ret_attrs.is_empty() { ret_ty } else { format!("{ret_attrs} {ret_ty}") };
+        format!("fn {}{tp}({params}) -> {ret}", sig.name)
     }
 
     // ── Sealed types ──────────────────────────────────────────────────────
@@ -161,6 +169,20 @@ impl Formatter {
             }
         }).collect::<Vec<_>>().join(" | ");
         self.line(&format!("sealed type {name}{params} = {variants}"));
+    }
+
+    // ── Type alias ────────────────────────────────────────────────────────
+
+    fn fmt_type_alias(&mut self, a: &TypeAliasDecl) {
+        let attrs = Self::fmt_attrs(&a.attrs);
+        let base  = Self::fmt_type_ref(&a.base);
+        self.line(&format!("type {} = {attrs} {base}", a.name));
+    }
+
+    // ── Effect group ──────────────────────────────────────────────────────
+
+    fn fmt_effect_group(&mut self, g: &EffectGroupDecl) {
+        self.line(&format!("type {} = [{}]", g.name, g.members.join(", ")));
     }
 
     // ── Structs ───────────────────────────────────────────────────────────
@@ -276,6 +298,18 @@ impl Formatter {
         self.line("}");
     }
 
+    // ── Test block ────────────────────────────────────────────────────────
+
+    fn fmt_test(&mut self, test: &TestDecl) {
+        self.line(&format!("test {:?} {{", test.name));
+        self.indented(|f| {
+            for stmt in &test.body {
+                f.fmt_stmt(stmt);
+            }
+        });
+        self.line("}");
+    }
+
     // ── Program ───────────────────────────────────────────────────────────
 
     pub fn format_program(program: &Program) -> String {
@@ -297,6 +331,18 @@ impl Formatter {
         for ty in &program.types {
             sep(&mut f, &mut first);
             f.fmt_sealed_type(ty);
+        }
+
+        // Type aliases (refinements)
+        for a in &program.type_aliases {
+            sep(&mut f, &mut first);
+            f.fmt_type_alias(a);
+        }
+
+        // Effect group aliases
+        for g in &program.effect_groups {
+            sep(&mut f, &mut first);
+            f.fmt_effect_group(g);
         }
 
         // Structs
@@ -321,6 +367,12 @@ impl Formatter {
         for task in &program.tasks {
             sep(&mut f, &mut first);
             f.fmt_task(task);
+        }
+
+        // Test blocks
+        for test in &program.tests {
+            sep(&mut f, &mut first);
+            f.fmt_test(test);
         }
 
         // Ensure trailing newline

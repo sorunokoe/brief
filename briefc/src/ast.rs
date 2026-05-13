@@ -31,6 +31,7 @@ pub struct Program {
     pub protocols:     Vec<ProtocolDecl>,
     pub effects:       Vec<EffectDecl>,
     pub tasks:         Vec<Task>,
+    pub tests:         Vec<TestDecl>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -271,4 +272,20 @@ impl Expr {
             Expr::Str     { span, .. } => *span,
         }
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test declaration
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `test "name" { stmts }`
+///
+/// Test blocks are collected by the parser but executed only by `brief test`.
+/// `brief check` validates the task declarations in the same file but does not
+/// run test body statements through effect/skill checking.
+#[derive(Debug, Clone)]
+pub struct TestDecl {
+    pub name: String,
+    pub body: Vec<Stmt>,
+    pub span: Span,
 }
