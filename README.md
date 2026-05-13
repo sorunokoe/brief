@@ -24,7 +24,7 @@ task Hello : TaskBrief {
 
 ```bash
 brief check hello.brief
-# brief v0.4.0
+# brief v1.0.0
 # ● Brief: Hello
 #   goal:    Say hello to the world
 #   skills:  none required
@@ -66,6 +66,8 @@ task ProfileScreen : TaskBrief uses [DesignSystem, GraphQL] {
 | `brief doc <file>` | Generate Markdown documentation |
 | `brief watch <file>` | Live re-check on every save (dev loop) |
 | `brief init <name>` | Scaffold a new Brief project directory |
+| `brief ci` | Check all `[ci] examples` from `brief.toml` |
+| `brief completions <shell>` | Print shell completion script (bash/zsh/fish/powershell) |
 | `brief repl` | Interactive REPL |
 | `brief lsp` | LSP server (stdio) — for editor integration |
 | `brief gen "<description>"` | AI-generates a `.brief` file from natural language |
@@ -126,7 +128,8 @@ The `.briefskill` file is the typed contract — committed to your repo. `brief 
 - **v0.2** ✅ — `brief test`, `brief fmt`, LSP, WASM, skill registry
 - **v0.3** ✅ — Linear types (`@once`), type aliases, effect groups, `brief doc`
 - **v0.4** ✅ — Test block parsing, `@mcp` attribute, 32 examples, CI/release workflows
-- **v1.0** 🔄 — `brief watch`, `brief init`, documentation website, language spec 1.0
+- **v1.0** ✅ — `brief watch`, `brief init`, `brief.toml` manifest, mdBook docs site
+- **v1.0+** ✅ — `brief ci`, shell completions, GitHub Pages, VS Code grammar update
 
 ## Contributing
 
