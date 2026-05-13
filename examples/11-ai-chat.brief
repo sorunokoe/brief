@@ -1,0 +1,81 @@
+// 11-ai-chat.brief — AI-powered in-app chat feature.
+//
+// Demonstrates: LLM skill integration, streaming response pattern,
+// context window management, and message history persistence.
+//
+// Run with: brief check 11-ai-chat.brief
+
+import skill "LLM"
+import skill "LocalDB"
+import skill "DesignSystem"
+
+sealed type MessageRole = User | Assistant | System
+sealed type StreamState = Streaming | Done | Error(String)
+
+struct ChatMessage {
+    role:      @nonEmpty String
+    content:   @nonEmpty String
+    timestamp: @nonEmpty String
+}
+
+struct ChatSession {
+    id:         @nonEmpty String
+    systemPrompt: @nonEmpty String
+    messages:   @nonEmpty String
+}
+
+// ─── Send message ────────────────────────────────────────────────────────────
+
+@BriefBuilder
+task SendChatMessage : TaskBrief uses [LLM, LocalDB, DesignSystem] {
+    goal   = "Send user message to LLM, stream response tokens, persist full exchange"
+    extras = [
+        "platform":    "iOS",
+        "model":       "claude-3-5-sonnet",
+        "maxTokens":   "2048",
+        "temperature": "0.7",
+        "streaming":   "true",
+        "figmaURL":    "https://figma.com/file/chat?node-id=1:1"
+    ]
+
+    step LoadHistory {
+        let history = perform LocalDB.load("chat.history", sessionId)?;
+    }
+
+    step BuildContext {
+        let context = perform LLM.buildContext(systemPrompt, history, newMessage)?;
+    }
+
+    step StreamResponse {
+        let stream = perform LLM.streamCompletion(context)?;
+        let rendered = perform DesignSystem.streamingBubble(stream)?;
+    }
+
+    step PersistExchange {
+        let saved = perform LocalDB.append("chat.history", exchange)?;
+    }
+}
+
+// ─── Summarise conversation ──────────────────────────────────────────────────
+
+@BriefBuilder
+task SummariseChat : TaskBrief uses [LLM, LocalDB] {
+    goal   = "Compress old messages into a summary to stay within context limits"
+    extras = [
+        "platform":       "KMP",
+        "triggerAfter":   "50 messages",
+        "summaryMaxLen":  "500"
+    ]
+
+    step LoadOldMessages {
+        let old = perform LocalDB.load("chat.history.old", sessionId)?;
+    }
+
+    step Compress {
+        let summary = perform LLM.summarise(old, maxLength)?;
+    }
+
+    step ReplaceHistory {
+        let replaced = perform LocalDB.save("chat.history.summary", summary)?;
+    }
+}

@@ -1,0 +1,79 @@
+// 13-feature-flags.brief — Feature flag gating and A/B test variant routing.
+//
+// Demonstrates: conditional behaviour via extras, multi-skill composition,
+// and analytics instrumentation of experiments.
+//
+// Run with: brief check 13-feature-flags.brief
+
+import skill "Flags"
+import skill "Analytics"
+import skill "DesignSystem"
+
+sealed type Variant = Control | Treatment(String) | Holdout
+
+// ─── Evaluate flag at runtime ────────────────────────────────────────────────
+
+@BriefBuilder
+task EvaluateFlag : TaskBrief uses [Flags, Analytics] {
+    goal   = "Check a feature flag and route the user to the correct variant"
+    extras = [
+        "platform":   "KMP",
+        "flagName":   "new_checkout_flow",
+        "rollout":    "50%",
+        "evalMode":   "user-targeting"
+    ]
+
+    step FetchVariant {
+        let variant = perform Flags.evaluate("new_checkout_flow", userId)?;
+    }
+
+    step LogAssignment {
+        let event = perform Analytics.track("flag_evaluated", variant)?;
+    }
+}
+
+// ─── New checkout (Treatment) ────────────────────────────────────────────────
+
+@BriefBuilder
+task CheckoutTreatment : TaskBrief uses [DesignSystem, Analytics] {
+    goal   = "Render the new one-page checkout flow (Treatment variant)"
+    extras = [
+        "platform":  "iOS",
+        "variant":   "treatment",
+        "figmaURL":  "https://figma.com/file/checkout?node-id=10:1",
+        "experiment":"new_checkout_flow"
+    ]
+
+    step RenderPage {
+        let page = perform DesignSystem.onePageCheckout(cart)?;
+    }
+
+    step TrackExposure {
+        let exposed = perform Analytics.track("experiment_exposed", variant)?;
+    }
+}
+
+// ─── Legacy checkout (Control) ───────────────────────────────────────────────
+
+@BriefBuilder
+task CheckoutControl : TaskBrief uses [DesignSystem, Analytics] {
+    goal   = "Render the legacy multi-step checkout flow (Control variant)"
+    extras = [
+        "platform":   "iOS",
+        "variant":    "control",
+        "figmaURL":   "https://figma.com/file/checkout?node-id=1:1",
+        "experiment": "new_checkout_flow"
+    ]
+
+    step RenderStep1 {
+        let step1 = perform DesignSystem.checkoutAddress(cart)?;
+    }
+
+    step RenderStep2 {
+        let step2 = perform DesignSystem.checkoutPayment(cart)?;
+    }
+
+    step TrackExposure {
+        let exposed = perform Analytics.track("experiment_exposed", variant)?;
+    }
+}

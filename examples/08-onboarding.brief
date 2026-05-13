@@ -1,0 +1,89 @@
+// 08-onboarding.brief — Multi-screen onboarding flow.
+//
+// Demonstrates: composing tasks into a named flow, rich extras,
+// and conditional step logic with perform.
+//
+// Run with: brief check 08-onboarding.brief
+
+import skill "DesignSystem"
+import skill "Analytics"
+import skill "Auth"
+
+sealed type OnboardingStep = Welcome | Permissions | Profile | Complete
+
+struct OnboardingState {
+    currentStep: @nonEmpty String
+    userId:      @nonEmpty String
+    completed:   String
+}
+
+// ─── Welcome screen ──────────────────────────────────────────────────────────
+
+@BriefBuilder
+task OnboardingWelcome : TaskBrief uses [DesignSystem, Analytics] {
+    goal   = "Show the welcome screen and animate in the value proposition"
+    extras = [
+        "platform":  "iOS",
+        "figmaURL":  "https://figma.com/file/onboard?node-id=1:10",
+        "animation": "fade-slide-up"
+    ]
+
+    step RenderHero {
+        let hero = perform DesignSystem.heroIllustration("welcome")?;
+    }
+
+    step TrackView {
+        let event = perform Analytics.track("onboarding_welcome_viewed", userId)?;
+    }
+}
+
+// ─── Permissions ─────────────────────────────────────────────────────────────
+
+@BriefBuilder
+task OnboardingPermissions : TaskBrief uses [Analytics] {
+    goal   = "Request camera, location, and notification permissions with rationale UI"
+    extras = [
+        "platform":    "iOS",
+        "permissions": "camera,location,notifications",
+        "figmaURL":    "https://figma.com/file/onboard?node-id=2:10"
+    ]
+
+    step ShowRationale {
+        let copy = perform Analytics.copyFor("permissions_rationale")?;
+    }
+
+    step RequestPermissions {
+        let granted = perform Analytics.requestPermissions(permissionList)?;
+    }
+
+    step TrackResult {
+        let event = perform Analytics.track("onboarding_permissions_done", granted)?;
+    }
+}
+
+// ─── Profile setup ───────────────────────────────────────────────────────────
+
+@BriefBuilder
+task OnboardingProfile : TaskBrief uses [Auth, DesignSystem, Analytics] {
+    goal   = "Collect display name and avatar during onboarding"
+    extras = [
+        "platform": "iOS",
+        "figmaURL": "https://figma.com/file/onboard?node-id=3:10"
+    ]
+
+    step RenderForm {
+        let form = perform DesignSystem.textInput("display_name", placeholder)?;
+    }
+
+    step UploadAvatar {
+        let avatar = perform DesignSystem.avatarPicker(userId)?;
+    }
+
+    step SaveProfile {
+        let saved = perform Auth.updateProfile(displayName, avatar)?;
+    }
+
+    step Complete {
+        let event = perform Analytics.track("onboarding_complete", userId)?;
+    }
+}

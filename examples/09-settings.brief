@@ -1,0 +1,81 @@
+// 09-settings.brief — App settings screen with persistence.
+//
+// Demonstrates: KMP cross-platform task, DataStore/SharedPreferences pattern,
+// and multiple independent tasks in a settings module.
+//
+// Run with: brief check 09-settings.brief
+
+import skill "DataStore"
+import skill "DesignSystem"
+import skill "Analytics"
+
+// ─── Load settings ───────────────────────────────────────────────────────────
+
+@BriefBuilder
+task LoadSettings : TaskBrief uses [DataStore, DesignSystem] {
+    goal   = "Load user preferences from local storage and render the settings screen"
+    extras = [
+        "platform": "KMP",
+        "figmaURL": "https://figma.com/file/settings?node-id=1:1"
+    ]
+
+    step FetchPreferences {
+        let prefs = perform DataStore.load("user.preferences")?;
+    }
+
+    step RenderScreen {
+        let screen = perform DesignSystem.settingsScreen(prefs)?;
+    }
+}
+
+// ─── Update theme ─────────────────────────────────────────────────────────────
+
+@BriefBuilder
+task UpdateTheme : TaskBrief uses [DataStore, Analytics] {
+    goal   = "Persist the user's chosen colour theme (light / dark / system)"
+    extras = [
+        "platform":      "KMP",
+        "defaultTheme":  "system",
+        "allowedValues": "light,dark,system"
+    ]
+
+    step ValidateTheme {
+        let valid = perform DataStore.validate("theme", newTheme)?;
+    }
+
+    step Persist {
+        let saved = perform DataStore.save("user.theme", valid)?;
+    }
+
+    step Track {
+        let event = perform Analytics.track("theme_changed", valid)?;
+    }
+}
+
+// ─── Delete account ───────────────────────────────────────────────────────────
+
+@BriefBuilder
+task DeleteAccount : TaskBrief uses [DataStore, Analytics] {
+    goal   = "Permanently delete user account and wipe all local data (GDPR)"
+    extras = [
+        "platform":     "KMP",
+        "confirmSteps": "2",
+        "gdprArticle":  "17"
+    ]
+
+    step ConfirmIntent {
+        let confirmed = perform Analytics.confirmDialog("delete_account")?;
+    }
+
+    step WipeRemote {
+        let deleted = perform Analytics.deleteAccount(userId)?;
+    }
+
+    step WipeLocal {
+        let cleared = perform DataStore.wipe(userId)?;
+    }
+
+    step TrackDeletion {
+        let event = perform Analytics.track("account_deleted", userId)?;
+    }
+}

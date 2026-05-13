@@ -1,0 +1,75 @@
+// 06-auth-login.brief — Authentication flow: login, token refresh, logout.
+//
+// Demonstrates: multiple tasks in one file, error propagation (?),
+// multi-step flows, and auth-specific extras.
+//
+// Run with: brief check 06-auth-login.brief
+//           brief run   06-auth-login.brief
+
+import skill "Auth"
+import skill "Keychain"
+
+// ─── Login ──────────────────────────────────────────────────────────────────
+
+@BriefBuilder
+task LoginTask : TaskBrief uses [Auth, Keychain] {
+    goal   = "Authenticate the user with email and password, store JWT in Keychain"
+    extras = [
+        "platform":  "iOS",
+        "authType":  "JWT",
+        "tokenTTL":  "3600"
+    ]
+
+    step ValidateInput {
+        let email    = perform Auth.validateEmail(credentials)?;
+        let password = perform Auth.validatePassword(credentials)?;
+    }
+
+    step Authenticate {
+        let token = perform Auth.login(email, password)?;
+    }
+
+    step StoreToken {
+        let saved = perform Keychain.store(token, "auth.token")?;
+    }
+}
+
+// ─── Token refresh ──────────────────────────────────────────────────────────
+
+@BriefBuilder
+task RefreshTokenTask : TaskBrief uses [Auth, Keychain] {
+    goal   = "Silently refresh the JWT before it expires"
+    extras = [
+        "platform":    "iOS",
+        "triggerAt":   "token.expiry - 60s",
+        "retryPolicy": "exponential"
+    ]
+
+    step LoadToken {
+        let expired = perform Keychain.load("auth.token")?;
+    }
+
+    step Refresh {
+        let fresh = perform Auth.refresh(expired)?;
+    }
+
+    step StoreRefreshed {
+        let saved = perform Keychain.store(fresh, "auth.token")?;
+    }
+}
+
+// ─── Logout ─────────────────────────────────────────────────────────────────
+
+@BriefBuilder
+task LogoutTask : TaskBrief uses [Auth, Keychain] {
+    goal   = "Revoke the server-side token and wipe local credentials"
+    extras = ["platform": "iOS"]
+
+    step RevokeRemote {
+        let revoked = perform Auth.logout(token)?;
+    }
+
+    step ClearLocal {
+        let cleared = perform Keychain.delete("auth.token")?;
+    }
+}

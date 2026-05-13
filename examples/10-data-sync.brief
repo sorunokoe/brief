@@ -1,0 +1,80 @@
+// 10-data-sync.brief — Offline-first data synchronisation.
+//
+// Demonstrates: background task pattern, conflict resolution,
+// and retry/idempotency extras.
+//
+// Run with: brief check 10-data-sync.brief
+
+import skill "GraphQL"
+import skill "LocalDB"
+import skill "Analytics"
+
+sealed type SyncStatus = Idle | Syncing | Conflict | Failed(String) | Done
+
+struct SyncResult {
+    uploaded:   String
+    downloaded: String
+    conflicts:  String
+    timestamp:  @nonEmpty String
+}
+
+// ─── Incremental sync ────────────────────────────────────────────────────────
+
+@BriefBuilder
+task SyncUserData : TaskBrief uses [GraphQL, LocalDB, Analytics] {
+    goal   = "Push local changes to server and pull remote changes; resolve conflicts"
+    extras = [
+        "platform":       "KMP",
+        "syncStrategy":   "last-write-wins",
+        "retryPolicy":    "exponential",
+        "maxRetries":     "5",
+        "conflictPolicy": "server-wins"
+    ]
+
+    step ReadLocalChanges {
+        let pending = perform LocalDB.pendingChanges(since)?;
+    }
+
+    step UploadChanges {
+        let uploaded = perform GraphQL.mutation(SyncMutation, pending)?;
+    }
+
+    step FetchRemote {
+        let remote = perform GraphQL.query(SyncQuery, lastSyncedAt)?;
+    }
+
+    step MergeAndStore {
+        let merged = perform LocalDB.merge(remote, conflictPolicy)?;
+    }
+
+    step UpdateCursor {
+        let cursor = perform LocalDB.save("sync.cursor", merged)?;
+    }
+
+    step TrackSync {
+        let event = perform Analytics.track("sync_complete", merged)?;
+    }
+}
+
+// ─── Force full re-sync ──────────────────────────────────────────────────────
+
+@BriefBuilder
+task ForceFullSync : TaskBrief uses [GraphQL, LocalDB] {
+    goal   = "Nuke local cache and re-download all data from the server"
+    extras = [
+        "platform":  "KMP",
+        "dangerous": "true"
+    ]
+
+    step DropLocalCache {
+        let dropped = perform LocalDB.wipe("user_data")?;
+    }
+
+    step FetchAll {
+        let all = perform GraphQL.query(FullDataQuery)?;
+    }
+
+    step Seed {
+        let seeded = perform LocalDB.bulkInsert(all)?;
+    }
+}

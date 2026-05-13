@@ -1,0 +1,58 @@
+// 07-notifications.brief — Push notification registration and handling.
+//
+// Demonstrates: platform-specific extras, permission-request pattern,
+// and multi-platform (iOS + Android) targeting.
+//
+// Run with: brief check 07-notifications.brief
+
+import skill "PushKit"
+import skill "Analytics"
+
+sealed type NotificationPermission = Granted | Denied | NotDetermined
+
+@BriefBuilder
+task RegisterPushNotifications : TaskBrief uses [PushKit, Analytics] {
+    goal   = "Request push permission, register device token with backend"
+    extras = [
+        "platform":         "iOS",
+        "notificationType": "APNs",
+        "categories":       "marketing,transactional,alerts"
+    ]
+
+    step RequestPermission {
+        let permission = perform PushKit.requestPermission(NotificationPermission)?;
+    }
+
+    step RegisterDevice {
+        let token = perform PushKit.registerDeviceToken(permission)?;
+    }
+
+    step UploadToken {
+        let registered = perform PushKit.uploadToken(token, deviceId)?;
+    }
+
+    step TrackEvent {
+        let tracked = perform Analytics.track("push_registered", token)?;
+    }
+}
+
+@BriefBuilder
+task HandleIncomingNotification : TaskBrief uses [Analytics] {
+    goal   = "Process a received push notification and route to the correct screen"
+    extras = [
+        "platform":   "iOS",
+        "triggerType": "background,foreground"
+    ]
+
+    step ParsePayload {
+        let payload = perform Analytics.parseNotification(notification)?;
+    }
+
+    step Route {
+        let screen = perform Analytics.resolveDeeplink(payload)?;
+    }
+
+    step TrackOpen {
+        let event = perform Analytics.track("notification_opened", payload)?;
+    }
+}
