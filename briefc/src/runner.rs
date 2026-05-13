@@ -4,6 +4,7 @@
 /// In Phase 1 this will be complemented by an LLVM backend for `brief build`.
 
 use std::path::{Path, PathBuf};
+use std::collections::HashMap;
 
 use colored::Colorize;
 
@@ -12,6 +13,7 @@ use crate::checker::{self, CheckContext};
 use crate::errors::{print_diagnostics, BriefError};
 use crate::lexer::lex;
 use crate::parser::parse;
+use crate::skillgen;
 use crate::typeck;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -67,8 +69,9 @@ pub fn run_file(path: &Path, mode: RunMode) -> bool {
     let mut diags: Vec<BriefError> = parse_errors;
     diags.extend(checker::check(&program, &ctx));
 
-    // ── 4b. Type checking ─────────────────────────────────────────────────
-    diags.extend(typeck::type_check(&program));
+    // ── 4b. Type checking (with skill interfaces for cross-file E202) ──────
+    let skill_ifaces = load_skill_interfaces(&program, file_dir, &cwd);
+    diags.extend(typeck::type_check_with_skills(&program, skill_ifaces));
 
     // ── 5. Print header ───────────────────────────────────────────────────
     // Show type declarations (sealed types, structs, effects, protocols)
@@ -133,8 +136,40 @@ pub fn run_file(path: &Path, mode: RunMode) -> bool {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Load `.briefskill` interface files for all `import skill "X"` declarations.
+/// Resolution order: `<file_dir>/.claude/skills/X/X.briefskill` → `<cwd>/.claude/skills/X/X.briefskill`
+fn load_skill_interfaces(
+    program:  &Program,
+    file_dir: &Path,
+    cwd:      &Path,
+) -> HashMap<String, skillgen::SkillInterface> {
+    let mut ifaces = HashMap::new();
+
+    for import in &program.imports {
+        let name = &import.name;
+        let rel_path = format!(".claude/skills/{name}/{name}.briefskill");
+
+        let candidate_paths = [
+            file_dir.join(&rel_path),
+            cwd.join(&rel_path),
+        ];
+
+        for path in &candidate_paths {
+            if path.exists() {
+                if let Ok(content) = std::fs::read_to_string(path) {
+                    if let Some(iface) = skillgen::parse_briefskill(&content) {
+                        ifaces.insert(name.clone(), iface);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    ifaces
+}
+
 fn print_task_summary(task: &Task) {
-    println!();
     // Show decorators
     for d in &task.decorators {
         println!("  {} @{}", "✦".blue(), d.name.cyan());

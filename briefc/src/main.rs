@@ -45,6 +45,11 @@ enum Commands {
     Skillgen {
         /// Path to the skill directory (must contain README.md)
         skill_path: PathBuf,
+
+        /// Check if the existing .briefskill is up-to-date (CI mode).
+        /// Exits 0 if fresh, 1 if stale or missing.
+        #[arg(long)]
+        check: bool,
     },
 
     /// Generate a .brief file from a natural language description (LLM in v0.1)
@@ -82,9 +87,13 @@ fn main() {
             eprintln!("  Watch: https://github.com/yourusername/brief/releases");
         }
 
-        Commands::Skillgen { skill_path } => {
+        Commands::Skillgen { skill_path, check } => {
             print_brief_banner();
-            skillgen::skillgen(&skill_path);
+            if check {
+                skillgen::skillgen_check(&skill_path);
+            } else {
+                skillgen::skillgen(&skill_path);
+            }
         }
 
         Commands::Gen { description, output } => {

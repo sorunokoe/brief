@@ -1,0 +1,13 @@
+// briefs/effects/Log.brief — Structured logging effect
+//
+// The Log effect separates logging concerns from task logic.
+// Each log entry has a level (Debug/Info/Warn/Error) and structured context.
+
+effect Log {
+    fn debug(message: String) -> Unit
+    fn info(message: String) -> Unit
+    fn warn(message: String) -> Unit
+    fn error(message: String) -> Unit
+}
+
+sealed type LogLevel = Debug | Info | Warn | Error

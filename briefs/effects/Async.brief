@@ -1,0 +1,18 @@
+// briefs/effects/Async.brief — Asynchronous execution effect
+//
+// The Async effect represents non-blocking computation.
+// `await` suspends the current step until completion.
+
+effect Async {
+    fn sleep(millis: Int) -> Unit
+    fn timeout(millis: Int) -> Result<Unit, TimeoutError>
+}
+
+struct AsyncError {
+    message: @nonEmpty String
+}
+
+struct TimeoutError {
+    message: @nonEmpty String
+    timeoutMs: Int
+}

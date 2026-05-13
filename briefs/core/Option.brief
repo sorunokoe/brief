@@ -1,0 +1,9 @@
+// briefs/core/Option.brief — The Option type
+//
+// Option<T> represents a value that may or may not be present:
+//   - Some(T) — a value is present
+//   - None    — no value
+//
+// Shorthand: `T?` is syntactic sugar for `Option<T>`.
+
+sealed type Option<T> = Some(T) | None

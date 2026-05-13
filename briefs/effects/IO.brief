@@ -1,0 +1,14 @@
+// briefs/effects/IO.brief — Standard I/O effect
+//
+// The IO effect provides console input and output. It separates
+// pure data flow from side-effecting I/O, making tasks testable.
+
+effect IO {
+    fn print(message: String) -> Unit
+    fn println(message: String) -> Unit
+    fn readLine(prompt: String) -> Result<String, IOError>
+}
+
+struct IOError {
+    message: @nonEmpty String
+}

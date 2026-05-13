@@ -1,54 +1,52 @@
 /// `brief skillgen` — generates a `.briefskill` typed interface from a skill directory.
 ///
 /// Reads `<skill-dir>/README.md` and emits `<skill-dir>/<SkillName>.briefskill`.
-/// Supports two paths:
+/// Supports two extraction paths:
 ///   - Offline: structured markdown parsing (looks for "## Interface", "## Functions", etc.)
-///   - Online:  LLM-enhanced (requires BRIEF_LLM_API_KEY env var — coming in v0.1)
+///   - Online:  LLM-enhanced (set BRIEF_LLM_API_KEY to enable)
+///
+/// Staleness detection: SHA-256 of README.md is embedded in the header.
+/// `brief skillgen --check` compares current README hash against the stored hash.
 
 use std::path::Path;
 use colored::Colorize;
+use sha2::{Sha256, Digest};
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Public API
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Generate (or regenerate) a `.briefskill` interface from a skill directory.
 pub fn skillgen(skill_path: &Path) {
-    let skill_name = skill_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("UnknownSkill");
-
-    let readme_path = skill_path.join("README.md");
-    if !readme_path.exists() {
-        eprintln!(
-            "{}: no README.md found in {}",
-            "error".red().bold(),
-            skill_path.display()
-        );
-        eprintln!("  {} Create a README.md that describes the skill's capabilities.", "hint:".cyan().bold());
-        std::process::exit(1);
-    }
-
-    let readme = match std::fs::read_to_string(&readme_path) {
-        Ok(s)  => s,
-        Err(e) => {
-            eprintln!("{}: cannot read {}: {}", "error".red().bold(), readme_path.display(), e);
-            std::process::exit(1);
-        }
-    };
+    let skill_name = skill_name(skill_path);
+    let readme_path = require_readme(skill_path);
+    let readme = read_readme(&readme_path);
 
     println!("{} Generating interface for skill '{}'...", "●".blue().bold(), skill_name.bold());
     println!("  {} reading {}", "→".dimmed(), readme_path.display());
 
-    // Compute a simple checksum of the README for staleness detection.
-    let checksum = simple_checksum(readme.as_bytes());
+    let sha = sha256_hex(readme.as_bytes());
 
-    // Extract interface (offline structured path).
-    let functions = extract_functions_from_markdown(&readme, skill_name);
+    // Try offline extraction first; fall back to LLM if empty and key is set.
+    let functions = extract_offline(&readme, &skill_name);
+    let (functions, used_llm) = if functions.is_empty() {
+        match try_llm_extraction(&readme, &skill_name) {
+            Some(fns) => (fns, true),
+            None      => (functions, false),
+        }
+    } else {
+        (functions, false)
+    };
 
-    // Emit .briefskill file.
+    let content = render_briefskill(&skill_name, &functions, &sha, &readme_path, used_llm);
     let output_path = skill_path.join(format!("{skill_name}.briefskill"));
-    let content = render_briefskill(skill_name, &functions, checksum, &readme_path);
 
     match std::fs::write(&output_path, &content) {
-        Ok(_)  => {
+        Ok(_) => {
             println!("  {} {}", "✅".green(), output_path.display().to_string().green());
+            if used_llm {
+                println!("  {} interface extracted via LLM", "✦".cyan().bold());
+            }
             println!();
             println!("{}", "Generated interface:".bold());
             println!("{}", content.dimmed());
@@ -62,42 +60,150 @@ pub fn skillgen(skill_path: &Path) {
     if functions.is_empty() {
         println!();
         println!("{} No typed functions extracted — the interface is empty.", "⚠".yellow().bold());
-        println!("  {} Add an `## Interface` section to your README.md with function signatures.", "hint:".cyan().bold());
-        println!("  {} For richer interfaces, set BRIEF_LLM_API_KEY to enable LLM extraction (coming in v0.1).", "hint:".cyan().bold());
+        println!("  {} Add an `## Interface` section to README.md with function signatures.", "hint:".cyan().bold());
+        println!("  {} Set BRIEF_LLM_API_KEY to enable AI-assisted extraction.", "hint:".cyan().bold());
+    }
+}
+
+/// Check whether the existing `.briefskill` is up-to-date with the README.
+/// Exits 0 if fresh (or no `.briefskill` exists and README also has no functions).
+/// Exits 1 if stale. CI-friendly.
+pub fn skillgen_check(skill_path: &Path) {
+    let skill_name = skill_name(skill_path);
+    let readme_path = require_readme(skill_path);
+    let readme = read_readme(&readme_path);
+    let current_sha = sha256_hex(readme.as_bytes());
+
+    let skill_file = skill_path.join(format!("{skill_name}.briefskill"));
+
+    if !skill_file.exists() {
+        eprintln!(
+            "{}: {}.briefskill not found",
+            "stale".red().bold(), skill_name
+        );
+        eprintln!("  {} run: brief skillgen {}", "fix:".cyan().bold(), skill_path.display());
+        std::process::exit(1);
+    }
+
+    let existing = match std::fs::read_to_string(&skill_file) {
+        Ok(s)  => s,
+        Err(e) => {
+            eprintln!("{}: cannot read {}: {}", "error".red().bold(), skill_file.display(), e);
+            std::process::exit(1);
+        }
+    };
+
+    let stored_sha = extract_stored_sha(&existing);
+
+    match stored_sha {
+        Some(sha) if sha == current_sha => {
+            println!("{} {} is up-to-date (sha256: {}…)", "✅".green(), skill_file.display(), &sha[..12]);
+            std::process::exit(0);
+        }
+        Some(sha) => {
+            eprintln!("{}: {}.briefskill is stale", "stale".red().bold(), skill_name);
+            eprintln!("  stored sha256: {}…", &sha[..12]);
+            eprintln!("  current sha256: {}…", &current_sha[..12]);
+            eprintln!("  {} run: brief skillgen {}", "fix:".cyan().bold(), skill_path.display());
+            std::process::exit(1);
+        }
+        None => {
+            // Legacy file without a sha256 header — treat as stale.
+            eprintln!("{}: {}.briefskill has no sha256 header (generated by old brief skillgen)", "stale".red().bold(), skill_name);
+            eprintln!("  {} run: brief skillgen {}", "fix:".cyan().bold(), skill_path.display());
+            std::process::exit(1);
+        }
     }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Structured markdown extraction (offline path)
+// .briefskill parsing (for cross-file type checking)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// A function signature extracted from the skill README.
+/// A parsed skill interface: name + list of (fn_name, arg_count).
+#[derive(Debug, Clone)]
+pub struct SkillInterface {
+    #[allow(dead_code)]
+    pub name:  String,
+    pub funcs: Vec<SkillFn>,
+}
+
+/// A single function entry from a `.briefskill` file.
+#[derive(Debug, Clone)]
+pub struct SkillFn {
+    pub name:      String,
+    pub arg_count: usize,
+}
+
+/// Parse a `.briefskill` file into a `SkillInterface`.
+/// Returns `None` if the file cannot be parsed at all.
+pub fn parse_briefskill(content: &str) -> Option<SkillInterface> {
+    let mut name: Option<String> = None;
+    let mut funcs = Vec::new();
+    let mut in_interface = false;
+
+    for line in content.lines() {
+        let t = line.trim();
+
+        // Skip comment lines.
+        if t.starts_with("//") { continue; }
+
+        // `interface SkillName {`
+        if t.starts_with("interface ") && t.ends_with('{') {
+            let n = t["interface ".len()..t.len() - 1].trim().to_string();
+            name = Some(n);
+            in_interface = true;
+            continue;
+        }
+
+        if t == "}" && in_interface {
+            in_interface = false;
+            continue;
+        }
+
+        if in_interface {
+            if let Some(sig) = parse_fn_sig(t) {
+                funcs.push(SkillFn { name: sig.name, arg_count: sig.params.len() });
+            }
+        }
+    }
+
+    name.map(|n| SkillInterface { name: n, funcs })
+}
+
+/// Extract the sha256 value embedded in a `.briefskill` header comment.
+/// Looks for `// Source: ... (sha256: <hex>)`.
+pub fn extract_stored_sha(content: &str) -> Option<String> {
+    for line in content.lines() {
+        if let Some(pos) = line.find("(sha256: ") {
+            let rest = &line[pos + "(sha256: ".len()..];
+            let sha = rest.trim_end_matches(')').trim().to_string();
+            if sha.len() == 64 { return Some(sha); }
+        }
+    }
+    None
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Offline markdown extraction
+// ─────────────────────────────────────────────────────────────────────────────
+
 #[derive(Debug)]
 struct FnSig {
     name:        String,
-    params:      Vec<(String, String)>,  // (param_name, type)
+    params:      Vec<(String, String)>,
     return_type: String,
     #[allow(dead_code)]
     doc:         Option<String>,
 }
 
-/// Look for sections like:
-///
-/// ```markdown
-/// ## Interface
-/// - `fn query(op: Operation) -> Result<T, QueryError>`
-/// - `fn components(url: FigmaURL) -> [Component]`
-/// ```
-///
-/// Also parses simple `### fn_name` sub-sections.
-fn extract_functions_from_markdown(markdown: &str, _skill_name: &str) -> Vec<FnSig> {
+fn extract_offline(markdown: &str, _skill_name: &str) -> Vec<FnSig> {
     let mut fns = Vec::new();
     let mut in_interface = false;
 
     for line in markdown.lines() {
         let trimmed = line.trim();
 
-        // Detect interface section headers.
         if trimmed.starts_with("## Interface")
             || trimmed.starts_with("## Functions")
             || trimmed.starts_with("## API")
@@ -107,19 +213,14 @@ fn extract_functions_from_markdown(markdown: &str, _skill_name: &str) -> Vec<FnS
             continue;
         }
 
-        // Leave the interface section on a new `##` header.
         if trimmed.starts_with("## ") && in_interface {
             in_interface = false;
         }
 
         if !in_interface { continue; }
 
-        // Match lines like:  - `fn name(param: Type) -> ReturnType`
-        // or code-fence lines: fn name(param: Type) -> ReturnType
         let sig_line = if trimmed.starts_with("- `fn ") || trimmed.starts_with("* `fn ") {
-            // strip leading `- ` and backticks
-            trimmed.trim_start_matches("- ").trim_start_matches("* ")
-                   .trim_matches('`')
+            trimmed.trim_start_matches("- ").trim_start_matches("* ").trim_matches('`')
         } else if trimmed.starts_with("fn ") {
             trimmed
         } else {
@@ -134,19 +235,24 @@ fn extract_functions_from_markdown(markdown: &str, _skill_name: &str) -> Vec<FnS
     fns
 }
 
-/// Parse `fn name(p1: T1, p2: T2) -> ReturnType`
 fn parse_fn_sig(sig: &str) -> Option<FnSig> {
-    // Strip `fn `
     let rest = sig.strip_prefix("fn ")?;
+    // Strip generic type params like `<T>` after fn name.
+    let rest = if let Some(lt) = rest.find('<') {
+        if let Some(gt) = rest.find(">(") {
+            let name_part = &rest[..lt];
+            let after_generics = &rest[gt + 1..];
+            // Reconstruct without the generic params.
+            &format!("{name_part}{after_generics}").leak()[..]
+        } else { rest }
+    } else { rest };
 
-    // Split at `(`
     let (name, rest) = rest.split_once('(')?;
     let name = name.trim().to_string();
-
-    // Split at `)` to get params and return
     let (params_str, rest) = rest.split_once(')')?;
+
     let return_type = rest.trim()
-        .strip_prefix("->").unwrap_or("Void")
+        .strip_prefix("->").unwrap_or("Unit")
         .trim()
         .to_string();
 
@@ -165,20 +271,95 @@ fn parse_fn_sig(sig: &str) -> Option<FnSig> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// LLM extraction (online path)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// If `BRIEF_LLM_API_KEY` is set, call the LLM to extract typed function signatures.
+/// Returns `None` if no key is configured or the call fails.
+fn try_llm_extraction(readme: &str, skill_name: &str) -> Option<Vec<FnSig>> {
+    let api_key = std::env::var("BRIEF_LLM_API_KEY").ok()?;
+    let api_url = std::env::var("BRIEF_LLM_URL")
+        .unwrap_or_else(|_| "https://api.anthropic.com/v1/messages".to_string());
+
+    let prompt = format!(
+        "You are a type extractor for the Brief programming language.\n\
+         Given this skill README, extract all callable functions as Brief interface declarations.\n\
+         Output ONLY a JSON array of function signatures, like:\n\
+         [{{\"name\":\"query\",\"params\":[\"op: Operation\"],\"return\":\"Result<T, QueryError>\"}}]\n\
+         No markdown, no explanation — raw JSON only.\n\n\
+         Skill name: {skill_name}\n\n\
+         README:\n{readme}"
+    );
+
+    println!("  {} calling LLM for interface extraction...", "✦".cyan().bold());
+
+    let body = serde_json::json!({
+        "model": "claude-3-5-haiku-20241022",
+        "max_tokens": 1024,
+        "messages": [{"role": "user", "content": prompt}]
+    });
+
+    let response = ureq::post(&api_url)
+        .set("x-api-key", &api_key)
+        .set("anthropic-version", "2023-06-01")
+        .set("content-type", "application/json")
+        .send_json(&body);
+
+    match response {
+        Ok(resp) => {
+            let json: serde_json::Value = resp.into_json().ok()?;
+            let text = json["content"][0]["text"].as_str()?;
+            parse_llm_json(text)
+        }
+        Err(e) => {
+            eprintln!("  {} LLM call failed: {}", "⚠".yellow().bold(), e);
+            eprintln!("  {} falling back to offline extraction", "→".dimmed());
+            None
+        }
+    }
+}
+
+/// Parse the JSON array returned by the LLM into FnSig structs.
+fn parse_llm_json(text: &str) -> Option<Vec<FnSig>> {
+    let arr: serde_json::Value = serde_json::from_str(text.trim()).ok()?;
+    let arr = arr.as_array()?;
+
+    let mut fns = Vec::new();
+    for item in arr {
+        let name = item["name"].as_str()?.to_string();
+        let return_type = item["return"].as_str().unwrap_or("Unit").to_string();
+        let params = item["params"].as_array()
+            .map(|ps| ps.iter().filter_map(|p| {
+                let s = p.as_str()?;
+                if let Some((n, t)) = s.split_once(':') {
+                    Some((n.trim().to_string(), t.trim().to_string()))
+                } else {
+                    Some((s.to_string(), "Any".to_string()))
+                }
+            }).collect::<Vec<_>>())
+            .unwrap_or_default();
+
+        fns.push(FnSig { name, params, return_type, doc: None });
+    }
+
+    if fns.is_empty() { None } else { Some(fns) }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // .briefskill rendering
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn render_briefskill(skill_name: &str, fns: &[FnSig], checksum: u32, source_path: &Path) -> String {
+fn render_briefskill(skill_name: &str, fns: &[FnSig], sha: &str, source_path: &Path, used_llm: bool) -> String {
+    let extractor = if used_llm { "brief skillgen (LLM)" } else { "brief skillgen (offline)" };
     let mut out = String::new();
 
     out.push_str(&format!(
-        "// Auto-generated by `brief skillgen v0.0.1`\n\
-         // Source: {} (crc32: {:08x})\n\
-         // Regenerate: brief skillgen {}\n\
+        "// Auto-generated by `{extractor} v0.1.0`\n\
+         // Source: {source} (sha256: {sha})\n\
+         // Regenerate: brief skillgen {dir}\n\
          // Do not edit manually.\n\n",
-        source_path.display(),
-        checksum,
-        source_path.parent().map(|p| p.display().to_string()).unwrap_or_default()
+        source = source_path.display(),
+        dir    = source_path.parent().map(|p| p.display().to_string()).unwrap_or_default(),
     ));
 
     out.push_str(&format!("interface {skill_name} {{\n"));
@@ -186,7 +367,7 @@ fn render_briefskill(skill_name: &str, fns: &[FnSig], checksum: u32, source_path
     if fns.is_empty() {
         out.push_str("    // No typed functions extracted.\n");
         out.push_str("    // Add an `## Interface` section to README.md with function signatures,\n");
-        out.push_str("    // or set BRIEF_LLM_API_KEY for AI-assisted extraction (coming in v0.1).\n");
+        out.push_str("    // or set BRIEF_LLM_API_KEY for AI-assisted extraction.\n");
     } else {
         for f in fns {
             let params = f.params.iter()
@@ -202,15 +383,120 @@ fn render_briefskill(skill_name: &str, fns: &[FnSig], checksum: u32, source_path
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
 
-/// A deterministic CRC32-like checksum (simple, dependency-free).
-fn simple_checksum(data: &[u8]) -> u32 {
-    let mut crc: u32 = 0xFFFF_FFFF;
-    for &byte in data {
-        crc ^= u32::from(byte);
-        for _ in 0..8 {
-            if crc & 1 != 0 { crc = (crc >> 1) ^ 0xEDB8_8320; } else { crc >>= 1; }
+fn skill_name(skill_path: &Path) -> String {
+    skill_path.file_name().and_then(|n| n.to_str()).unwrap_or("UnknownSkill").to_string()
+}
+
+fn require_readme(skill_path: &Path) -> std::path::PathBuf {
+    let path = skill_path.join("README.md");
+    if !path.exists() {
+        eprintln!("{}: no README.md found in {}", "error".red().bold(), skill_path.display());
+        eprintln!("  {} Create a README.md describing the skill's capabilities.", "hint:".cyan().bold());
+        std::process::exit(1);
+    }
+    path
+}
+
+fn read_readme(path: &Path) -> String {
+    match std::fs::read_to_string(path) {
+        Ok(s)  => s,
+        Err(e) => {
+            eprintln!("{}: cannot read {}: {}", "error".red().bold(), path.display(), e);
+            std::process::exit(1);
         }
     }
-    !crc
+}
+
+fn sha256_hex(data: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    hex::encode(hasher.finalize())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sha256_is_deterministic() {
+        let h1 = sha256_hex(b"hello");
+        let h2 = sha256_hex(b"hello");
+        assert_eq!(h1, h2);
+        assert_eq!(h1.len(), 64);
+    }
+
+    #[test]
+    fn test_extract_stored_sha() {
+        let content = "// Source: README.md (sha256: abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890)\n";
+        let sha = extract_stored_sha(content);
+        assert_eq!(sha, Some("abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890".to_string()));
+    }
+
+    #[test]
+    fn test_extract_stored_sha_none_for_old_format() {
+        let content = "// Source: README.md (crc32: deadbeef)\n";
+        assert_eq!(extract_stored_sha(content), None);
+    }
+
+    #[test]
+    fn test_parse_briefskill_basic() {
+        let content = r#"
+// Auto-generated
+// Source: README.md (sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)
+
+interface GraphQL {
+    fn query(op: Operation) -> Result<T, QueryError>
+    fn mutate(op: Operation) -> Result<T, QueryError>
+}
+"#;
+        let iface = parse_briefskill(content).expect("should parse");
+        assert_eq!(iface.name, "GraphQL");
+        assert_eq!(iface.funcs.len(), 2);
+        assert_eq!(iface.funcs[0].name, "query");
+        assert_eq!(iface.funcs[0].arg_count, 1);
+        assert_eq!(iface.funcs[1].name, "mutate");
+    }
+
+    #[test]
+    fn test_parse_briefskill_empty_interface() {
+        let content = "interface Stub {\n    // No functions\n}\n";
+        let iface = parse_briefskill(content).expect("should parse");
+        assert_eq!(iface.name, "Stub");
+        assert_eq!(iface.funcs.len(), 0);
+    }
+
+    #[test]
+    fn test_offline_extraction() {
+        let md = r#"
+# MySkill
+
+## Interface
+
+- `fn doThing(input: String) -> Result<Unit, MyError>`
+- `fn getStatus() -> Status`
+"#;
+        let fns = extract_offline(md, "MySkill");
+        assert_eq!(fns.len(), 2);
+        assert_eq!(fns[0].name, "doThing");
+        assert_eq!(fns[0].params.len(), 1);
+        assert_eq!(fns[1].name, "getStatus");
+        assert_eq!(fns[1].params.len(), 0);
+    }
+
+    #[test]
+    fn test_render_briefskill_includes_sha() {
+        let sha = "a".repeat(64);
+        let fns: Vec<FnSig> = vec![];
+        let path = std::path::Path::new("README.md");
+        let rendered = render_briefskill("TestSkill", &fns, &sha, path, false);
+        assert!(rendered.contains(&format!("sha256: {sha}")));
+        assert!(rendered.contains("interface TestSkill {"));
+    }
 }

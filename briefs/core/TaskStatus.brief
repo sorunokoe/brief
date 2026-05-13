@@ -1,0 +1,8 @@
+// briefs/core/TaskStatus.brief — Task execution status
+//
+// Represents the runtime status of a task brief.
+
+sealed type TaskStatus = Pending | Running | Done(String) | Failed(String)
+
+// Done(String)   — task completed; String is a summary message
+// Failed(String) — task failed; String is the error description

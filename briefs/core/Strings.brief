@@ -1,0 +1,26 @@
+// briefs/core/Strings.brief — String refinement types
+//
+// These structs wrap String with refinement attributes that the compiler
+// validates at construction time.
+
+struct NonEmptyString {
+    value: @nonEmpty String
+}
+
+struct URL {
+    value: @url String
+}
+
+struct Email {
+    value: @matches("[^@]+@[^@]+\\.[^@]+") String
+}
+
+struct FigmaURL {
+    value: @url String
+}
+
+// Usage:
+//   struct MyData {
+//       figma: FigmaURL
+//       title: NonEmptyString
+//   }

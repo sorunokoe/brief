@@ -1,0 +1,9 @@
+// briefs/core/Platform.brief — Target platform type
+//
+// Brief supports multi-platform development workflows. Platform identifies
+// which platform a task targets.
+
+sealed type Platform = iOS | Android | Web | KMP | All
+
+// KMP = Kotlin Multiplatform (shared logic targeting iOS + Android)
+// All = platform-agnostic (e.g., domain models, mappers)

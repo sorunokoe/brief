@@ -1,0 +1,9 @@
+// briefs/core/Result.brief — The Result type
+//
+// Result<T, E> represents a value that is either:
+//   - Ok(T)  — a successful value of type T
+//   - Err(E) — a failure value of type E
+//
+// The `?` operator on a `perform` call propagates Err automatically.
+
+sealed type Result<T, E> = Ok(T) | Err(E)

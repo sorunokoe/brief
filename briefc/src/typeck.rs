@@ -3,7 +3,7 @@
 /// Builds a type environment from declarations (sealed types, structs, protocols,
 /// effects) and validates:
 ///   - E201: type references that point to unknown names
-///   - E202: perform calls with wrong argument count (when effect is declared in file)
+///   - E202: perform calls with wrong argument count (inline and cross-file via .briefskill)
 ///   - E203: struct field attribute constraints (basic regex/format checks)
 ///
 /// This is a structural type checker — not full HM inference. Full HM with
@@ -13,6 +13,7 @@ use std::collections::HashMap;
 
 use crate::ast::*;
 use crate::errors::{BriefError, ErrorCode};
+use crate::skillgen::SkillInterface;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Built-in types (always in scope)
@@ -35,14 +36,20 @@ const BUILTIN_TYPES: &[&str] = &[
 
 /// The type environment built from a Program's declarations.
 pub struct TypeEnv<'a> {
-    sealed_types: HashMap<&'a str, &'a SealedTypeDecl>,
-    structs:      HashMap<&'a str, &'a StructDecl>,
-    protocols:    HashMap<&'a str, &'a ProtocolDecl>,
-    effects:      HashMap<&'a str, &'a EffectDecl>,
+    sealed_types:  HashMap<&'a str, &'a SealedTypeDecl>,
+    structs:       HashMap<&'a str, &'a StructDecl>,
+    protocols:     HashMap<&'a str, &'a ProtocolDecl>,
+    effects:       HashMap<&'a str, &'a EffectDecl>,
+    skill_ifaces:  HashMap<String, SkillInterface>,
 }
 
 impl<'a> TypeEnv<'a> {
+    #[allow(dead_code)]
     pub fn from_program(program: &'a Program) -> Self {
+        Self::from_program_with_skills(program, HashMap::new())
+    }
+
+    pub fn from_program_with_skills(program: &'a Program, skill_ifaces: HashMap<String, SkillInterface>) -> Self {
         let mut sealed_types = HashMap::new();
         let mut structs      = HashMap::new();
         let mut protocols    = HashMap::new();
@@ -53,7 +60,7 @@ impl<'a> TypeEnv<'a> {
         for p in &program.protocols { protocols.insert(p.name.as_str(), p); }
         for e in &program.effects   { effects.insert(e.name.as_str(), e); }
 
-        Self { sealed_types, structs, protocols, effects }
+        Self { sealed_types, structs, protocols, effects, skill_ifaces }
     }
 
     /// Check whether a type name is declared (built-in or user-defined).
@@ -64,7 +71,24 @@ impl<'a> TypeEnv<'a> {
             || self.protocols.contains_key(name)
     }
 
-    /// Look up a function in a named effect (inline declarations only).
+    /// Look up a function in a named effect (inline declarations or skill interfaces).
+    pub fn effect_fn_arg_count(&self, effect_name: &str, fn_name: &str) -> Option<usize> {
+        // 1. Check inline effect declarations first.
+        if let Some(decl) = self.effects.get(effect_name) {
+            if let Some(f) = decl.fns.iter().find(|f| f.name == fn_name) {
+                return Some(f.params.len());
+            }
+        }
+        // 2. Fall back to .briefskill interface.
+        if let Some(iface) = self.skill_ifaces.get(effect_name) {
+            if let Some(f) = iface.funcs.iter().find(|f| f.name == fn_name) {
+                return Some(f.arg_count);
+            }
+        }
+        None
+    }
+
+    /// Look up a function in a named inline effect declaration.
     pub fn effect_fn(&self, effect_name: &str, fn_name: &str) -> Option<&FnSignature> {
         self.effects.get(effect_name)
             .and_then(|e| e.fns.iter().find(|f| f.name == fn_name))
@@ -81,8 +105,13 @@ impl<'a> TypeEnv<'a> {
 // Entry point
 // ─────────────────────────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 pub fn type_check(program: &Program) -> Vec<BriefError> {
-    let env = TypeEnv::from_program(program);
+    type_check_with_skills(program, HashMap::new())
+}
+
+pub fn type_check_with_skills(program: &Program, skill_ifaces: HashMap<String, SkillInterface>) -> Vec<BriefError> {
+    let env = TypeEnv::from_program_with_skills(program, skill_ifaces);
     let mut diags = Vec::new();
 
     // Validate type references in struct field types and attribute types.
@@ -176,23 +205,25 @@ fn check_step_types(step: &Step, env: &TypeEnv<'_>, diags: &mut Vec<BriefError>)
 fn check_expr_types(expr: &Expr, env: &TypeEnv<'_>, diags: &mut Vec<BriefError>) {
     match expr {
         Expr::Perform { skill, func, args, span, .. } => {
-            // If this effect is declared inline, verify arg count.
-            if let Some(sig) = env.effect_fn(skill, func) {
-                let expected = sig.params.len();
-                let got      = args.len();
+            // Check arg count against inline effect or .briefskill interface.
+            if let Some(expected) = env.effect_fn_arg_count(skill, func) {
+                let got = args.len();
                 if expected != got {
+                    // Build a human-readable hint from inline sig if available.
+                    let hint = env.effect_fn(skill, func).map(|sig| format!(
+                        "signature: fn {}({}) -> {}",
+                        sig.name,
+                        sig.params.iter().map(|p| format!("{}: {}", p.name, p.ty.name)).collect::<Vec<_>>().join(", "),
+                        sig.ret.name
+                    )).or_else(|| Some(format!("expected {expected} argument(s)")));
+
                     diags.push(BriefError {
                         code:    ErrorCode::WrongArgCount,
                         message: format!(
                             "{skill}.{func}() expects {expected} argument(s), got {got}"
                         ),
                         span:    *span,
-                        hint:    Some(format!(
-                            "signature: fn {}({}) -> {}",
-                            sig.name,
-                            sig.params.iter().map(|p| format!("{}: {}", p.name, p.ty.name)).collect::<Vec<_>>().join(", "),
-                            sig.ret.name
-                        )),
+                        hint,
                     });
                 }
             }
