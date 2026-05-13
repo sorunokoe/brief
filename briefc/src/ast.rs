@@ -23,12 +23,14 @@ impl Span {
 /// A complete `.brief` source file.
 #[derive(Debug, Clone)]
 pub struct Program {
-    pub imports:   Vec<SkillImport>,
-    pub types:     Vec<SealedTypeDecl>,
-    pub structs:   Vec<StructDecl>,
-    pub protocols: Vec<ProtocolDecl>,
-    pub effects:   Vec<EffectDecl>,
-    pub tasks:     Vec<Task>,
+    pub imports:       Vec<SkillImport>,
+    pub types:         Vec<SealedTypeDecl>,
+    pub type_aliases:  Vec<TypeAliasDecl>,
+    pub effect_groups: Vec<EffectGroupDecl>,
+    pub structs:       Vec<StructDecl>,
+    pub protocols:     Vec<ProtocolDecl>,
+    pub effects:       Vec<EffectDecl>,
+    pub tasks:         Vec<Task>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -63,6 +65,26 @@ pub struct Attribute {
     pub arg:  Option<String>,
     pub span: Span,
 }
+
+/// `type Email = @matches("[^@]+@[^@]+") String`
+/// User-defined refinement type alias — expands at check-time.
+#[derive(Debug, Clone)]
+pub struct TypeAliasDecl {
+    pub name:  String,
+    pub attrs: Vec<Attribute>,
+    pub base:  TypeRef,
+    pub span:  Span,
+}
+
+/// `type AuthEffects = [Auth, Session]`
+/// Named group of effects that can be used in `uses [AuthEffects]`.
+#[derive(Debug, Clone)]
+pub struct EffectGroupDecl {
+    pub name:    String,
+    pub members: Vec<String>,
+    pub span:    Span,
+}
+
 
 /// `sealed type Platform = iOS | Android | Web`
 #[derive(Debug, Clone)]
@@ -129,6 +151,8 @@ pub struct FnSignature {
     pub name:        String,
     pub type_params: Vec<String>,
     pub params:      Vec<Param>,
+    /// Return-type attributes, e.g. `@once` in `-> @once PaymentHandle`.
+    pub ret_attrs:   Vec<Attribute>,
     pub ret:         TypeRef,
     #[allow(dead_code)]
     pub doc:         Option<String>,
@@ -192,8 +216,14 @@ pub struct Step {
 
 #[derive(Debug, Clone)]
 pub enum Stmt {
-    /// `let x = expr;`
-    Let { name: String, value: Expr, span: Span },
+    /// `let x = expr;` or `@once let x = expr;`
+    Let {
+        /// Binding-level attributes, e.g. `["once"]` from `@once let`.
+        attrs: Vec<String>,
+        name:  String,
+        value: Expr,
+        span:  Span,
+    },
     /// `expr;`
     Expr { value: Expr, span: Span },
 }

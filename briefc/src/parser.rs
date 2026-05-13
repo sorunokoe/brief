@@ -17,6 +17,12 @@ use crate::ast::*;
 use crate::errors::{BriefError, ErrorCode};
 use crate::lexer::{Spanned, Token};
 
+/// Intermediate result of parsing a `type X = ...` declaration.
+enum TypeDecl {
+    Alias(TypeAliasDecl),
+    Group(EffectGroupDecl),
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Parser state
 // ─────────────────────────────────────────────────────────────────────────────
@@ -153,17 +159,26 @@ pub fn parse(tokens: &[Spanned], source: &str) -> (Program, Vec<BriefError>) {
 
 impl<'a> Parser<'a> {
     fn parse_program(&mut self) -> Program {
-        let mut imports   = Vec::new();
-        let mut types     = Vec::new();
-        let mut structs   = Vec::new();
-        let mut protocols = Vec::new();
-        let mut effects   = Vec::new();
-        let mut tasks     = Vec::new();
+        let mut imports       = Vec::new();
+        let mut types         = Vec::new();
+        let mut type_aliases  = Vec::new();
+        let mut effect_groups = Vec::new();
+        let mut structs       = Vec::new();
+        let mut protocols     = Vec::new();
+        let mut effects       = Vec::new();
+        let mut tasks         = Vec::new();
 
         while !self.at_end() {
             match self.peek() {
                 Some(Token::Import)   => { if let Some(i) = self.parse_import() { imports.push(i); } }
                 Some(Token::Sealed)   => { if let Some(t) = self.parse_sealed_type() { types.push(t); } }
+                Some(Token::Type)     => {
+                    // `type X = @attr BaseType`  OR  `type X = [A, B]`
+                    match self.parse_type_decl() {
+                        TypeDecl::Alias(a) => type_aliases.push(a),
+                        TypeDecl::Group(g) => effect_groups.push(g),
+                    }
+                }
                 Some(Token::Struct)   => { if let Some(s) = self.parse_struct() { structs.push(s); } }
                 Some(Token::Protocol) => { if let Some(p) = self.parse_protocol() { protocols.push(p); } }
                 Some(Token::Effect)   => { if let Some(e) = self.parse_effect() { effects.push(e); } }
@@ -176,14 +191,14 @@ impl<'a> Parser<'a> {
                         code:    ErrorCode::ParseError,
                         message: format!("unexpected token `{got:?}` at top level"),
                         span,
-                        hint:    Some("expected `import skill`, `sealed type`, `struct`, `protocol`, `effect`, or `task`".to_string()),
+                        hint:    Some("expected `import skill`, `type`, `sealed type`, `struct`, `protocol`, `effect`, or `task`".to_string()),
                     });
                     self.advance();
                 }
             }
         }
 
-        Program { imports, types, structs, protocols, effects, tasks }
+        Program { imports, types, type_aliases, effect_groups, structs, protocols, effects, tasks }
     }
 
     // ── import skill "Name" ──────────────────────────────────────────────
@@ -196,7 +211,58 @@ impl<'a> Parser<'a> {
         Some(SkillImport { name, span: Span::new(start, name_span.end) })
     }
 
-    // ── @Decorator ───────────────────────────────────────────────────────
+    // ── type alias / effect group ─────────────────────────────────────────
+    // `type Email = @matches("...") String`  → TypeAliasDecl
+    // `type AuthEffects = [Auth, Session]`   → EffectGroupDecl
+
+    fn parse_type_decl(&mut self) -> TypeDecl {
+        let start = self.current_span().start;
+        self.advance(); // consume `type`
+        let (name, _) = match self.expect_ident() {
+            Some(n) => n,
+            None    => return TypeDecl::Alias(TypeAliasDecl {
+                name: String::new(), attrs: vec![], base: TypeRef { name: String::new(), args: vec![], optional: false, span: Span::default() }, span: Span::default(),
+            }),
+        };
+        if self.peek() != Some(&Token::Eq) {
+            let span = self.current_span();
+            self.errors.push(BriefError {
+                code:    ErrorCode::ParseError,
+                message: "expected `=` in type declaration".to_string(),
+                span,
+                hint:    Some("example: type Email = @matches(\"[^@]+@[^@]+\") String".to_string()),
+            });
+            return TypeDecl::Alias(TypeAliasDecl { name, attrs: vec![], base: TypeRef { name: String::new(), args: vec![], optional: false, span: Span::default() }, span: Span::default() });
+        }
+        self.advance(); // consume `=`
+
+        // `[A, B, C]` → effect group
+        if self.peek() == Some(&Token::LBracket) {
+            self.advance();
+            let mut members = Vec::new();
+            while self.peek() != Some(&Token::RBracket) && !self.at_end() {
+                if let Some((m, _)) = self.expect_ident() { members.push(m); }
+                if self.peek() == Some(&Token::Comma) { self.advance(); }
+            }
+            self.expect(&Token::RBracket);
+            let end = self.prev_span().end;
+            return TypeDecl::Group(EffectGroupDecl { name, members, span: Span::new(start, end) });
+        }
+
+        // `@attr1 @attr2 BaseType` → refinement type alias
+        let mut attrs = Vec::new();
+        while self.peek() == Some(&Token::At) {
+            if let Some(a) = self.parse_attribute() { attrs.push(a); }
+        }
+        let base = match self.parse_type_ref() {
+            Some(t) => t,
+            None    => TypeRef { name: "String".to_string(), args: vec![], optional: false, span: Span::default() },
+        };
+        let end = self.prev_span().end;
+        TypeDecl::Alias(TypeAliasDecl { name, attrs, base, span: Span::new(start, end) })
+    }
+
+
 
     fn parse_decorator(&mut self) -> Option<Decorator> {
         let start = self.current_span().start;
@@ -290,9 +356,14 @@ impl<'a> Parser<'a> {
         let params = self.parse_param_list();
         self.expect(&Token::RParen)?;
         self.expect(&Token::Arrow)?;
+        // Collect return-type attributes like `@once`, `@affine`
+        let mut ret_attrs = Vec::new();
+        while self.peek() == Some(&Token::At) {
+            if let Some(a) = self.parse_attribute() { ret_attrs.push(a); }
+        }
         let ret = self.parse_type_ref()?;
         let end = self.prev_span().end;
-        Some(FnSignature { name, type_params, params, ret, doc: None, span: Span::new(start, end) })
+        Some(FnSignature { name, type_params, params, ret_attrs, ret, doc: None, span: Span::new(start, end) })
     }
 
     fn parse_param_list(&mut self) -> Vec<Param> {
@@ -574,6 +645,14 @@ impl<'a> Parser<'a> {
     fn parse_stmt(&mut self) -> Option<Stmt> {
         let start = self.current_span().start;
 
+        // Collect statement-level attributes: `@once`, `@affine`, etc.
+        let mut stmt_attrs: Vec<String> = Vec::new();
+        while self.peek() == Some(&Token::At) {
+            if let Some(a) = self.parse_attribute() {
+                stmt_attrs.push(a.name);
+            }
+        }
+
         match self.peek().cloned() {
             Some(Token::Let) => {
                 self.advance();
@@ -582,7 +661,7 @@ impl<'a> Parser<'a> {
                 let value = self.parse_expr()?;
                 self.expect(&Token::Semi);
                 let end = self.prev_span().end;
-                Some(Stmt::Let { name, value, span: Span::new(start, end) })
+                Some(Stmt::Let { attrs: stmt_attrs, name, value, span: Span::new(start, end) })
             }
             _ => {
                 let value = self.parse_expr()?;

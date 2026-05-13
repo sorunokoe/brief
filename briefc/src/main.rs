@@ -1,6 +1,7 @@
 mod ast;
 mod checker;
 mod codegen;
+mod doc;
 mod errors;
 mod fmt;
 mod gen;
@@ -118,6 +119,16 @@ enum Commands {
         #[command(subcommand)]
         resource: AddResource,
     },
+
+    /// Generate Markdown documentation from a .brief file
+    Doc {
+        /// Path to the .brief file
+        file: PathBuf,
+
+        /// Write output to a file instead of stdout
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -209,6 +220,12 @@ fn main() {
                     }
                 }
             }
+        }
+
+        Commands::Doc { file, output } => {
+            print_brief_banner();
+            let ok = doc::doc_file(&file, output.as_deref());
+            std::process::exit(if ok { 0 } else { 1 });
         }
     }
 }

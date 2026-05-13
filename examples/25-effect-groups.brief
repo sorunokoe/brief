@@ -1,0 +1,91 @@
+// examples/25-effect-groups.brief
+//
+// Demonstrates effect group aliases — Phase 3 power type.
+//
+// `type GroupName = [SkillA, SkillB, SkillC]`
+//
+// Effect groups let you name a set of skills that always travel together.
+// Instead of repeating `uses [Auth, Session, Permissions, AuditLog]` in every
+// task, declare once and use the group name.
+//
+// Run:  brief check examples/25-effect-groups.brief   → ✅
+// Run:  brief doc   examples/25-effect-groups.brief   → prints Markdown docs
+
+import skill "Auth"
+import skill "Session"
+import skill "Permissions"
+import skill "AuditLog"
+import skill "UserService"
+import skill "NotificationService"
+
+// ── Effect group aliases ──────────────────────────────────────────────────────
+// Declare once, reuse everywhere.
+
+type SecurityEffects   = [Auth, Session, Permissions]
+type AccountEffects    = [UserService, AuditLog]
+type NotifyEffects     = [NotificationService]
+
+// Both security and notification combined:
+type FullUserEffects   = [Auth, Session, Permissions, UserService, AuditLog, NotificationService]
+
+// ── Tasks using group aliases ─────────────────────────────────────────────────
+
+task Login : TaskBrief uses [SecurityEffects, AccountEffects] {
+    goal = "Authenticate user and establish session — uses SecurityEffects + AccountEffects groups"
+    extras = ["domain": "auth", "mfa": "optional"]
+
+    step Authenticate {
+        let identity = perform Auth.verify(credentials)?;
+    }
+
+    step CheckPermissions {
+        let roles = perform Permissions.getRoles(identity)?;
+    }
+
+    step EstablishSession {
+        let session = perform Session.create(identity, roles)?;
+    }
+
+    step Audit {
+        let log = perform AuditLog.record(identity, "login", "success")?;
+    }
+}
+
+task UpdateAccountSettings : TaskBrief uses [SecurityEffects, AccountEffects] {
+    goal = "Update account settings with auth check and full audit trail"
+    extras = ["domain": "accounts", "requiresAuth": "true"]
+
+    step VerifyToken {
+        let identity = perform Auth.verify(bearerToken)?;
+    }
+
+    step LoadSettings {
+        let current = perform UserService.getSettings(identity)?;
+    }
+
+    step ApplyChanges {
+        let updated = perform UserService.updateSettings(identity, newSettings)?;
+    }
+
+    step AuditChange {
+        let log = perform AuditLog.record(identity, "settings_update", newSettings)?;
+    }
+}
+
+task SendSecureNotification : TaskBrief uses [SecurityEffects, NotifyEffects, AccountEffects] {
+    goal = "Send notification after verifying permissions — triple group composition"
+    extras = ["domain": "notifications", "priority": "high"]
+
+    step VerifyPermission {
+        let identity = perform Auth.verify(bearerToken)?;
+        let allowed  = perform Permissions.canSendNotification(identity)?;
+    }
+
+    step Deliver {
+        let result = perform NotificationService.send(targetUserId, message, channel)?;
+    }
+
+    step LogDelivery {
+        let log = perform AuditLog.record(identity, "notification_sent", targetUserId)?;
+    }
+}

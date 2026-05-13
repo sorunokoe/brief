@@ -45,6 +45,23 @@ brief fmt    <file>.brief          # auto-format to canonical style
 | [21-error-recovery.brief](21-error-recovery.brief) | Resilience | Retry with back-off, circuit-breaker, fallback | ✅ W101 |
 | [22-permissions.brief](22-permissions.brief) | RBAC | Check access, grant/revoke roles, audit log | ✅ W101 |
 
+## Examples (23–26 · Phase 3 — Power Types)
+
+| File | Feature | What it shows | `brief check` |
+|------|---------|---------------|---------------|
+| [23-linear-types.brief](23-linear-types.brief) | Linear types | `@once` on effect return types; auto-tracking that each handle is consumed exactly once | ✅ W101 |
+| [24-type-aliases.brief](24-type-aliases.brief) | Refinement aliases | `type Email = @matches(...) String`; composable attribute constraints | ✅ W101 |
+| [25-effect-groups.brief](25-effect-groups.brief) | Effect groups | `type SecurityEffects = [Auth, Session, Permissions]`; group expansion in `uses [...]` | ✅ W101 |
+| [26-brief-doc.brief](26-brief-doc.brief) | Doc generation | Comprehensive showcase; run `brief doc` to see rendered Markdown output | ✅ W101 |
+
+```bash
+# Generate docs for the showcase file:
+brief doc examples/26-brief-doc.brief
+
+# Generate docs with output to a file:
+brief doc examples/26-brief-doc.brief --output docs/26-brief-doc.md
+```
+
 ---
 
 ## Error examples (intentional — learn from failures)
@@ -129,6 +146,40 @@ test "goal must not be empty" {
 }
 ```
 Run with: `brief test 14-test-suite.brief`
+
+### Phase 3 — Power types
+
+#### Type aliases (refinements)
+```brief
+type Email    = @matches("[^@]+@[^@]+") String
+type NonEmpty = @nonEmpty String
+```
+
+#### Effect group aliases
+```brief
+type AuthEffects = [Auth, Session, Permissions]
+
+task Login : TaskBrief uses [AuthEffects] {   // expands to [Auth, Session, Permissions]
+    goal = "authenticate user"
+    // ...
+}
+```
+
+#### Linear types (`@once`)
+```brief
+effect Payment {
+    fn charge(amount: Int) -> @once PaymentHandle    // handle can be used exactly once
+}
+
+task ProcessPayment : TaskBrief uses [Payment] {
+    goal = "charge and confirm"
+    step Charge {
+        @once let handle = perform Payment.charge(amount)?;
+        let receipt = perform Payment.confirm(handle)?;   // consumes handle — OK
+        // perform Payment.refund(handle)?               // would error: E104 reused
+    }
+}
+```
 
 ---
 

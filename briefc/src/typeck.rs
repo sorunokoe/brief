@@ -9,7 +9,7 @@
 /// This is a structural type checker — not full HM inference. Full HM with
 /// generics is deferred to v0.2.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
 use crate::errors::{BriefError, ErrorCode};
@@ -34,13 +34,27 @@ const BUILTIN_TYPES: &[&str] = &[
 // Type environment
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Recursively collect all named types from a `TypeRef` tree.
+fn collect_type_names(ty: &TypeRef, out: &mut HashSet<String>) {
+    // Skip built-in/generic single-letter names and known builtins
+    if !ty.name.is_empty() && !BUILTIN_TYPES.contains(&ty.name.as_str()) {
+        out.insert(ty.name.clone());
+    }
+    for arg in &ty.args {
+        collect_type_names(arg, out);
+    }
+}
+
 /// The type environment built from a Program's declarations.
 pub struct TypeEnv<'a> {
-    sealed_types:  HashMap<&'a str, &'a SealedTypeDecl>,
-    structs:       HashMap<&'a str, &'a StructDecl>,
-    protocols:     HashMap<&'a str, &'a ProtocolDecl>,
-    effects:       HashMap<&'a str, &'a EffectDecl>,
-    skill_ifaces:  HashMap<String, SkillInterface>,
+    sealed_types:      HashMap<&'a str, &'a SealedTypeDecl>,
+    structs:           HashMap<&'a str, &'a StructDecl>,
+    protocols:         HashMap<&'a str, &'a ProtocolDecl>,
+    effects:           HashMap<&'a str, &'a EffectDecl>,
+    skill_ifaces:      HashMap<String, SkillInterface>,
+    /// Opaque types declared as return types of inline `effect` fn signatures.
+    /// These don't need explicit struct/sealed type declarations.
+    effect_ret_types:  HashSet<String>,
 }
 
 impl<'a> TypeEnv<'a> {
@@ -60,7 +74,15 @@ impl<'a> TypeEnv<'a> {
         for p in &program.protocols { protocols.insert(p.name.as_str(), p); }
         for e in &program.effects   { effects.insert(e.name.as_str(), e); }
 
-        Self { sealed_types, structs, protocols, effects, skill_ifaces }
+        // Collect all type names from effect return types — treated as opaque.
+        let mut effect_ret_types = HashSet::new();
+        for e in &program.effects {
+            for f in &e.fns {
+                collect_type_names(&f.ret, &mut effect_ret_types);
+            }
+        }
+
+        Self { sealed_types, structs, protocols, effects, skill_ifaces, effect_ret_types }
     }
 
     /// Check whether a type name is declared (built-in or user-defined).
@@ -69,6 +91,7 @@ impl<'a> TypeEnv<'a> {
             || self.sealed_types.contains_key(name)
             || self.structs.contains_key(name)
             || self.protocols.contains_key(name)
+            || self.effect_ret_types.contains(name)
     }
 
     /// Look up a function in a named effect (inline declarations or skill interfaces).

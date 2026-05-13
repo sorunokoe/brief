@@ -16,6 +16,14 @@ pub enum ErrorCode {
     MissingGoal,
     UndeclaredSkillInUses,
     PerformWithoutUses,
+    // ── Linear / affine type errors ───────────────────────────────────────
+    /// A `@once` (linear) binding was used more than once.
+    LinearBindingReused,
+    /// A `@once` (linear) binding was never consumed.
+    LinearBindingDropped,
+    // ── Type alias / effect group errors ─────────────────────────────────
+    /// A `uses [...]` clause references an unknown effect group alias.
+    UnknownEffectGroup,
     // ── Type errors ───────────────────────────────────────────────────────
     /// A type reference resolves to an unknown name
     UnknownType,
@@ -36,6 +44,9 @@ impl fmt::Display for ErrorCode {
             ErrorCode::MissingGoal           => "E101",
             ErrorCode::UndeclaredSkillInUses => "E102",
             ErrorCode::PerformWithoutUses    => "E103",
+            ErrorCode::LinearBindingReused   => "E104",
+            ErrorCode::LinearBindingDropped  => "E105",
+            ErrorCode::UnknownEffectGroup    => "E106",
             ErrorCode::UnknownType           => "E201",
             ErrorCode::WrongArgCount         => "E202",
             ErrorCode::AttributeConstraint   => "E203",
@@ -53,6 +64,9 @@ impl ErrorCode {
             | ErrorCode::MissingGoal
             | ErrorCode::UndeclaredSkillInUses
             | ErrorCode::PerformWithoutUses
+            | ErrorCode::LinearBindingReused
+            | ErrorCode::LinearBindingDropped
+            | ErrorCode::UnknownEffectGroup
             | ErrorCode::UnknownType
             | ErrorCode::WrongArgCount
             | ErrorCode::AttributeConstraint

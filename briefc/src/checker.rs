@@ -1,10 +1,13 @@
-/// Semantic checker for Brief v0.1.
+/// Semantic checker for Brief v0.1 + Phase 3 power types.
 ///
-/// Validates a parsed `Program` and returns a list of errors/warnings.
-/// Phase-1 additions: checks effect decls for duplicate fn names, validates
-/// `perform` inside `await`, and validates new declaration forms.
+/// Phase 3 additions:
+/// - Linear bindings: `@once let x = ...` — E104 if reused, E105 if dropped
+/// - Effect function return linearity: `fn charge() -> @once Handle` auto-marks
+///   the bound variable as linear at every call site
+/// - Effect group aliases: `type AuthEffects = [Auth, Session]` expanded in `uses`
+/// - Type alias validation: `type Email = @matches("...") String` resolved in structs
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::ast::*;
@@ -26,6 +29,18 @@ pub fn check(program: &Program, ctx: &CheckContext<'_>) -> Vec<BriefError> {
     // Build the set of imported skill names for cross-checks.
     let imported: HashSet<&str> = program.imports.iter().map(|i| i.name.as_str()).collect();
 
+    // Build effect group map: group name → expanded member names.
+    let groups: HashMap<&str, Vec<&str>> = program.effect_groups
+        .iter()
+        .map(|g| (g.name.as_str(), g.members.iter().map(|m| m.as_str()).collect()))
+        .collect();
+
+    // Build inline effect fn map: (effect_name, fn_name) → ret_attrs
+    // Used to auto-detect @once return types without explicit annotation at call site.
+    let inline_effects: HashMap<(&str, &str), &[Attribute]> = program.effects.iter()
+        .flat_map(|e| e.fns.iter().map(move |f| ((e.name.as_str(), f.name.as_str()), f.ret_attrs.as_slice())))
+        .collect();
+
     // 1. Validate each skill import (warn if no .briefskill found).
     for import in &program.imports {
         check_skill_import(import, ctx, &mut diags);
@@ -36,9 +51,14 @@ pub fn check(program: &Program, ctx: &CheckContext<'_>) -> Vec<BriefError> {
         check_effect_decl(effect, &mut diags);
     }
 
-    // 3. Validate each task.
+    // 3. Validate type aliases (base type must be a primitive or known type).
+    for alias in &program.type_aliases {
+        check_type_alias(alias, &mut diags);
+    }
+
+    // 4. Validate each task (with group expansion and linear binding tracking).
     for task in &program.tasks {
-        check_task(task, &imported, ctx, &mut diags);
+        check_task(task, &imported, &groups, &inline_effects, ctx, &mut diags);
     }
 
     diags
@@ -61,7 +81,38 @@ fn check_skill_import(import: &SkillImport, ctx: &CheckContext<'_>, diags: &mut 
     }
 }
 
-fn check_task(task: &Task, imported: &HashSet<&str>, _ctx: &CheckContext<'_>, diags: &mut Vec<BriefError>) {
+fn check_type_alias(alias: &TypeAliasDecl, diags: &mut Vec<BriefError>) {
+    // Basic validation: base must not be empty.
+    if alias.base.name.is_empty() {
+        diags.push(BriefError {
+            code:    ErrorCode::UnknownType,
+            message: format!("type alias '{}' has no base type", alias.name),
+            span:    alias.span,
+            hint:    Some(format!(r#"example: type {} = @nonEmpty String"#, alias.name)),
+        });
+    }
+    // Known refinement attributes for type aliases.
+    const KNOWN_ATTRS: &[&str] = &["url", "nonEmpty", "matches", "once", "affine"];
+    for attr in &alias.attrs {
+        if !KNOWN_ATTRS.contains(&attr.name.as_str()) {
+            diags.push(BriefError {
+                code:    ErrorCode::AttributeConstraint,
+                message: format!("unknown attribute '@{}' in type alias '{}'", attr.name, alias.name),
+                span:    attr.span,
+                hint:    Some(format!("known attributes: {}", KNOWN_ATTRS.join(", "))),
+            });
+        }
+    }
+}
+
+fn check_task(
+    task:           &Task,
+    imported:       &HashSet<&str>,
+    groups:         &HashMap<&str, Vec<&str>>,
+    inline_effects: &HashMap<(&str, &str), &[Attribute]>,
+    _ctx:           &CheckContext<'_>,
+    diags:          &mut Vec<BriefError>,
+) {
     // E101: goal is required.
     if task.goal.is_none() {
         diags.push(BriefError {
@@ -72,22 +123,33 @@ fn check_task(task: &Task, imported: &HashSet<&str>, _ctx: &CheckContext<'_>, di
         });
     }
 
-    // E102: every skill in `uses [...]` must be imported.
+    // Expand effect group aliases in `uses [...]`.
+    let mut expanded_uses: Vec<&str> = Vec::new();
     for skill in &task.uses {
-        if !imported.contains(skill.as_str()) {
+        if let Some(members) = groups.get(skill.as_str()) {
+            // Expand the group to its members.
+            expanded_uses.extend(members.iter().copied());
+        } else if groups.is_empty() || !groups.contains_key(skill.as_str()) {
+            expanded_uses.push(skill.as_str());
+        }
+    }
+
+    // E102: every skill in `uses [...]` must be imported (after expansion).
+    for skill in &expanded_uses {
+        if !imported.contains(skill) {
             diags.push(BriefError {
                 code:    ErrorCode::UndeclaredSkillInUses,
-                message: format!("skill '{}' is in `uses` but never imported", skill),
+                message: format!("skill '{skill}' is in `uses` but never imported"),
                 span:    task.span,
                 hint:    Some(format!(r#"add: import skill "{skill}" at the top of the file"#)),
             });
         }
     }
 
-    // E103/W: validate perform calls inside steps.
-    let uses_set: HashSet<&str> = task.uses.iter().map(|s| s.as_str()).collect();
+    // E103: validate perform calls inside steps.
+    let uses_set: HashSet<&str> = expanded_uses.iter().copied().collect();
     for step in &task.steps {
-        check_step(step, &uses_set, imported, diags);
+        check_step(step, &uses_set, imported, inline_effects, diags);
     }
 }
 
@@ -105,17 +167,96 @@ fn check_effect_decl(effect: &EffectDecl, diags: &mut Vec<BriefError>) {
     }
 }
 
-fn check_step(step: &Step, uses_set: &HashSet<&str>, imported: &HashSet<&str>, diags: &mut Vec<BriefError>) {
+fn check_step(
+    step:           &Step,
+    uses_set:       &HashSet<&str>,
+    imported:       &HashSet<&str>,
+    inline_effects: &HashMap<(&str, &str), &[Attribute]>,
+    diags:          &mut Vec<BriefError>,
+) {
+    // Collect linear bindings: (name, span, use_count)
+    // A binding is linear if:
+    //   a) its let statement has `@once` in attrs, OR
+    //   b) it is bound to a `perform Skill.fn()` whose inline effect declares `@once` return
+    let mut linear: HashMap<String, (Span, usize)> = HashMap::new();
+
     for stmt in &step.body {
-        let expr = match stmt {
-            Stmt::Let { value, .. }  => value,
-            Stmt::Expr { value, .. } => value,
-        };
-        check_expr_for_perform(expr, uses_set, imported, diags);
+        check_expr_for_perform(stmt_value(stmt), uses_set, imported, diags);
+
+        match stmt {
+            Stmt::Let { attrs, name, value, span } => {
+                // Explicit `@once let x = ...`
+                let is_once = attrs.iter().any(|a| a == "once" || a == "affine");
+                // Auto-infer from inline effect declaration.
+                let auto_once = match value {
+                    Expr::Perform { skill, func, .. } => {
+                        let key = (skill.as_str(), func.as_str());
+                        inline_effects.get(&key)
+                            .map(|ret_attrs| ret_attrs.iter().any(|a| a.name == "once" || a.name == "affine"))
+                            .unwrap_or(false)
+                    }
+                    _ => false,
+                };
+                if is_once || auto_once {
+                    linear.insert(name.clone(), (*span, 0));
+                }
+            }
+            Stmt::Expr { .. } => {}
+        }
+    }
+
+    // Count usages of each linear binding across all expressions in the step.
+    for stmt in &step.body {
+        count_ident_uses(stmt_value(stmt), &mut linear);
+    }
+
+    // Emit E104 / E105 for linear binding violations.
+    for (name, (span, uses)) in &linear {
+        if *uses == 0 {
+            diags.push(BriefError {
+                code:    ErrorCode::LinearBindingDropped,
+                message: format!("linear binding '{name}' is never consumed"),
+                span:    *span,
+                hint:    Some(format!("use '{name}' in a subsequent statement or remove the `@once` annotation")),
+            });
+        } else if *uses > 1 {
+            diags.push(BriefError {
+                code:    ErrorCode::LinearBindingReused,
+                message: format!("linear binding '{name}' is consumed {uses} times (must be exactly once)"),
+                span:    *span,
+                hint:    Some(format!("a `@once` binding may only be used once — split into separate `perform` calls")),
+            });
+        }
     }
 }
 
-fn check_expr_for_perform(expr: &Expr, uses_set: &HashSet<&str>, imported: &HashSet<&str>, diags: &mut Vec<BriefError>) {
+fn stmt_value(stmt: &Stmt) -> &Expr {
+    match stmt {
+        Stmt::Let { value, .. }  => value,
+        Stmt::Expr { value, .. } => value,
+    }
+}
+
+/// Recursively count how many times each linear binding name appears as an Ident.
+fn count_ident_uses(expr: &Expr, linear: &mut HashMap<String, (Span, usize)>) {
+    match expr {
+        Expr::Ident { name, .. } => {
+            if let Some((_, count)) = linear.get_mut(name) {
+                *count += 1;
+            }
+        }
+        Expr::Perform { args, .. } => {
+            for a in args { count_ident_uses(a, linear); }
+        }
+        Expr::Call { args, .. } => {
+            for a in args { count_ident_uses(a, linear); }
+        }
+        Expr::Await { expr: inner, .. } => count_ident_uses(inner, linear),
+        Expr::Str { .. } => {}
+    }
+}
+
+fn check_expr_for_perform(expr: &Expr, uses_set: &HashSet<&str>, _imported: &HashSet<&str>, diags: &mut Vec<BriefError>) {
     match expr {
         Expr::Perform { skill, span, .. } => {
             if !uses_set.contains(skill.as_str()) {
@@ -127,13 +268,12 @@ fn check_expr_for_perform(expr: &Expr, uses_set: &HashSet<&str>, imported: &Hash
                 });
             }
         }
-        // Recurse into `await expr`
         Expr::Await { expr: inner, .. } => {
-            check_expr_for_perform(inner, uses_set, imported, diags);
+            check_expr_for_perform(inner, uses_set, _imported, diags);
         }
         Expr::Call { args, .. } => {
             for arg in args {
-                check_expr_for_perform(arg, uses_set, imported, diags);
+                check_expr_for_perform(arg, uses_set, _imported, diags);
             }
         }
         Expr::Ident { .. } | Expr::Str { .. } => {}
@@ -181,7 +321,6 @@ mod tests {
     #[test]
     fn no_errors_on_minimal_task() {
         let diags = check_src(r#"task Hello : TaskBrief { goal = "hi" }"#);
-        // Only possible warning: no skill imports to check → no errors
         assert!(diags.iter().all(|d| !d.is_error()), "{diags:?}");
     }
 
@@ -195,5 +334,137 @@ mod tests {
     fn error_on_undeclared_uses() {
         let diags = check_src(r#"task T : TaskBrief uses [GraphQL] { goal = "x" }"#);
         assert!(diags.iter().any(|d| d.code == ErrorCode::UndeclaredSkillInUses), "{diags:?}");
+    }
+
+    // ── Phase 3: linear bindings ────────────────────────────────────────────
+
+    #[test]
+    fn linear_binding_dropped() {
+        // @once let x = ... but x is never used → E105
+        let diags = check_src(r#"
+            import skill "Payment"
+            task Pay : TaskBrief uses [Payment] {
+                goal = "charge"
+                step Charge {
+                    @once let handle = perform Payment.charge(amount)?;
+                }
+            }
+        "#);
+        assert!(diags.iter().any(|d| d.code == ErrorCode::LinearBindingDropped), "{diags:?}");
+    }
+
+    #[test]
+    fn linear_binding_reused() {
+        // @once let x = ... but x is used twice → E104
+        let diags = check_src(r#"
+            import skill "Payment"
+            task Pay : TaskBrief uses [Payment] {
+                goal = "charge"
+                step Charge {
+                    @once let handle = perform Payment.charge(amount)?;
+                    let a = perform Payment.confirm(handle)?;
+                    let b = perform Payment.confirm(handle)?;
+                }
+            }
+        "#);
+        assert!(diags.iter().any(|d| d.code == ErrorCode::LinearBindingReused), "{diags:?}");
+    }
+
+    #[test]
+    fn linear_binding_used_once_is_ok() {
+        // @once let x = ... and x used exactly once → no linear error
+        let diags = check_src(r#"
+            import skill "Payment"
+            task Pay : TaskBrief uses [Payment] {
+                goal = "charge"
+                step Charge {
+                    @once let handle = perform Payment.charge(amount)?;
+                    let receipt = perform Payment.confirm(handle)?;
+                }
+            }
+        "#);
+        let linear_errors: Vec<_> = diags.iter()
+            .filter(|d| d.code == ErrorCode::LinearBindingDropped || d.code == ErrorCode::LinearBindingReused)
+            .collect();
+        assert!(linear_errors.is_empty(), "unexpected linear errors: {linear_errors:?}");
+    }
+
+    // ── Phase 3: effect group aliases ────────────────────────────────────────
+
+    #[test]
+    fn effect_group_expands_in_uses() {
+        // `type AuthEffects = [Auth, Session]` — if Auth/Session imported, no E102
+        let diags = check_src(r#"
+            import skill "Auth"
+            import skill "Session"
+            type AuthEffects = [Auth, Session]
+            task Login : TaskBrief uses [AuthEffects] {
+                goal = "login"
+                step Do {
+                    let tok = perform Auth.login(user)?;
+                    let s   = perform Session.create(tok)?;
+                }
+            }
+        "#);
+        let e102: Vec<_> = diags.iter().filter(|d| d.code == ErrorCode::UndeclaredSkillInUses).collect();
+        assert!(e102.is_empty(), "unexpected E102: {e102:?}");
+    }
+
+    // ── Phase 3: type alias validation ──────────────────────────────────────
+
+    #[test]
+    fn type_alias_unknown_attr_is_warned() {
+        let diags = check_src(r#"type Email = @bogusAttr String"#);
+        assert!(diags.iter().any(|d| d.code == ErrorCode::AttributeConstraint), "{diags:?}");
+    }
+
+    #[test]
+    fn type_alias_valid_no_error() {
+        let diags = check_src(r#"type Email = @matches("[^@]+@[^@]+") String"#);
+        let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    }
+
+    // ── Effect fn @once return type auto-marks binding ───────────────────────
+
+    #[test]
+    fn inline_effect_once_return_auto_linear() {
+        // Inline effect declares `fn charge() -> @once Handle`
+        // → the bound variable is auto-linear without explicit `@once let`
+        let diags = check_src(r#"
+            import skill "Payment"
+            effect Payment {
+                fn charge(amount: String) -> @once Handle
+                fn confirm(h: Handle) -> String
+            }
+            task Pay : TaskBrief uses [Payment] {
+                goal = "pay"
+                step Do {
+                    let handle = perform Payment.charge(amount)?;
+                    let r = perform Payment.confirm(handle)?;
+                }
+            }
+        "#);
+        let linear_errors: Vec<_> = diags.iter()
+            .filter(|d| d.code == ErrorCode::LinearBindingDropped || d.code == ErrorCode::LinearBindingReused)
+            .collect();
+        assert!(linear_errors.is_empty(), "unexpected linear errors: {linear_errors:?}");
+    }
+
+    #[test]
+    fn inline_effect_once_return_dropped_is_error() {
+        let diags = check_src(r#"
+            import skill "Payment"
+            effect Payment {
+                fn charge(amount: String) -> @once Handle
+            }
+            task Pay : TaskBrief uses [Payment] {
+                goal = "pay"
+                step Do {
+                    let handle = perform Payment.charge(amount)?;
+                }
+            }
+        "#);
+        assert!(diags.iter().any(|d| d.code == ErrorCode::LinearBindingDropped), "{diags:?}");
     }
 }
