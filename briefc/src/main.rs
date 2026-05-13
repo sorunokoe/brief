@@ -2,6 +2,7 @@ mod ast;
 mod checker;
 mod codegen;
 mod errors;
+mod fmt;
 mod gen;
 mod lexer;
 mod lsp;
@@ -9,6 +10,7 @@ mod parser;
 mod repl;
 mod runner;
 mod skillgen;
+mod tester;
 mod typeck;
 
 use std::path::PathBuf;
@@ -81,6 +83,30 @@ enum Commands {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
+
+    /// Run test { } blocks inside a .brief file
+    Test {
+        /// Path to the .brief file containing test blocks
+        file: PathBuf,
+
+        /// Show perform call log for each test
+        #[arg(short, long)]
+        verbose: bool,
+    },
+
+    /// Format a .brief file (canonical style)
+    Fmt {
+        /// Path to the .brief file to format
+        file: PathBuf,
+
+        /// Write formatted output back to the file in-place
+        #[arg(short, long)]
+        write: bool,
+
+        /// Check formatting without changing anything (CI mode — exits 1 if unformatted)
+        #[arg(long)]
+        check: bool,
+    },
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -131,6 +157,18 @@ fn main() {
         Commands::Gen { description, output } => {
             print_brief_banner();
             gen::gen(&description, output.as_deref());
+        }
+
+        Commands::Test { file, verbose } => {
+            print_brief_banner();
+            let ok = tester::test_file(&file, verbose);
+            std::process::exit(if ok { 0 } else { 1 });
+        }
+
+        Commands::Fmt { file, write, check } => {
+            print_brief_banner();
+            let ok = fmt::fmt_file(&file, write, check);
+            std::process::exit(if ok { 0 } else { 1 });
         }
     }
 }
