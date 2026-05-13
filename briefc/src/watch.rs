@@ -110,7 +110,11 @@ fn run_check(path: &Path) -> Vec<(Vec<BriefError>, String, String)> {
         collect_brief_files(path)
     };
 
-    let ctx_dir = path.parent().unwrap_or(Path::new("."));
+    let ctx_dir = if path.is_file() {
+        path.parent().unwrap_or(Path::new("."))
+    } else {
+        path  // Use the watched directory itself as context root
+    };
     let cwd = std::env::current_dir().unwrap_or_else(|_| ctx_dir.to_path_buf());
     let mf = manifest::load_manifest(ctx_dir);
     let ctx = checker::CheckContext { file_dir: ctx_dir, cwd: &cwd, manifest: mf.as_ref() };
