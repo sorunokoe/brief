@@ -1,0 +1,98 @@
+mod ast;
+mod checker;
+mod errors;
+mod gen;
+mod lexer;
+mod parser;
+mod runner;
+mod skillgen;
+
+use std::path::PathBuf;
+use clap::{Parser, Subcommand};
+use colored::Colorize;
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[derive(Parser)]
+#[command(name = "brief")]
+#[command(version = "0.0.1")]
+#[command(about = "If it compiles, the AI has everything it needs.")]
+#[command(long_about = None)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Type-check a .brief file — fast, CI-friendly
+    Check {
+        /// Path to the .brief file
+        file: PathBuf,
+    },
+
+    /// Compile and execute a .brief file
+    Run {
+        /// Path to the .brief file
+        file: PathBuf,
+    },
+
+    /// Interactive REPL (coming in v0.1)
+    Repl,
+
+    /// Generate a .briefskill interface file from a skill directory
+    Skillgen {
+        /// Path to the skill directory (must contain README.md)
+        skill_path: PathBuf,
+    },
+
+    /// Generate a .brief file from a natural language description (LLM in v0.1)
+    Gen {
+        /// Natural language description of the task
+        description: String,
+
+        /// Output file path (defaults to <TaskName>.brief)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn main() {
+    let cli = Cli::parse();
+
+    match cli.command {
+        Commands::Check { file } => {
+            print_brief_banner();
+            let ok = runner::run_file(&file, runner::RunMode::Check);
+            std::process::exit(if ok { 0 } else { 1 });
+        }
+
+        Commands::Run { file } => {
+            print_brief_banner();
+            let ok = runner::run_file(&file, runner::RunMode::Run);
+            std::process::exit(if ok { 0 } else { 1 });
+        }
+
+        Commands::Repl => {
+            print_brief_banner();
+            eprintln!("{} REPL is coming in v0.1", "ℹ".blue().bold());
+            eprintln!("  Watch: https://github.com/yourusername/brief/releases");
+        }
+
+        Commands::Skillgen { skill_path } => {
+            print_brief_banner();
+            skillgen::skillgen(&skill_path);
+        }
+
+        Commands::Gen { description, output } => {
+            print_brief_banner();
+            gen::gen(&description, output.as_deref());
+        }
+    }
+}
+
+fn print_brief_banner() {
+    println!("{}", format!("brief v{}", env!("CARGO_PKG_VERSION")).dimmed());
+}

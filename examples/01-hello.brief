@@ -1,0 +1,8 @@
+// 01-hello.brief — the simplest possible Brief task.
+//
+// Run with: brief check 01-hello.brief
+//           brief run   01-hello.brief
+
+task Hello : TaskBrief {
+    goal = "Say hello to the world"
+}
