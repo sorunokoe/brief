@@ -3,6 +3,7 @@ mod checker;
 mod errors;
 mod gen;
 mod lexer;
+mod lsp;
 mod parser;
 mod runner;
 mod skillgen;
@@ -38,8 +39,11 @@ enum Commands {
         file: PathBuf,
     },
 
-    /// Interactive REPL (coming in v0.1)
+    /// Interactive REPL (coming in v0.2)
     Repl,
+
+    /// Start the LSP server (communicates over stdin/stdout)
+    Lsp,
 
     /// Generate a .briefskill interface file from a skill directory
     Skillgen {
@@ -83,8 +87,15 @@ fn main() {
 
         Commands::Repl => {
             print_brief_banner();
-            eprintln!("{} REPL is coming in v0.1", "ℹ".blue().bold());
+            eprintln!("{} REPL is coming in v0.2", "ℹ".blue().bold());
             eprintln!("  Watch: https://github.com/yourusername/brief/releases");
+        }
+
+        Commands::Lsp => {
+            // No banner — LSP communicates over JSON-RPC on stdio.
+            tokio::runtime::Runtime::new()
+                .expect("tokio runtime")
+                .block_on(lsp::run_lsp_server());
         }
 
         Commands::Skillgen { skill_path, check } => {
