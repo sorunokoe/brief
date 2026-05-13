@@ -9,10 +9,7 @@ Every Brief file defines a typed contract: what a task needs (skills, data, desi
 ## Quick Start
 
 ```bash
-# Install (macOS/Linux)
-curl -sSf https://install.brieftool.io | sh   # coming soon — build from source below
-
-# Build from source
+# Build from source (requires Rust)
 git clone https://github.com/yourusername/brief
 cd brief && cargo build --release
 cp target/release/brief /usr/local/bin/
@@ -27,15 +24,11 @@ task Hello : TaskBrief {
 
 ```bash
 brief check hello.brief
-# ✅ Brief: Hello
-#    goal:   Say hello to the world
-#    skills: none required
+# brief v0.3.0
+# ● Brief: Hello
+#   goal:    Say hello to the world
+#   skills:  none required
 # ✅ All ingredients present. Ready for AI.
-
-brief run hello.brief
-# ● Running brief: Hello
-# ● Goal: Say hello to the world
-# ✅ Complete.
 ```
 
 ## A Real Workflow Brief
@@ -60,24 +53,22 @@ task ProfileScreen : TaskBrief uses [DesignSystem, GraphQL] {
 }
 ```
 
-```bash
-brief check 02-profile-screen.brief
-# ✅ Brief: ProfileScreen
-#    goal:   Display user profile with design-system components
-#    skills: [DesignSystem, GraphQL]
-#    steps:  [FetchData, Render]
-# ✅ All ingredients present. Ready for AI.
-```
-
 ## Commands
 
 | Command | Description |
 |---------|-------------|
 | `brief check <file>` | Type-check only — fast, CI-friendly |
 | `brief run <file>` | Compile and execute |
+| `brief build <file>` | Compile to native binary via LLVM |
+| `brief build <file> --target wasm32-unknown-unknown` | Compile to WASM |
+| `brief test <file>` | Run `test { }` blocks with mock skill system |
+| `brief fmt <file>` | Auto-format to canonical style |
+| `brief doc <file>` | Generate Markdown documentation |
 | `brief repl` | Interactive REPL |
-| `brief skillgen <path>` | Generate `.briefskill` interface from skill markdown |
+| `brief lsp` | LSP server (stdio) — for editor integration |
 | `brief gen "<description>"` | AI-generates a `.brief` file from natural language |
+| `brief skillgen <path>` | Generate `.briefskill` interface from skill markdown |
+| `brief add skill <Name>` | Install a skill from the registry |
 
 ## The Skill System
 
@@ -89,7 +80,7 @@ brief skillgen .claude/skills/DesignSystem/
 # ✅ Interface generated: .claude/skills/DesignSystem/DesignSystem.briefskill
 ```
 
-The `.briefskill` file is the typed contract for the skill — committed to your repo alongside the markdown. `brief check` validates against it at compile time.
+The `.briefskill` file is the typed contract — committed to your repo. `brief check` validates against it at compile time.
 
 ## Why Brief?
 
@@ -97,26 +88,40 @@ The `.briefskill` file is the typed contract for the skill — committed to your
 |---------|----------------|
 | "Did I give the AI everything it needs?" | `brief check` tells you at compile time |
 | "Which skills does this task use?" | The type `TaskBrief uses [X, Y]` says it all |
+| "I keep repeating the same uses clause" | `type AuthEffects = [Auth, Session, Permissions]` |
 | "I don't want to write this brief by hand" | `brief gen "describe your task"` |
 | "How do I know the skill interface is correct?" | `brief skillgen` generates it from your skill's docs |
+| "I want to see all tasks and their effects documented" | `brief doc my-feature.brief` |
 
-## Language Features (v0.1)
+## Language Features (v0.3)
 
 - **Algebraic data types** — `sealed type`, `struct`
 - **Generics** — `Result<T, E>`, `Option<T>`
 - **Structural protocols** — `protocol Renderable { fn render() -> Component }`
 - **Algebraic effects** — `uses [Skill1, Skill2]` tracked in the type signature
-- **Simplified refinements** — `@url String`, `@nonEmpty String`
+- **Effect group aliases** — `type AuthEffects = [Auth, Session, Permissions]` — name sets of skills
+- **Refinement type aliases** — `type Email = @matches("[^@]+@[^@]+") String`
+- **Linear types** — `@once` enforces handles are consumed exactly once (E104/E105)
 - **Result propagation** — `perform Skill.fn()?`
-- **Structured concurrency** — `async`, `await`, scoped `spawn`
+- **Test blocks** — `test { }` with mock skill system
+- **Doc generation** — `brief doc` renders Markdown from any `.brief` file
+
+## Examples
+
+26 examples in [`examples/`](examples/):
+
+| Range | What they cover |
+|-------|----------------|
+| 01–14 | Core language: hello, UI task, domain model, mapper, effects, auth, notifications, onboarding, settings, sync, AI chat, sealed types, feature flags, test suite |
+| 15–22 | Real-world: checkout, analytics, i18n, upload pipeline, OTP, search, resilience, RBAC |
+| 23–26 | Phase 3 power types: linear types, type aliases, effect groups, doc showcase |
 
 ## Roadmap
 
-- **v0.0.1** — `brief run hello.brief` works (tree-walking interpreter) ← *current*
-- **v0.1** — Full type system, skill imports, `brief gen`, community launch
-- **v0.2** — VS Code extension, test runner with mock skills, skill registry
-- **v0.3** — Linear types, full refinement types, effect polymorphism
-- **v1.0** — Language specification 1.0, self-hosting exploration
+- **v0.1** ✅ — Full type system, skill imports, error messages, examples
+- **v0.2** ✅ — `brief test`, `brief fmt`, LSP, WASM, skill registry
+- **v0.3** ✅ — Linear types (`@once`), type aliases, effect groups, `brief doc`
+- **v1.0** — Language specification 1.0, documentation website, performance
 
 ## Contributing
 

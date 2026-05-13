@@ -138,9 +138,17 @@ task TaskName : TaskBrief uses [DesignSystem, GraphQL] {
 |---------|-------------|
 | `brief check <file>` | Type-check only (fast, ideal for CI) |
 | `brief run <file>` | Validate + execute (shows step-by-step output) |
+| `brief build <file>` | Compile to native binary via LLVM |
+| `brief build <file> --emit-ir` | Emit LLVM IR for inspection |
+| `brief build <file> --target wasm32-unknown-unknown` | Compile to WASM |
+| `brief test <file>` | Run `test { }` blocks with mock skill system |
+| `brief fmt <file>` | Auto-format to canonical style |
+| `brief doc <file>` | Generate Markdown documentation |
 | `brief gen "<desc>"` | Generate a brief from natural language |
 | `brief skillgen <path>` | Generate `.briefskill` from skill's README.md |
-| `brief repl` | Interactive REPL (v0.1) |
+| `brief add skill <Name>` | Install a skill from the registry |
+| `brief repl` | Interactive REPL |
+| `brief lsp` | LSP server (stdio) — for editor integration |
 | `brief --help` | Full command reference |
 
 ---
@@ -200,12 +208,77 @@ brief-check:
 
 ---
 
-## Next: v0.1
+## Phase 3 Power Types (v0.3)
 
-Coming in v0.1:
-- Full type system (ADT, generics, protocols, algebraic effects)
-- LLM-powered `brief gen` (set `BRIEF_LLM_API_KEY`)
-- `brief test` with mock skill handlers
-- VS Code extension with semantic highlighting
+### Type Aliases
+
+Give a name to a refined type so you can reuse it everywhere:
+
+```brief
+type Email    = @matches("[^@]+@[^@]+") String
+type NonEmpty = @nonEmpty String
+
+struct User {
+    id:    NonEmpty     // cleaner than @nonEmpty String inline
+    email: Email
+}
+```
+
+### Effect Groups
+
+Name a set of skills that always travel together:
+
+```brief
+type AuthEffects = [Auth, Session, Permissions]
+
+task Login : TaskBrief uses [AuthEffects] {
+    goal = "Authenticate user"
+    // uses expands to [Auth, Session, Permissions]
+    step Verify {
+        let identity = perform Auth.verify(credentials)?;
+    }
+}
+```
+
+### Linear Types (`@once`)
+
+Ensure resources are consumed exactly once — no leaks, no double-use:
+
+```brief
+effect Payment {
+    fn charge(amount: Int) -> @once PaymentHandle
+    fn confirm(handle: PaymentHandle) -> PaymentConfirmation
+}
+
+task ProcessPayment : TaskBrief uses [Payment] {
+    goal = "Charge and confirm payment"
+    step Charge {
+        @once let handle = perform Payment.charge(100)?;
+        let receipt = perform Payment.confirm(handle)?;   // ✅ consumed once
+    }
+}
+```
+
+The compiler enforces: `E104` if handle is reused, `E105` if handle is never consumed.
+
+### Generate Docs
+
+```bash
+brief doc examples/26-brief-doc.brief
+# Renders: # Brief Module: 26-brief-doc
+# ## Skills, ## Types, ## Tasks, etc.
+
+brief doc my-feature.brief --output docs/my-feature.md
+```
+
+---
+
+## Next: v1.0
+
+v1.0 (stability):
+- Language Specification 1.0 (frozen syntax)
+- Documentation website
+- Performance optimization
+- Editor extension polish
 
 Watch [releases](https://github.com/yourusername/brief/releases) for updates.

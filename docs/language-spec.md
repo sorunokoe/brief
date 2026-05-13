@@ -1,8 +1,8 @@
-# Brief Language Specification — v0.1
+# Brief Language Specification — v0.3
 
 > *"If it compiles, the AI has everything it needs."*
 
-This document is the normative reference for the Brief language, version 0.1.
+This document is the normative reference for the Brief language, version 0.3.
 
 ---
 
@@ -33,27 +33,35 @@ The following identifiers are reserved:
 ```
 task       step       import     skill      uses       perform
 let        sealed     type       struct     protocol   effect
-fn         async      await      return
+fn         async      await      return     test
 ```
 
 ### 3.2 Decorators and Attributes
 
-Decorators begin with `@` and appear before declarations:
+Decorators begin with `@` and appear before declarations or `let` bindings:
 
 ```brief
 @BriefBuilder
 task ProfileScreen : TaskBrief { ... }
 ```
 
-Attributes appear on struct fields:
+```brief
+@once let handle = perform Payment.charge(amount)?;   // linear binding
+```
+
+Attributes appear on struct fields and effect function return types:
 
 ```brief
 struct FigmaURL {
     url: @url String
 }
+
+effect Payment {
+    fn charge(amount: Int) -> @once PaymentHandle   // linear return type
+}
 ```
 
-Built-in attributes: `@url`, `@nonEmpty`, `@matches("pattern")`
+Built-in attributes: `@url`, `@nonEmpty`, `@matches("pattern")`, `@once`
 
 ### 3.3 Literals
 
@@ -158,6 +166,94 @@ A task's `uses [X, Y]` clause declares which effects the task needs. The compile
 - A `perform X.fn()` requires `X` to be in `uses [...]`
 - A skill in `uses [...]` must be `import`-ed at the top of the file
 - If a required `.briefskill` interface is missing, a warning is emitted with the exact fix command
+
+---
+
+## 4.7 Type Aliases (Refinement Aliases)
+
+A type alias binds a name to a refined version of an existing type:
+
+```brief
+type Email      = @matches("[^@]+@[^@]+") String
+type NonEmpty   = @nonEmpty String
+type Url        = @url String
+```
+
+Type aliases are resolved at compile time. Using `Email` as a field or parameter type is equivalent to declaring `@matches("[^@]+@[^@]+") String` inline.
+
+**Syntax:**
+```
+type_alias_decl ::= 'type' Ident '=' attribute+ type_ref
+```
+
+### 4.8 Effect Group Aliases
+
+An effect group alias names a set of skills that always appear together in a `uses [...]` clause:
+
+```brief
+type AuthEffects      = [Auth, Session]
+type SecurityEffects  = [Auth, Session, Permissions]
+type FullUserEffects  = [Auth, Session, Permissions, UserService, AuditLog]
+```
+
+Effect groups are expanded by the compiler when used in a task's `uses` clause:
+
+```brief
+task Login : TaskBrief uses [SecurityEffects] {   // expands to [Auth, Session, Permissions]
+    goal = "authenticate user"
+    ...
+}
+```
+
+**Rules:**
+- Group members must each be resolvable as either a skill name or another group alias.
+- Circular group references are rejected at compile time.
+- Groups can appear alongside individual skills: `uses [SecurityEffects, AuditLog]`.
+
+**Syntax:**
+```
+effect_group_decl ::= 'type' Ident '=' '[' Ident (',' Ident)* ']'
+```
+
+### 4.9 Linear Types (`@once`)
+
+Linear types enforce that a value is consumed **exactly once** in a step body. They prevent resource leaks and double-use of handles.
+
+**Declaration on effect functions:**
+```brief
+effect Payment {
+    fn charge(amount: Int) -> @once PaymentHandle
+    fn confirm(handle: PaymentHandle) -> PaymentConfirmation
+    fn refund(handle: PaymentHandle) -> RefundResult
+}
+```
+
+A function annotated with `-> @once T` means: the returned value of type `T` must be used in exactly one subsequent `perform` call within the same step.
+
+**Declaration on `let` bindings:**
+```brief
+step Process {
+    @once let handle = perform Payment.charge(amount)?;   // handle is linear
+    let confirm = perform Payment.confirm(handle)?;       // ✅ consumed once
+}
+```
+
+**Error cases:**
+- `E104 LinearBindingReused` — a `@once` binding is passed to `perform` more than once in the same step.
+- `E105 LinearBindingDropped` — a `@once` binding is declared but never passed to any `perform` call in the step.
+
+```brief
+step BadDouble {
+    @once let h = perform Payment.charge(100)?;
+    let _ = perform Payment.confirm(h)?;
+    let _ = perform Payment.refund(h)?;   // error[E104]: @once binding 'h' consumed 2 times
+}
+
+step BadDrop {
+    @once let h = perform Payment.charge(100)?;
+    // error[E105]: @once binding 'h' is never consumed — resource leak
+}
+```
 
 ---
 
@@ -292,21 +388,43 @@ warning[W102]: skill interface 'DesignSystem' is stale
 
 ### Errors (fatal — task is invalid)
 
-| Code | Meaning |
-|------|---------|
-| `E001` | Parse error |
-| `E101` | Task missing required `goal` field |
-| `E102` | Skill in `uses [...]` is not imported |
-| `E103` | `perform X.fn()` uses a skill not in the task's `uses [...]` clause |
-| `E104` | Struct field attribute constraint fails (e.g. `@url` on non-URL string) |
-| `E105` | Type mismatch (v0.1 — structural) |
+| Code | Name | Meaning |
+|------|------|---------|
+| `E001` | `ParseError` | Syntax error — unexpected token or malformed declaration |
+| `E101` | `MissingGoal` | Task is missing the required `goal` field |
+| `E102` | `UndeclaredSkillInUses` | Skill name in `uses [...]` clause has no matching `import skill` |
+| `E103` | `PerformWithoutUses` | `perform X.fn()` — `X` is not declared in the task's `uses [...]` clause |
+| `E104` | `LinearBindingReused` | A `@once` binding is consumed more than once in the same step |
+| `E105` | `LinearBindingDropped` | A `@once` binding is declared but never consumed in its step |
+| `E106` | `UnknownEffectGroup` | `uses [...]` references an effect group alias that was never declared |
+| `E201` | `UnknownType` | A type name cannot be resolved to any declaration in scope |
+| `E202` | `WrongArgCount` | `perform` call passes wrong number of arguments to a typed effect function |
+| `E203` | `AttributeConstraint` | Struct field attribute constraint fails (e.g. `@url` on non-URL string) |
 
 ### Warnings (non-fatal — task may still be handed to AI)
 
-| Code | Meaning |
-|------|---------|
-| `W101` | Imported skill has no `.briefskill` interface file |
-| `W102` | Skill interface file is stale (checksum mismatch) |
+| Code | Name | Meaning |
+|------|------|---------|
+| `W101` | `MissingSkillInterface` | Imported skill has no `.briefskill` interface file; type checking is partial |
+| `W102` | `StaleSkillInterface` | Skill interface file checksum does not match current `README.md` |
+
+### Diagnostic format
+
+Every diagnostic includes:
+1. A code (`error[E103]` or `warning[W101]`)
+2. A human-readable description
+3. A source span (`→ file.brief:line:col`)
+4. A `fix:` suggestion with the exact command or code change to resolve it
+
+```
+error[E103]: effect 'GraphQL' is performed but not declared in `uses [...]`
+  → examples/02-profile-screen.brief:14:19
+  fix: add 'GraphQL' to the task's `uses` clause
+
+warning[W101]: skill 'DesignSystem' has no interface file
+  → examples/02-profile-screen.brief:1:1
+  fix: .claude/skills/DesignSystem/DesignSystem.briefskill not found — run: brief skillgen .claude/skills/DesignSystem/
+```
 
 ---
 
@@ -351,13 +469,18 @@ effect Async {
 
 ```ebnf
 program        ::= top_decl*
-top_decl       ::= import_decl | type_decl | struct_decl
-                 | protocol_decl | effect_decl | task_decl
+top_decl       ::= import_decl | sealed_type_decl | type_alias_decl
+                 | effect_group_decl | struct_decl
+                 | protocol_decl | effect_decl | task_decl | test_decl
 
 import_decl    ::= 'import' 'skill' STRING
 
-type_decl      ::= 'sealed' 'type' Ident type_params? '=' type_variant ('|' type_variant)*
-type_variant   ::= Ident ( '(' type_ref (',' type_ref)* ')' )?
+sealed_type_decl  ::= 'sealed' 'type' Ident type_params? '=' type_variant ('|' type_variant)*
+type_variant      ::= Ident ( '(' type_ref (',' type_ref)* ')' )?
+
+type_alias_decl   ::= 'type' Ident '=' attribute+ type_ref
+
+effect_group_decl ::= 'type' Ident '=' '[' Ident (',' Ident)* ']'
 
 struct_decl    ::= 'struct' Ident type_params? '{' struct_field* '}'
 struct_field   ::= Ident ':' attribute* type_ref
@@ -365,9 +488,10 @@ struct_field   ::= Ident ':' attribute* type_ref
 protocol_decl  ::= 'protocol' Ident type_params? '{' fn_sig* '}'
 effect_decl    ::= 'effect'   Ident type_params? '{' fn_sig* '}'
 
-fn_sig         ::= 'fn' Ident type_params? '(' param_list? ')' '->' type_ref
+fn_sig         ::= 'fn' Ident type_params? '(' param_list? ')' '->' ret_type
+ret_type       ::= attribute* type_ref
 param_list     ::= param (',' param)*
-param          ::= Ident ':' type_ref
+param          ::= Ident ':' attribute* type_ref
 
 type_params    ::= '<' Ident (',' Ident)* '>'
 type_ref       ::= Ident type_args? '?'?
@@ -383,8 +507,10 @@ task_body      ::= ('goal' '=' STRING)?
                    step_decl*
 step_decl      ::= 'step' Ident '{' stmt* '}'
 
+test_decl      ::= 'test' STRING '{' stmt* '}'
+
 stmt           ::= let_stmt | expr_stmt
-let_stmt       ::= 'let' Ident '=' expr ';'
+let_stmt       ::= attribute* 'let' Ident '=' expr ';'
 expr_stmt      ::= expr ';'
 
 expr           ::= 'perform' Ident '.' Ident type_args? '(' arg_list ')' '?'?
@@ -402,12 +528,35 @@ kv_pairs       ::= STRING ':' STRING (',' STRING ':' STRING)*
 
 ---
 
-## 11. Versioning
+## 11. CLI Reference
 
-This document describes Brief v0.1. The language is under active development.
-Syntax and semantics are subject to change between minor versions until v1.0.
+| Command | Description |
+|---------|-------------|
+| `brief check <file>.brief` | Type-check only — fast, CI-friendly. Exit code 0 = valid. |
+| `brief run <file>.brief` | Validate then execute the task. |
+| `brief build <file>.brief` | Compile to native binary via LLVM. |
+| `brief build <file>.brief --emit-ir` | Emit LLVM IR for inspection. |
+| `brief build <file>.brief --target wasm32-unknown-unknown` | Compile to WASM. |
+| `brief test <file>.brief` | Run `test { }` blocks with mock skill system. |
+| `brief fmt <file>.brief` | Auto-format to canonical style (idempotent). |
+| `brief doc <file>.brief` | Generate Markdown documentation from declarations. |
+| `brief doc <file>.brief --output <path>` | Write generated docs to file. |
+| `brief repl` | Interactive REPL (tree-walking, fast iteration). |
+| `brief lsp` | Start LSP server on stdio (for editor integration). |
+| `brief gen "<description>"` | AI-generate a `.brief` file from natural language. |
+| `brief skillgen <skill-path>` | Generate `.briefskill` interface from skill README. |
+| `brief add skill <Name>` | Install a skill from the registry. |
+| `brief add skill ./path/` | Install a skill from a local directory. |
+| `brief add skill --list` | List available skills in the registry. |
 
-For the current grammar accepted by the compiler, run:
-```bash
-brief --grammar  # (available in v0.2)
-```
+---
+
+## 12. Versioning
+
+This document describes Brief v0.3. The language is under active development.
+Syntax and semantics may change between minor versions until v1.0.
+
+**Version history:**
+- `v0.1` — Core language: tasks, steps, effects, sealed types, structs, protocols, skill imports
+- `v0.2` — Ecosystem: `brief test`, `brief fmt`, LSP go-to-def/find-refs, WASM, skill registry
+- `v0.3` — Power types: `@once` linear types, type aliases, effect groups, `brief doc`
