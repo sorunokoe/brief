@@ -26,8 +26,7 @@ tokio      = { version = "1", features = ["full"] }
 
 # Optional: LLVM backend (requires `brew install llvm@18` or equivalent)
 # Enable with: cargo build --features llvm-backend
-# After installing LLVM, also add to [dependencies]:
-#   inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "master", features = ["llvm18-0"], optional = true }
+# Set BRIEF_CLANG to the clang binary path if not on PATH.
 # See docs/llvm-setup.md for full instructions.
 
 [features]

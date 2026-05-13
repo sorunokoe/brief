@@ -1,80 +1,416 @@
-/// `brief build` — LLVM IR emission backend for Brief.
+/// `brief build` — LLVM IR text emitter for Brief.
 ///
-/// Compiles `.brief` files to native code via LLVM IR using the `inkwell` crate.
+/// Emits LLVM IR (`.ll`) directly as text, then invokes `clang` to produce a
+/// native binary. No `inkwell` / `llvm-sys` crate required — just LLVM 18
+/// with `clang` on PATH (or set `BRIEF_CLANG` to the full path).
 ///
-/// ## Setup (required before enabling `llvm-backend` feature)
+/// Pipeline:
+///   .brief → AST → type-checked Program → LLVM IR text (.ll) → clang → binary
 ///
-///   macOS:   brew install llvm@18
-///   Ubuntu:  apt-get install llvm-18 llvm-18-dev
+/// Usage:
+///   brief build hello.brief            # → ./hello
+///   brief build hello.brief -o myapp   # → ./myapp
+///   brief build hello.brief --emit-ir  # → hello.ll (no compilation)
 ///
-/// Then add inkwell to briefc/Cargo.toml [dependencies]:
-///   inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "master",
-///               features = ["llvm18-0"], optional = true }
-///   # and update the feature:
-///   llvm-backend = ["inkwell"]
-///
-/// Set the LLVM path (macOS):
-///   export LLVM_SYS_180_PREFIX=$(brew --prefix llvm@18)
-///
-/// Build with the feature:
-///   cargo build --features llvm-backend
-///
-/// ## Usage
-///
-///   brief build hello.brief            # compile → ./hello (native binary)
-///   brief build hello.brief -o myapp   # custom output path
-///   brief build hello.brief --emit-ir  # emit LLVM IR to hello.ll
-///
-/// ## Architecture (for when LLVM is available)
-///
-/// Pipeline: .brief → AST → type-checked Program → LLVM IR Module → object → binary
-///
-/// Each `task` becomes an LLVM function.
-/// Each `step` becomes a labelled basic block.
-/// `perform Skill.fn(args)` emits a call to `brief_rt_perform(skill, fn, argc, ...)`.
-/// Brief runtime stubs: `brief_rt_print`, `brief_rt_perform`, `brief_rt_exit`.
+/// Runtime stubs (declared extern in the IR, provided by brief_rt.c in Phase 2):
+///   brief_rt_print(msg: ptr)
+///   brief_rt_perform(skill: ptr, func: ptr, argc: i32)
+///   brief_rt_exit(code: i32)
 
 // ─────────────────────────────────────────────────────────────────────────────
-// When LLVM is installed + inkwell added to Cargo.toml, replace this block
-// with the full backend implementation (see git history / docs/llvm-setup.md).
+// LLVM IR text emitter
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(feature = "llvm-backend")]
-compile_error!(
-    "The `llvm-backend` feature requires `inkwell` in Cargo.toml and LLVM 18 installed.\n\
-     See briefc/src/codegen.rs or docs/llvm-setup.md for setup instructions."
-);
+mod backend {
+    use crate::ast::{Program, Task, Step, Stmt, Expr};
+    use crate::errors::BriefError;
+
+    // ── String pool ──────────────────────────────────────────────────────────
+
+    struct StringPool {
+        entries: Vec<String>,
+    }
+
+    impl StringPool {
+        fn new() -> Self { StringPool { entries: Vec::new() } }
+
+        /// Intern a string, returning its global name (`@str.N`).
+        fn intern(&mut self, s: &str) -> String {
+            let idx = self.entries.len();
+            self.entries.push(s.to_string());
+            format!("@str.{idx}")
+        }
+
+        /// Emit all `@str.N = private unnamed_addr constant [N x i8] c"..."` lines.
+        fn emit(&self) -> String {
+            let mut out = String::new();
+            for (i, s) in self.entries.iter().enumerate() {
+                let escaped = escape_llvm_str(s);
+                let len = s.len() + 1; // +1 for null terminator
+                out.push_str(&format!(
+                    "@str.{i} = private unnamed_addr constant [{len} x i8] c\"{escaped}\\00\"\n"
+                ));
+            }
+            out
+        }
+    }
+
+    pub fn escape_llvm_str(s: &str) -> String {
+        let mut out = String::new();
+        for b in s.bytes() {
+            match b {
+                b'\\' => out.push_str("\\5C"),
+                b'"'  => out.push_str("\\22"),
+                b'\n' => out.push_str("\\0A"),
+                b'\r' => out.push_str("\\0D"),
+                b'\t' => out.push_str("\\09"),
+                0x00..=0x1F | 0x7F..=0xFF => {
+                    out.push_str(&format!("\\{b:02X}"));
+                }
+                _ => out.push(b as char),
+            }
+        }
+        out
+    }
+
+    // ── Code generator ───────────────────────────────────────────────────────
+
+    pub struct IrEmitter {
+        pool:  StringPool,
+        fns:   Vec<String>, // function bodies
+        main:  Option<String>,
+    }
+
+    impl IrEmitter {
+        pub fn new() -> Self {
+            IrEmitter { pool: StringPool::new(), fns: Vec::new(), main: None }
+        }
+
+        pub fn compile(&mut self, program: &Program) -> Result<(), Vec<BriefError>> {
+            for task in &program.tasks {
+                let body = self.compile_task(task);
+                self.fns.push(body);
+            }
+            if let Some(first) = program.tasks.first() {
+                self.main = Some(self.emit_main(&first.name));
+            }
+            Ok(())
+        }
+
+        pub fn emit_ir(&self) -> String {
+            let mut out = String::new();
+            out.push_str("; Generated by briefc v");
+            out.push_str(env!("CARGO_PKG_VERSION"));
+            out.push_str("\n\n");
+
+            // Runtime declarations
+            out.push_str("declare void @brief_rt_print(ptr %msg)\n");
+            out.push_str("declare void @brief_rt_perform(ptr %skill, ptr %func, i32 %argc)\n");
+            out.push_str("declare void @brief_rt_exit(i32 %code)\n\n");
+
+            // String constants
+            out.push_str(&self.pool.emit());
+            out.push('\n');
+
+            // Task functions
+            for f in &self.fns {
+                out.push_str(f);
+                out.push('\n');
+            }
+
+            // main
+            if let Some(m) = &self.main {
+                out.push_str(m);
+                out.push('\n');
+            }
+
+            out
+        }
+
+        fn compile_task(&mut self, task: &Task) -> String {
+            let mut body = String::new();
+            body.push_str(&format!("define void @{}() {{\n", task.name));
+            body.push_str("entry:\n");
+
+            let label_ref = self.pool.intern(&format!("[brief] task: {}\n", task.name));
+            body.push_str(&format!("  call void @brief_rt_print(ptr {label_ref})\n"));
+
+            for step in &task.steps {
+                body.push_str(&self.compile_step(step));
+            }
+            body.push_str("  ret void\n");
+            body.push_str("}\n");
+            body
+        }
+
+        fn compile_step(&mut self, step: &Step) -> String {
+            let mut out = String::new();
+            let label_ref = self.pool.intern(&format!("  [step] {}\n", step.name));
+            out.push_str(&format!("  call void @brief_rt_print(ptr {label_ref})\n"));
+            for stmt in &step.body {
+                let expr = match stmt {
+                    Stmt::Let  { value, .. } => value,
+                    Stmt::Expr { value, .. } => value,
+                };
+                out.push_str(&self.compile_expr(expr));
+            }
+            out
+        }
+
+        fn compile_expr(&mut self, expr: &Expr) -> String {
+            match expr {
+                Expr::Perform { skill, func, args, .. } => {
+                    let sk = self.pool.intern(skill);
+                    let fn_ = self.pool.intern(func);
+                    let n = args.len() as i32;
+                    format!("  call void @brief_rt_perform(ptr {sk}, ptr {fn_}, i32 {n})\n")
+                }
+                Expr::Await { expr: inner, .. } => self.compile_expr(inner),
+                _ => String::new(),
+            }
+        }
+
+        fn emit_main(&mut self, first_task: &str) -> String {
+            format!(
+                "define i32 @main() {{\nentry:\n  call void @{first_task}()\n  ret i32 0\n}}\n"
+            )
+        }
+    }
+
+    // ── Entry point ──────────────────────────────────────────────────────────
+
+    pub fn build_file(
+        source_path: &std::path::Path,
+        output:      Option<&std::path::Path>,
+        emit_ir:     bool,
+    ) -> bool {
+        use colored::Colorize;
+        use crate::lexer::lex;
+        use crate::parser::parse;
+        use crate::checker::{check, CheckContext};
+        use crate::typeck::type_check_with_skills;
+        use crate::errors::print_diagnostics;
+
+        // ── Parse + type-check ────────────────────────────────────────────
+        let source = match std::fs::read_to_string(source_path) {
+            Ok(s)  => s,
+            Err(e) => { eprintln!("{}: {e}", "error".red().bold()); return false; }
+        };
+
+        let (tokens, _)       = lex(&source);
+        let (program, p_errs) = parse(&tokens, &source);
+        let cwd      = std::env::current_dir().unwrap_or_default();
+        let file_dir = source_path.parent().unwrap_or(std::path::Path::new("."));
+        let ctx      = CheckContext { file_dir, cwd: &cwd };
+
+        let mut diags = p_errs;
+        diags.extend(check(&program, &ctx));
+        diags.extend(type_check_with_skills(&program, Default::default()));
+
+        if diags.iter().any(|d| d.is_error()) {
+            print_diagnostics(&diags, &source, &source_path.display().to_string());
+            return false;
+        }
+
+        // ── Emit IR ───────────────────────────────────────────────────────
+        let stem = source_path.file_stem().and_then(|s| s.to_str()).unwrap_or("out");
+        let mut emitter = IrEmitter::new();
+        if let Err(errs) = emitter.compile(&program) {
+            print_diagnostics(&errs, &source, &source_path.display().to_string());
+            return false;
+        }
+        let ir = emitter.emit_ir();
+
+        let ll_path = std::path::PathBuf::from(format!("{stem}.ll"));
+        if let Err(e) = std::fs::write(&ll_path, &ir) {
+            eprintln!("{}: cannot write {}: {e}", "error".red().bold(), ll_path.display());
+            return false;
+        }
+
+        if emit_ir {
+            let dest = output.map(|p| p.to_path_buf()).unwrap_or(ll_path.clone());
+            if dest != ll_path {
+                let _ = std::fs::rename(&ll_path, &dest);
+            }
+            println!("{} {}", "✅ IR:".green(), dest.display());
+            return true;
+        }
+
+        // ── Compile with clang ────────────────────────────────────────────
+        let out_path = output.map(|p| p.display().to_string())
+            .unwrap_or_else(|| format!("./{stem}"));
+
+        let clang = std::env::var("BRIEF_CLANG")
+            .unwrap_or_else(|_| {
+                // Prefer LLVM 18 clang if it's in the known Homebrew location
+                let homebrew = "/opt/homebrew/Cellar/llvm@18/18.1.8.reinstall/bin/clang";
+                if std::path::Path::new(homebrew).exists() {
+                    homebrew.to_string()
+                } else {
+                    "clang".to_string()
+                }
+            });
+
+        // Inline a minimal runtime stub so the binary links without brief_rt.c
+        let rt_stub = r#"
+#include <stdio.h>
+#include <stdlib.h>
+void brief_rt_print(const char *msg)              { printf("%s", msg); }
+void brief_rt_perform(const char *sk, const char *fn, int argc) {
+    printf("    perform %s.%s (%d args)\n", sk, fn, argc); }
+void brief_rt_exit(int code)                       { exit(code); }
+"#;
+
+        let rt_path = std::path::PathBuf::from(format!("{stem}_rt.c"));
+        if let Err(e) = std::fs::write(&rt_path, rt_stub) {
+            eprintln!("{}: cannot write runtime stub: {e}", "error".red().bold());
+            let _ = std::fs::remove_file(&ll_path);
+            return false;
+        }
+
+        let status = std::process::Command::new(&clang)
+            .args([ll_path.to_str().unwrap(), rt_path.to_str().unwrap(), "-o", &out_path])
+            .status();
+
+        let _ = std::fs::remove_file(&ll_path);
+        let _ = std::fs::remove_file(&rt_path);
+
+        match status {
+            Ok(s) if s.success() => {
+                println!("{} {}", "✅ binary:".green(), out_path.green());
+                true
+            }
+            Ok(s) => {
+                eprintln!("{}: clang exited with {s}", "error".red().bold());
+                false
+            }
+            Err(e) => {
+                eprintln!("{}: could not run clang: {e}", "error".red().bold());
+                eprintln!("  Set BRIEF_CLANG to the full path of your clang binary.");
+                false
+            }
+        }
+    }
+} // mod backend
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Public stub — always compiled. Shows a helpful setup message.
+// Public entry point
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Build a `.brief` file to a native binary.
-///
-/// Requires the `llvm-backend` feature + LLVM 18 + inkwell added to Cargo.toml.
-/// See `docs/llvm-setup.md` for the full setup guide.
 pub fn build_file(
     source_path: &std::path::Path,
     output:      Option<&std::path::Path>,
     emit_ir:     bool,
 ) -> bool {
-    use colored::Colorize;
-    let _ = (source_path, output, emit_ir);
-    eprintln!("{} `brief build` requires the LLVM backend.", "error".red().bold());
-    eprintln!();
-    eprintln!("{}", "Setup steps:".yellow().bold());
-    eprintln!(
-        "  1. Install LLVM 18:  {}",
-        "brew install llvm@18".cyan()
-    );
-    eprintln!(
-        "  2. Add inkwell to Cargo.toml and set LLVM_SYS_180_PREFIX"
-    );
-    eprintln!(
-        "  3. Rebuild:          {}",
-        "cargo build --features llvm-backend".cyan()
-    );
-    eprintln!();
-    eprintln!("See {} for details.", "docs/llvm-setup.md".underline());
-    false
+    #[cfg(feature = "llvm-backend")]
+    { return backend::build_file(source_path, output, emit_ir); }
+
+    #[cfg(not(feature = "llvm-backend"))]
+    {
+        use colored::Colorize;
+        let _ = (source_path, output, emit_ir);
+        eprintln!("{} LLVM backend is not enabled.", "error".red().bold());
+        eprintln!("  {}", "cargo build --features llvm-backend".cyan());
+        eprintln!("  See docs/llvm-setup.md for details.");
+        false
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(all(test, feature = "llvm-backend"))]
+mod tests {
+    use super::backend::{IrEmitter, escape_llvm_str};
+    use crate::lexer::lex;
+    use crate::parser::parse;
+
+    fn compile_to_ir(src: &str) -> String {
+        let (tokens, _) = lex(src);
+        let (program, _) = parse(&tokens, src);
+        let mut emitter = IrEmitter::new();
+        emitter.compile(&program).unwrap();
+        emitter.emit_ir()
+    }
+
+    #[test]
+    fn test_escape_newline() {
+        assert_eq!(escape_llvm_str("hi\n"), "hi\\0A");
+    }
+
+    #[test]
+    fn test_escape_backslash() {
+        assert_eq!(escape_llvm_str("a\\b"), "a\\5Cb");
+    }
+
+    #[test]
+    fn test_ir_has_runtime_decls() {
+        let src = r#"
+            import skill "IO"
+            task Hello : TaskBrief {
+                goal = "hello world"
+                step Greet {
+                    perform IO.print("Hello")
+                }
+            }
+        "#;
+        let ir = compile_to_ir(src);
+        assert!(ir.contains("declare void @brief_rt_print"));
+        assert!(ir.contains("declare void @brief_rt_perform"));
+        assert!(ir.contains("declare void @brief_rt_exit"));
+    }
+
+    #[test]
+    fn test_ir_has_task_function() {
+        let src = r#"
+            task Hello : TaskBrief {
+                goal = "say hello"
+                step Greet { perform IO.print("hi") }
+            }
+        "#;
+        let ir = compile_to_ir(src);
+        assert!(ir.contains("define void @Hello()"));
+    }
+
+    #[test]
+    fn test_ir_has_main() {
+        let src = r#"
+            task MyTask : TaskBrief {
+                goal = "test"
+                step S { perform IO.print("x") }
+            }
+        "#;
+        let ir = compile_to_ir(src);
+        assert!(ir.contains("define i32 @main()"));
+        assert!(ir.contains("call void @MyTask()"));
+    }
+
+    #[test]
+    fn test_ir_perform_call() {
+        let src = r#"
+            task T : TaskBrief {
+                goal = "g"
+                step S { perform GraphQL.query(UserQuery) }
+            }
+        "#;
+        let ir = compile_to_ir(src);
+        assert!(ir.contains("@brief_rt_perform"));
+    }
+
+    #[test]
+    fn test_ir_string_constants_interned() {
+        let src = r#"
+            task T : TaskBrief {
+                goal = "g"
+                step A { perform IO.print("x") }
+                step B { perform IO.print("x") }
+            }
+        "#;
+        let ir = compile_to_ir(src);
+        // String pool interns by insertion order; both steps emit separate entries
+        assert!(ir.contains("@str.0"));
+        assert!(ir.contains("@str.1"));
+    }
 }
