@@ -4,3 +4,4 @@ Cargo.lock
 .env.local
 *.brieftmp
 .DS_Store
+_book/
