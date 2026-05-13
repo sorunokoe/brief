@@ -6,7 +6,9 @@
   "patterns": [
     { "include": "#comment" },
     { "include": "#string" },
+    { "include": "#decorator-builtin" },
     { "include": "#decorator" },
+    { "include": "#skill-perform" },
     { "include": "#keyword" },
     { "include": "#type-name" },
     { "include": "#operator" },
@@ -26,27 +28,40 @@
         { "name": "constant.character.escape.brief", "match": "\\\\." }
       ]
     },
+    "decorator-builtin": {
+      "name": "storage.modifier.brief",
+      "match": "@(BriefBuilder|once|mcp|url|nonEmpty|matches|deprecated|experimental|internal)\\b"
+    },
     "decorator": {
       "name": "entity.name.tag.brief",
       "match": "@[A-Za-z][A-Za-z0-9_]*"
+    },
+    "skill-perform": {
+      "comment": "Highlights `perform SkillName.method` — skill name gets distinct color",
+      "match": "\\b(perform)\\s+([A-Z][A-Za-z0-9_]*)(\\.)",
+      "captures": {
+        "1": { "name": "keyword.control.brief" },
+        "2": { "name": "support.class.skill.brief" },
+        "3": { "name": "punctuation.accessor.brief" }
+      }
     },
     "keyword": {
       "patterns": [
         {
           "name": "keyword.control.brief",
-          "match": "\\b(perform|await|return|let)\\b"
+          "match": "\\b(perform|await|return|let|if|else|while|for|break|continue|match|spawn)\\b"
         },
         {
           "name": "keyword.declaration.brief",
-          "match": "\\b(task|step|import|skill|sealed|type|struct|protocol|effect|fn|async)\\b"
+          "match": "\\b(task|step|test|import|skill|sealed|type|struct|protocol|effect|fn|async|interface|module)\\b"
         },
         {
           "name": "keyword.other.brief",
-          "match": "\\b(goal|uses|interface)\\b"
+          "match": "\\b(goal|uses|extras|display|from|assert|where|init)\\b"
         },
         {
           "name": "constant.language.brief",
-          "match": "\\b(true|false|null)\\b"
+          "match": "\\b(true|false|null|ok|err|some|none)\\b"
         }
       ]
     },
