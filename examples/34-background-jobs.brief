@@ -14,7 +14,7 @@ sealed type RetryPolicy = FixedDelay(String) | ExponentialBackoff(String) | Line
 
 struct Job {
     id: @nonEmpty String
-    type: @nonEmpty String
+    kind: @nonEmpty String
     payload: String
     priority: JobPriority
     attempt: String
@@ -48,7 +48,7 @@ effect JobQueue {
 }
 
 @BriefBuilder
-task EnqueueEmailJob : TaskBrief uses [JobQueue, Analytics] {
+task EnqueueEmailJob : TaskBrief uses [JobQueue, Database, Analytics] {
     goal   = "Enqueue a transactional email job with high priority and 3-attempt retry policy"
     extras = [
         "jobType": "TransactionalEmail",
@@ -81,7 +81,7 @@ task ProcessJob : TaskBrief uses [JobQueue, Database, Notifications, Analytics] 
     ]
 
     step Dequeue {
-        let job = perform JobQueue.dequeue(workerId)?;
+        let jobId = perform JobQueue.dequeue(workerId)?;
     }
 
     step Execute {
@@ -89,16 +89,16 @@ task ProcessJob : TaskBrief uses [JobQueue, Database, Notifications, Analytics] 
     }
 
     step Complete {
-        let _ = perform JobQueue.complete(job.id, result)?;
+        let _ = perform JobQueue.complete(jobId, result)?;
     }
 
     step Track {
-        let _ = perform Analytics.track("job_processed", job.type)?;
+        let _ = perform Analytics.track("job_processed", jobId)?;
     }
 }
 
 @BriefBuilder
-task RetryFailedJob : TaskBrief uses [JobQueue, Analytics] {
+task RetryFailedJob : TaskBrief uses [JobQueue, Database, Analytics] {
     goal   = "Mark a job as failed and re-enqueue with exponential backoff delay"
     extras = [
         "retryPolicy": "ExponentialBackoff",
@@ -171,7 +171,7 @@ task ScheduleRecurringJob : TaskBrief uses [JobQueue, Database, Analytics] {
 }
 
 @BriefBuilder
-task DrainAndShutdown : TaskBrief uses [JobQueue, Analytics] {
+task DrainAndShutdown : TaskBrief uses [JobQueue, Database, Analytics] {
     goal   = "Gracefully drain the job queue on worker shutdown — finish running jobs, stop dequeuing"
     extras = [
         "pattern": "GracefulShutdown",

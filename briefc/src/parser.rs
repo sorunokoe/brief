@@ -449,7 +449,11 @@ impl<'a> Parser<'a> {
 
         let mut fields = Vec::new();
         while self.peek() != Some(&Token::RBrace) && !self.at_end() {
+            let pos_before = self.pos;
             if let Some(f) = self.parse_struct_field() { fields.push(f); }
+            if self.pos == pos_before && self.peek() != Some(&Token::RBrace) {
+                self.advance(); // guard against infinite loop on unexpected token
+            }
         }
 
         let end = self.current_span().end;
@@ -483,7 +487,11 @@ impl<'a> Parser<'a> {
 
         let mut methods = Vec::new();
         while self.peek() != Some(&Token::RBrace) && !self.at_end() {
+            let pos_before = self.pos;
             if let Some(f) = self.parse_fn_sig() { methods.push(f); }
+            if self.pos == pos_before && self.peek() != Some(&Token::RBrace) {
+                self.advance();
+            }
         }
 
         let end = self.current_span().end;
@@ -502,7 +510,11 @@ impl<'a> Parser<'a> {
 
         let mut fns = Vec::new();
         while self.peek() != Some(&Token::RBrace) && !self.at_end() {
+            let pos_before = self.pos;
             if let Some(f) = self.parse_fn_sig() { fns.push(f); }
+            if self.pos == pos_before && self.peek() != Some(&Token::RBrace) {
+                self.advance();
+            }
         }
 
         let end = self.current_span().end;
