@@ -5,6 +5,7 @@ mod doc;
 mod errors;
 mod fmt;
 mod gen;
+mod init;
 mod lexer;
 mod lsp;
 mod parser;
@@ -14,6 +15,7 @@ mod runner;
 mod skillgen;
 mod tester;
 mod typeck;
+mod watch;
 
 use std::path::PathBuf;
 use clap::{Parser, Subcommand};
@@ -23,7 +25,7 @@ use colored::Colorize;
 
 #[derive(Parser)]
 #[command(name = "brief")]
-#[command(version = "0.1.0")]
+#[command(version = env!("CARGO_PKG_VERSION"))]
 #[command(about = "If it compiles, the AI has everything it needs.")]
 #[command(long_about = None)]
 struct Cli {
@@ -129,6 +131,18 @@ enum Commands {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
+
+    /// Watch a .brief file (or directory) for changes and re-check on every save
+    Watch {
+        /// Path to the .brief file or directory to watch
+        path: PathBuf,
+    },
+
+    /// Scaffold a new Brief project in a new directory
+    Init {
+        /// Project name (also used as the new directory name)
+        name: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -225,6 +239,18 @@ fn main() {
         Commands::Doc { file, output } => {
             print_brief_banner();
             let ok = doc::doc_file(&file, output.as_deref());
+            std::process::exit(if ok { 0 } else { 1 });
+        }
+
+        Commands::Watch { path } => {
+            print_brief_banner();
+            let ok = watch::watch(&path);
+            std::process::exit(if ok { 0 } else { 1 });
+        }
+
+        Commands::Init { name } => {
+            print_brief_banner();
+            let ok = init::init(&name);
             std::process::exit(if ok { 0 } else { 1 });
         }
     }

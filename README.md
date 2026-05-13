@@ -64,6 +64,8 @@ task ProfileScreen : TaskBrief uses [DesignSystem, GraphQL] {
 | `brief test <file>` | Run `test { }` blocks with mock skill system |
 | `brief fmt <file>` | Auto-format to canonical style |
 | `brief doc <file>` | Generate Markdown documentation |
+| `brief watch <file>` | Live re-check on every save (dev loop) |
+| `brief init <name>` | Scaffold a new Brief project directory |
 | `brief repl` | Interactive REPL |
 | `brief lsp` | LSP server (stdio) — for editor integration |
 | `brief gen "<description>"` | AI-generates a `.brief` file from natural language |
@@ -123,8 +125,8 @@ The `.briefskill` file is the typed contract — committed to your repo. `brief 
 - **v0.1** ✅ — Full type system, skill imports, error messages, examples
 - **v0.2** ✅ — `brief test`, `brief fmt`, LSP, WASM, skill registry
 - **v0.3** ✅ — Linear types (`@once`), type aliases, effect groups, `brief doc`
-- **v0.4** ✅ — Test block parsing in main parser, `@mcp` attribute, 32 examples
-- **v1.0** — Language specification 1.0, documentation website, CI workflows, performance
+- **v0.4** ✅ — Test block parsing, `@mcp` attribute, 32 examples, CI/release workflows
+- **v1.0** 🔄 — `brief watch`, `brief init`, documentation website, language spec 1.0
 
 ## Contributing
 

@@ -467,4 +467,169 @@ mod tests {
         "#);
         assert!(diags.iter().any(|d| d.code == ErrorCode::LinearBindingDropped), "{diags:?}");
     }
+
+    // ── E103: effect performed but not in uses ───────────────────────────────
+
+    #[test]
+    fn e103_effect_performed_not_in_uses() {
+        let diags = check_src(r#"
+            import skill "GraphQL"
+            import skill "Analytics"
+            task T : TaskBrief uses [GraphQL] {
+                goal = "fetch"
+                step Do {
+                    let _ = perform Analytics.track(event)?;
+                }
+            }
+        "#);
+        assert!(diags.iter().any(|d| d.code == ErrorCode::PerformWithoutUses), "{diags:?}");
+    }
+
+    #[test]
+    fn e103_not_fired_when_skill_in_uses() {
+        let diags = check_src(r#"
+            import skill "GraphQL"
+            task T : TaskBrief uses [GraphQL] {
+                goal = "fetch"
+                step Do {
+                    let user = perform GraphQL.query(UserQuery)?;
+                }
+            }
+        "#);
+        let e103: Vec<_> = diags.iter().filter(|d| d.code == ErrorCode::PerformWithoutUses).collect();
+        assert!(e103.is_empty(), "unexpected E103: {e103:?}");
+    }
+
+    // ── E101: missing goal ────────────────────────────────────────────────────
+
+    #[test]
+    fn e101_fires_on_task_without_goal() {
+        let diags = check_src(r#"task T : TaskBrief { step S {} }"#);
+        assert!(diags.iter().any(|d| d.code == ErrorCode::MissingGoal), "{diags:?}");
+    }
+
+    #[test]
+    fn e101_not_fired_when_goal_present() {
+        let diags = check_src(r#"task T : TaskBrief { goal = "do something" }"#);
+        let e101: Vec<_> = diags.iter().filter(|d| d.code == ErrorCode::MissingGoal).collect();
+        assert!(e101.is_empty(), "unexpected E101: {e101:?}");
+    }
+
+    // ── E102: skill in uses but not imported ──────────────────────────────────
+
+    #[test]
+    fn e102_fires_when_uses_without_import() {
+        let diags = check_src(r#"task T : TaskBrief uses [GraphQL] { goal = "x" }"#);
+        assert!(diags.iter().any(|d| d.code == ErrorCode::UndeclaredSkillInUses), "{diags:?}");
+    }
+
+    #[test]
+    fn e102_not_fired_when_imported() {
+        let diags = check_src(r#"
+            import skill "GraphQL"
+            task T : TaskBrief uses [GraphQL] { goal = "x" }
+        "#);
+        let e102: Vec<_> = diags.iter().filter(|d| d.code == ErrorCode::UndeclaredSkillInUses).collect();
+        assert!(e102.is_empty(), "unexpected E102: {e102:?}");
+    }
+
+    // ── Multiple errors can coexist ───────────────────────────────────────────
+
+    #[test]
+    fn multiple_errors_on_bad_task() {
+        // No goal + skill in uses but not imported
+        let diags = check_src(r#"task T : TaskBrief uses [Missing] {}"#);
+        let has_e101 = diags.iter().any(|d| d.code == ErrorCode::MissingGoal);
+        let has_e102 = diags.iter().any(|d| d.code == ErrorCode::UndeclaredSkillInUses);
+        assert!(has_e101, "expected E101: {diags:?}");
+        assert!(has_e102, "expected E102: {diags:?}");
+    }
+
+    // ── Test blocks don't generate checker errors ─────────────────────────────
+
+    #[test]
+    fn test_blocks_do_not_generate_checker_errors() {
+        // test { } blocks with mock/run/assert should be transparent to the checker
+        let diags = check_src(r#"
+            import skill "GraphQL"
+            task FetchProfile : TaskBrief uses [GraphQL] {
+                goal = "Fetch a user profile"
+                step Load {
+                    let user = perform GraphQL.query(UserProfileQuery)?;
+                }
+            }
+            test "FetchProfile loads user via GraphQL" {
+                mock GraphQL {
+                    fn query(op) -> Ok(User { id: "u1", name: "Ada" })
+                }
+                run FetchProfile
+                assert performed GraphQL.query
+                assert result is Ok
+            }
+        "#);
+        let hard_errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
+        // W101 (no .briefskill) is ok; hard errors should be zero
+        assert!(hard_errors.is_empty(), "unexpected hard errors: {hard_errors:?}");
+    }
+
+    #[test]
+    fn test_block_does_not_require_mock_skills_to_be_imported_twice() {
+        // The test block references skills only via mock — it should not
+        // cause E102/E103 even if the mock refers to a skill not declared in uses
+        let diags = check_src(r#"
+            import skill "GraphQL"
+            task T : TaskBrief uses [GraphQL] { goal = "x" }
+            test "uses unimported mock" {
+                mock SomeMockSkill { fn foo(x) -> Ok("y") }
+                run T
+                assert result is Ok
+            }
+        "#);
+        // The only errors should be W101 (no .briefskill files) — no E102/E103
+        let hard: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
+        assert!(hard.is_empty(), "unexpected errors from test block mock: {hard:?}");
+    }
+
+    // ── W101: skill has no interface file ─────────────────────────────────────
+
+    #[test]
+    fn w101_fires_on_imported_skill_without_briefskill() {
+        // When checking from "." (no .claude/skills/ dir), W101 should fire
+        let diags = check_src(r#"
+            import skill "GraphQL"
+            task T : TaskBrief uses [GraphQL] { goal = "x" }
+        "#);
+        assert!(diags.iter().any(|d| d.code == ErrorCode::MissingSkillInterface), "{diags:?}");
+    }
+
+    // ── Effect group used in multiple tasks ───────────────────────────────────
+
+    #[test]
+    fn effect_group_works_across_multiple_tasks() {
+        let diags = check_src(r#"
+            import skill "Auth"
+            import skill "Session"
+            type AuthEffects = [Auth, Session]
+
+            task Login : TaskBrief uses [AuthEffects] {
+                goal = "login"
+                step Do { let t = perform Auth.login(user)?; }
+            }
+            task Logout : TaskBrief uses [AuthEffects] {
+                goal = "logout"
+                step Do { let _ = perform Session.destroy(token)?; }
+            }
+        "#);
+        let e102: Vec<_> = diags.iter().filter(|d| d.code == ErrorCode::UndeclaredSkillInUses).collect();
+        assert!(e102.is_empty(), "unexpected E102: {e102:?}");
+    }
+
+    // ── @mcp attribute on type alias is valid ─────────────────────────────────
+
+    #[test]
+    fn mcp_attribute_on_type_alias_is_valid() {
+        let diags = check_src(r#"type GitHubMCP = @mcp GitHub"#);
+        let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
+        assert!(errors.is_empty(), "unexpected errors for @mcp alias: {errors:?}");
+    }
 }
