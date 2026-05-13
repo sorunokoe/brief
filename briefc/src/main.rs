@@ -5,6 +5,7 @@ mod gen;
 mod lexer;
 mod lsp;
 mod parser;
+mod repl;
 mod runner;
 mod skillgen;
 mod typeck;
@@ -87,8 +88,7 @@ fn main() {
 
         Commands::Repl => {
             print_brief_banner();
-            eprintln!("{} REPL is coming in v0.2", "ℹ".blue().bold());
-            eprintln!("  Watch: https://github.com/yourusername/brief/releases");
+            repl::run_repl();
         }
 
         Commands::Lsp => {
