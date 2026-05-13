@@ -1,0 +1,71 @@
+{
+  "name": "brief-lang",
+  "displayName": "Brief",
+  "description": "Language support for the Brief AI workflow language — syntax highlighting, diagnostics, and hover via LSP.",
+  "version": "0.1.0",
+  "publisher": "brief-lang",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/brief"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Programming Languages", "Linters"],
+  "keywords": ["brief", "AI", "workflow", "DSL"],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "brief",
+        "aliases": ["Brief", "brief"],
+        "extensions": [".brief"],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icons/brief-light.svg",
+          "dark":  "./icons/brief-dark.svg"
+        }
+      }
+    ],
+    "grammars": [
+      {
+        "language": "brief",
+        "scopeName": "source.brief",
+        "path": "./syntaxes/brief.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Brief",
+      "properties": {
+        "brief.serverPath": {
+          "type": "string",
+          "default": "brief",
+          "description": "Path to the `brief` binary. Defaults to finding it on $PATH."
+        },
+        "brief.trace.server": {
+          "type": "string",
+          "enum": ["off", "messages", "verbose"],
+          "default": "off",
+          "description": "Traces LSP communication between VS Code and the Brief server."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.0",
+    "@vscode/vsce": "^2.24.0"
+  }
+}

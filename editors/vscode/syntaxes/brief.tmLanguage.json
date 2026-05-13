@@ -1,0 +1,78 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Brief",
+  "scopeName": "source.brief",
+  "fileTypes": ["brief"],
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#string" },
+    { "include": "#decorator" },
+    { "include": "#keyword" },
+    { "include": "#type-name" },
+    { "include": "#operator" },
+    { "include": "#number" },
+    { "include": "#identifier" }
+  ],
+  "repository": {
+    "comment": {
+      "name": "comment.line.double-slash.brief",
+      "match": "//.*$"
+    },
+    "string": {
+      "name": "string.quoted.double.brief",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        { "name": "constant.character.escape.brief", "match": "\\\\." }
+      ]
+    },
+    "decorator": {
+      "name": "entity.name.tag.brief",
+      "match": "@[A-Za-z][A-Za-z0-9_]*"
+    },
+    "keyword": {
+      "patterns": [
+        {
+          "name": "keyword.control.brief",
+          "match": "\\b(perform|await|return|let)\\b"
+        },
+        {
+          "name": "keyword.declaration.brief",
+          "match": "\\b(task|step|import|skill|sealed|type|struct|protocol|effect|fn|async)\\b"
+        },
+        {
+          "name": "keyword.other.brief",
+          "match": "\\b(goal|uses|interface)\\b"
+        },
+        {
+          "name": "constant.language.brief",
+          "match": "\\b(true|false|null)\\b"
+        }
+      ]
+    },
+    "type-name": {
+      "name": "entity.name.type.brief",
+      "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
+    },
+    "operator": {
+      "patterns": [
+        {
+          "name": "keyword.operator.brief",
+          "match": "(->|=>|\\?|\\|[^|]|=)"
+        },
+        {
+          "name": "punctuation.brief",
+          "match": "[{}()\\[\\]<>,;:]"
+        }
+      ]
+    },
+    "number": {
+      "name": "constant.numeric.brief",
+      "match": "\\b[0-9]+(\\.([0-9]+))?\\b"
+    },
+    "identifier": {
+      "name": "variable.other.brief",
+      "match": "\\b[a-z_][A-Za-z0-9_]*\\b"
+    }
+  }
+}
