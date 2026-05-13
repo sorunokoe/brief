@@ -1,0 +1,199 @@
+import skill "OAuth"
+
+import skill "Database"
+
+import skill "Analytics"
+
+import skill "Notifications"
+
+sealed type OAuthProvider = Apple | Google | GitHub | Facebook | Microsoft
+
+sealed type AuthResult = Authorized(String) | Denied(String) | Cancelled | Error(String)
+
+struct PKCEChallenge {
+    codeVerifier: @nonEmpty String
+    codeChallenge: @nonEmpty String
+    state: @nonEmpty String
+    nonce: @nonEmpty String
+}
+
+struct AuthorizationCode {
+    code: @nonEmpty String
+    state: @nonEmpty String
+    provider: OAuthProvider
+}
+
+struct OAuthToken {
+    accessToken: @nonEmpty String
+    refreshToken: String
+    idToken: String
+    expiresIn: String
+    scope: @nonEmpty String
+}
+
+struct SocialProfile {
+    providerId: @nonEmpty String
+    email: @nonEmpty String
+    name: String
+    avatarUrl: @url String
+    emailVerified: String
+}
+
+effect OAuth {
+    fn generatePKCE() -> PKCEChallenge
+    fn buildAuthorizationUrl(provider: OAuthProvider, challenge: PKCEChallenge) -> String
+    fn exchangeCode(code: AuthorizationCode, verifier: String) -> OAuthToken
+    fn refreshToken(refreshToken: String) -> OAuthToken
+    fn fetchProfile(accessToken: String, provider: OAuthProvider) -> SocialProfile
+    fn revokeToken(token: String) -> String
+    fn validateState(received: String, expected: String) -> String
+}
+
+@BriefBuilder
+task InitiateOAuthFlow : TaskBrief uses [OAuth, Database, Analytics] {
+    goal   = "Generate a PKCE challenge, build the provider authorization URL, and persist state"
+    extras = [
+        "pattern": "OAuth2PKCE",
+        "stateExpiry": "10m",
+        "provider": "dynamic"
+    ]
+
+    step GeneratePKCE {
+        // PKCE prevents authorization code interception attacks.
+        // code_verifier is random; code_challenge = BASE64URL(SHA256(verifier))
+        let challenge = perform OAuth.generatePKCE()?;
+    }
+
+    step PersistState {
+        // Store state + verifier in the session for later validation
+        let _ = perform Database.query(SaveOAuthStateQuery)?;
+    }
+
+    step BuildUrl {
+        let url = perform OAuth.buildAuthorizationUrl(provider, challenge)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("oauth_initiated", provider)?;
+    }
+}
+
+@BriefBuilder
+task HandleOAuthCallback : TaskBrief uses [OAuth, Database, Analytics] {
+    goal   = "Receive the authorization callback, validate state, and exchange the code for tokens"
+    extras = [
+        "pattern": "OAuth2PKCE",
+        "csrfProtection": "state_param",
+        "idTokenValidation": "true"
+    ]
+
+    step ValidateState {
+        // Reject if state doesn't match — prevents CSRF attacks
+        let _ = perform OAuth.validateState(receivedState, storedState)?;
+    }
+
+    step LoadVerifier {
+        let verifier = perform Database.query(LoadOAuthStateQuery)?;
+    }
+
+    step ExchangeCode {
+        let tokens = perform OAuth.exchangeCode(authCode, verifier)?;
+    }
+
+    step FetchProfile {
+        let profile = perform OAuth.fetchProfile(accessToken, provider)?;
+    }
+
+    step UpsertUser {
+        let user = perform Database.query(UpsertSocialUserQuery)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("oauth_completed", provider)?;
+    }
+}
+
+@BriefBuilder
+task RefreshOAuthToken : TaskBrief uses [OAuth, Database, Analytics] {
+    goal   = "Silently refresh an expired OAuth access token using the stored refresh token"
+    extras = [
+        "pattern": "SilentRefresh",
+        "expiryBuffer": "60s"
+    ]
+
+    step LoadRefreshToken {
+        let stored = perform Database.query(LoadRefreshTokenQuery)?;
+    }
+
+    step Refresh {
+        let fresh = perform OAuth.refreshToken(refreshTokenValue)?;
+    }
+
+    step PersistTokens {
+        let _ = perform Database.query(UpdateTokensQuery)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("oauth_token_refreshed", provider)?;
+    }
+}
+
+@BriefBuilder
+task RevokeOAuthSession : TaskBrief uses [OAuth, Database, Analytics] {
+    goal   = "Revoke the OAuth token at the provider and clear the local session on sign-out"
+    extras = [
+        "pattern": "OAuthRevoke",
+        "clearLocalSession": "true"
+    ]
+
+    step LoadTokens {
+        let tokens = perform Database.query(LoadUserTokensQuery)?;
+    }
+
+    step RevokeAtProvider {
+        let _ = perform OAuth.revokeToken(accessToken)?;
+    }
+
+    step ClearSession {
+        let _ = perform Database.query(DeleteSessionQuery)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("oauth_revoked", provider)?;
+    }
+}
+
+@BriefBuilder
+task LinkAdditionalProvider : TaskBrief uses [OAuth, Database, Notifications, Analytics] {
+    goal   = "Link a second OAuth provider to an existing account (account linking flow)"
+    extras = [
+        "pattern": "AccountLinking",
+        "requireReauth": "true"
+    ]
+
+    step VerifyCurrentSession {
+        let session = perform Database.query(VerifySessionQuery)?;
+    }
+
+    step InitiateLinking {
+        let challenge = perform OAuth.generatePKCE()?;
+        let url = perform OAuth.buildAuthorizationUrl(newProvider, challenge)?;
+    }
+
+    step ExchangeAndFetch {
+        let tokens = perform OAuth.exchangeCode(authCode, verifier)?;
+        let profile = perform OAuth.fetchProfile(accessToken, newProvider)?;
+    }
+
+    step LinkToAccount {
+        let _ = perform Database.query(LinkProviderQuery)?;
+    }
+
+    step Notify {
+        let _ = perform Notifications.send(userId, ProviderLinkedEmail)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("provider_linked", newProvider)?;
+    }
+}

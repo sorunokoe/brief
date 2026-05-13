@@ -56,12 +56,32 @@ Auth     = "infra/skills/Auth"
 
 ### `[ci]`
 
-Lists `.brief` files that CI should check.
+Lists `.brief` files (or glob patterns) that `brief ci` should check.
 
 ```toml
 [ci]
-examples = ["hello.brief", "auth.brief"]
+examples = [
+  "examples/*.brief",       # glob: all .brief files in examples/
+  "features/auth.brief",    # literal file
+  "features/",              # directory: all .brief files inside
+]
 ```
+
+Running `brief ci` from the project root will:
+1. Find the nearest `brief.toml` by walking up the directory tree
+2. Expand all patterns in `examples`
+3. Run `brief check` on each matched file
+4. Exit `0` if all pass, `1` if any fail
+
+This is the recommended way to integrate Brief into CI pipelines:
+
+```yaml
+# .github/workflows/ci.yml
+- name: Brief CI checks
+  run: brief ci
+```
+
+It replaces verbose shell loops and keeps the checked file list in version control (in `brief.toml`) rather than scattered across YAML files.
 
 ## Scaffold with `brief init`
 

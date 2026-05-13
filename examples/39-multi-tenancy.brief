@@ -1,0 +1,213 @@
+import skill "Database"
+
+import skill "Auth"
+
+import skill "Analytics"
+
+import skill "Cache"
+
+sealed type TenantPlan = Free | Starter | Pro | Enterprise(String)
+
+sealed type TenantStatus = Active | Suspended(String) | Terminated | PendingSetup
+
+sealed type Permission = Read | Write | Delete | Admin | Owner
+
+struct Tenant {
+    id: @nonEmpty String
+    slug: @nonEmpty String
+    name: @nonEmpty String
+    plan: TenantPlan
+    status: TenantStatus
+    ownerId: @nonEmpty String
+}
+
+struct TenantMember {
+    tenantId: @nonEmpty String
+    userId: @nonEmpty String
+    role: @nonEmpty String
+    permissions: Permission
+    joinedAt: String
+}
+
+struct TenantContext {
+    tenantId: @nonEmpty String
+    userId: @nonEmpty String
+    plan: TenantPlan
+    permissions: Permission
+}
+
+struct ResourceQuota {
+    tenantId: @nonEmpty String
+    maxUsers: String
+    maxStorage: String
+    currentUsers: String
+    currentStorage: String
+}
+
+effect Auth {
+    fn resolveContext(sessionToken: String) -> TenantContext
+    fn hasPermission(context: TenantContext, permission: Permission) -> String
+    fn impersonate(adminToken: String, targetTenantId: String) -> TenantContext
+}
+
+@BriefBuilder
+task ResolveTenantContext : TaskBrief uses [Auth, Cache, Analytics] {
+    goal   = "Extract and cache the tenant context from a session token — all requests start here"
+    extras = [
+        "pattern": "TenantResolution",
+        "cacheKey": "tenant:{userId}:{tenantId}",
+        "ttl": "5m",
+        "isolation": "RowLevelSecurity"
+    ]
+
+    step LoadFromCache {
+        let cached = perform Cache.get(tenantContextKey)?;
+    }
+
+    step ResolveFromToken {
+        let ctx = perform Auth.resolveContext(sessionToken)?;
+    }
+
+    step CacheContext {
+        let _ = perform Cache.set(tenantContextKey, ctx, ttl)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("tenant_context_resolved", tenantId)?;
+    }
+}
+
+@BriefBuilder
+task EnforceTenantIsolation : TaskBrief uses [Auth, Database, Analytics] {
+    goal   = "Verify the resolved context has access to the requested resource — block cross-tenant access"
+    extras = [
+        "pattern": "TenantIsolation",
+        "mechanism": "PostgreSQL RLS + application-level check",
+        "auditAll": "true"
+    ]
+
+    step LoadContext {
+        let ctx = perform Auth.resolveContext(sessionToken)?;
+    }
+
+    step CheckPermission {
+        // Fail closed: if permission check throws, deny access
+        let allowed = perform Auth.hasPermission(ctx, requiredPermission)?;
+    }
+
+    step AuditAccess {
+        // Every resource access is logged — essential for compliance (SOC 2, GDPR)
+        let _ = perform Database.query(LogResourceAccessQuery)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("resource_access_checked", resourceType)?;
+    }
+}
+
+@BriefBuilder
+task ProvisionTenant : TaskBrief uses [Database, Auth, Analytics] {
+    goal   = "Create a new tenant, seed default data, and assign the founding owner role"
+    extras = [
+        "pattern": "TenantProvisioning",
+        "seedData": "true",
+        "defaultPlan": "Starter",
+        "ownersLimit": "1"
+    ]
+
+    step CreateTenant {
+        let tenant = perform Database.query(CreateTenantQuery)?;
+    }
+
+    step SeedDefaults {
+        // Create default workspace, roles, and settings scoped to this tenant
+        let _ = perform Database.query(SeedTenantDefaultsQuery)?;
+    }
+
+    step AssignOwner {
+        let _ = perform Database.query(AssignOwnerRoleQuery)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("tenant_provisioned", tenantId)?;
+    }
+}
+
+@BriefBuilder
+task AddTenantMember : TaskBrief uses [Auth, Database, Analytics] {
+    goal   = "Add a user to a tenant with a specific role — enforces seat quota before insertion"
+    extras = [
+        "quotaCheck": "true",
+        "roles": "viewer|editor|admin|owner"
+    ]
+
+    step ResolveActorContext {
+        let ctx = perform Auth.resolveContext(sessionToken)?;
+        let _ = perform Auth.hasPermission(ctx, Admin)?;
+    }
+
+    step CheckQuota {
+        let quota = perform Database.query(CheckSeatQuotaQuery)?;
+    }
+
+    step AddMember {
+        let member = perform Database.query(AddMemberQuery)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("member_added", tenantId)?;
+    }
+}
+
+@BriefBuilder
+task SuspendTenant : TaskBrief uses [Auth, Database, Cache, Analytics] {
+    goal   = "Suspend a tenant for non-payment — block all resource access and invalidate sessions"
+    extras = [
+        "reason": "PaymentFailed",
+        "gracePeriodDays": "3",
+        "notifyOwner": "true"
+    ]
+
+    step ValidateAdminContext {
+        let ctx = perform Auth.resolveContext(adminToken)?;
+        let _ = perform Auth.hasPermission(ctx, Admin)?;
+    }
+
+    step UpdateTenantStatus {
+        let _ = perform Database.query(SetTenantSuspendedQuery)?;
+    }
+
+    step InvalidateSessions {
+        let _ = perform Cache.invalidate(tenantSessionsKey)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("tenant_suspended", tenantId)?;
+    }
+}
+
+@BriefBuilder
+task EnforceResourceQuota : TaskBrief uses [Auth, Database, Analytics] {
+    goal   = "Check and enforce per-tenant resource quotas before allowing a write operation"
+    extras = [
+        "resources": "users|storage|api_calls",
+        "plan": "dynamic"
+    ]
+
+    step LoadQuota {
+        let quota = perform Database.query(LoadTenantQuotaQuery)?;
+    }
+
+    step CheckLimits {
+        let exceeded = perform Database.query(CheckQuotaLimitsQuery)?;
+    }
+
+    step EnforceOrAllow {
+        // If exceeded: return 429 with upgrade prompt; else allow write
+        let _ = perform Database.query(LogQuotaCheckQuery)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("quota_checked", tenantId)?;
+    }
+}

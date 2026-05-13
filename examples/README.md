@@ -73,11 +73,28 @@ brief doc examples/26-brief-doc.brief --output docs/26-brief-doc.md
 | [31-concurrent-steps.brief](31-concurrent-steps.brief) | Concurrency | Fan-out parallel loading; cache-aside; fan-in aggregation | ✅ W101 |
 | [32-mcp-integration.brief](32-mcp-integration.brief) | MCP | GitHub / FileSystem / Browser / Database MCP skills; `@mcp` type alias; full test suite | ✅ W101 |
 
+## Examples (33–40 · Advanced patterns)
+
+| File | Domain | What it shows | `brief check` |
+|------|--------|---------------|---------------|
+| [33-websocket-realtime.brief](33-websocket-realtime.brief) | Realtime | WebSocket connection, message routing, presence tracking, reconnect with exponential backoff | ✅ W101 |
+| [34-background-jobs.brief](34-background-jobs.brief) | Job Queue | Enqueue, process, retry with backoff, dead-letter queue, recurring cron jobs, graceful drain | ✅ W101 |
+| [35-oauth-social.brief](35-oauth-social.brief) | Auth | OAuth2 PKCE flow: state param, code exchange, token refresh, revoke, account linking | ✅ W101 |
+| [36-pagination.brief](36-pagination.brief) | Data | Cursor-based pagination, infinite scroll with deduplication, pull-to-refresh, offset fallback | ✅ W101 |
+| [37-webhook-handler.brief](37-webhook-handler.brief) | Integrations | HMAC signature verification, idempotency key deduplication, async processing, retry budget | ✅ W101 |
+| [38-kmp-shared.brief](38-kmp-shared.brief) | KMP | Kotlin Multiplatform shared module: SQLDelight, Keychain/EncryptedSharedPrefs, expect/actual | ✅ W101 |
+| [39-multi-tenancy.brief](39-multi-tenancy.brief) | SaaS | Tenant isolation (RLS), context resolution, provisioning, quota enforcement, suspend/resume | ✅ W101 |
+| [40-conflict-resolution.brief](40-conflict-resolution.brief) | Sync | Vector clock conflict detection, three-way merge, CRDT (G-Counter, ORSet), manual resolution | ✅ W101 |
+
 ```bash
 # Run tests in examples that have test { } blocks:
 brief test examples/14-test-suite.brief
 brief test examples/28-ai-pipeline.brief
 brief test examples/32-mcp-integration.brief
+brief test examples/34-background-jobs.brief
+brief test examples/36-pagination.brief
+brief test examples/37-webhook-handler.brief
+brief test examples/40-conflict-resolution.brief
 ```
 
 ---

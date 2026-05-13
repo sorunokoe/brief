@@ -109,3 +109,25 @@ cargo install --path briefc
 ```
 
 After installation, `brief` is available on your `$PATH`.
+
+## Shell Completions
+
+Generate and install completion scripts for your shell:
+
+```sh
+# Bash — add to ~/.bashrc
+brief completions bash >> ~/.bashrc
+source ~/.bashrc
+
+# Zsh — add to ~/.zshrc
+brief completions zsh >> ~/.zshrc
+source ~/.zshrc
+
+# Fish
+brief completions fish > ~/.config/fish/completions/brief.fish
+
+# PowerShell — add to $PROFILE
+brief completions powershell >> $PROFILE
+```
+
+After installing, typing `brief <TAB>` will complete subcommands and flags.

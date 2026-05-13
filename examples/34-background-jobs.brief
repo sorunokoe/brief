@@ -1,0 +1,197 @@
+import skill "JobQueue"
+
+import skill "Database"
+
+import skill "Notifications"
+
+import skill "Analytics"
+
+sealed type JobStatus = Queued | Running | Succeeded | Failed(String) | Retrying(String) | DeadLettered
+
+sealed type JobPriority = Critical | High | Normal | Low | Background
+
+sealed type RetryPolicy = FixedDelay(String) | ExponentialBackoff(String) | LinearBackoff(String) | NoRetry
+
+struct Job {
+    id: @nonEmpty String
+    type: @nonEmpty String
+    payload: String
+    priority: JobPriority
+    attempt: String
+    maxAttempts: String
+    scheduledAt: String
+    timeout: String
+}
+
+struct JobResult {
+    jobId: @nonEmpty String
+    status: JobStatus
+    output: String
+    duration: String
+    nextRetryAt: String
+}
+
+struct DeadLetter {
+    jobId: @nonEmpty String
+    lastError: @nonEmpty String
+    totalAttempts: String
+    deadLetteredAt: String
+}
+
+effect JobQueue {
+    fn enqueue(job: Job, priority: JobPriority) -> String
+    fn dequeue(workerId: String) -> Job
+    fn complete(jobId: String, result: JobResult) -> String
+    fn fail(jobId: String, error: String) -> String
+    fn schedule(job: Job, runAt: String) -> String
+    fn deadLetter(jobId: String, reason: String) -> DeadLetter
+}
+
+@BriefBuilder
+task EnqueueEmailJob : TaskBrief uses [JobQueue, Analytics] {
+    goal   = "Enqueue a transactional email job with high priority and 3-attempt retry policy"
+    extras = [
+        "jobType": "TransactionalEmail",
+        "priority": "High",
+        "maxAttempts": "3",
+        "retryPolicy": "ExponentialBackoff",
+        "timeout": "30s"
+    ]
+
+    step Build {
+        let job = perform Database.query(BuildEmailJobQuery)?;
+    }
+
+    step Enqueue {
+        let jobId = perform JobQueue.enqueue(job, High)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("email_job_enqueued", jobId)?;
+    }
+}
+
+@BriefBuilder
+task ProcessJob : TaskBrief uses [JobQueue, Database, Notifications, Analytics] {
+    goal   = "Dequeue and process the next available job — handles execute, succeed, or fail paths"
+    extras = [
+        "pattern": "WorkerProcess",
+        "workerConcurrency": "4",
+        "visibilityTimeout": "60s"
+    ]
+
+    step Dequeue {
+        let job = perform JobQueue.dequeue(workerId)?;
+    }
+
+    step Execute {
+        let result = perform Database.query(ExecuteJobQuery)?;
+    }
+
+    step Complete {
+        let _ = perform JobQueue.complete(job.id, result)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("job_processed", job.type)?;
+    }
+}
+
+@BriefBuilder
+task RetryFailedJob : TaskBrief uses [JobQueue, Analytics] {
+    goal   = "Mark a job as failed and re-enqueue with exponential backoff delay"
+    extras = [
+        "retryPolicy": "ExponentialBackoff",
+        "initialDelay": "1s",
+        "multiplier": "2",
+        "maxDelay": "300s",
+        "jitter": "true"
+    ]
+
+    step RecordFailure {
+        let _ = perform JobQueue.fail(jobId, errorMessage)?;
+    }
+
+    step ComputeDelay {
+        // delay = min(initialDelay * 2^attempt, maxDelay) + random jitter
+        let retryAt = perform Database.query(ComputeBackoffQuery)?;
+    }
+
+    step Reschedule {
+        let jobId = perform JobQueue.schedule(failedJob, retryAt)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("job_retry_scheduled", retryAt)?;
+    }
+}
+
+@BriefBuilder
+task DeadLetterJob : TaskBrief uses [JobQueue, Notifications, Analytics] {
+    goal   = "Move an exhausted job to the dead-letter queue and alert the on-call team"
+    extras = [
+        "alertChannel": "pagerduty",
+        "retentionDays": "14"
+    ]
+
+    step DeadLetter {
+        let dlq = perform JobQueue.deadLetter(jobId, lastError)?;
+    }
+
+    step Alert {
+        let _ = perform Notifications.send(oncallTeam, JobFailureAlert)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("job_dead_lettered", jobId)?;
+    }
+}
+
+@BriefBuilder
+task ScheduleRecurringJob : TaskBrief uses [JobQueue, Database, Analytics] {
+    goal   = "Schedule a recurring background job (e.g. daily digest) using cron-style scheduling"
+    extras = [
+        "pattern": "CronJob",
+        "schedule": "0 9 * * *",
+        "timezone": "UTC",
+        "overlap": "skip"
+    ]
+
+    step CheckLastRun {
+        let lastRun = perform Database.query(LastRunQuery)?;
+    }
+
+    step Schedule {
+        let jobId = perform JobQueue.schedule(digestJob, nextRunAt)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("recurring_job_scheduled", nextRunAt)?;
+    }
+}
+
+@BriefBuilder
+task DrainAndShutdown : TaskBrief uses [JobQueue, Analytics] {
+    goal   = "Gracefully drain the job queue on worker shutdown — finish running jobs, stop dequeuing"
+    extras = [
+        "pattern": "GracefulShutdown",
+        "drainTimeout": "30s"
+    ]
+
+    step StopDequeuing {
+        let _ = perform JobQueue.complete(workerId, shutdownSignal)?;
+    }
+
+    step AwaitInFlight {
+        let _ = perform Database.query(WaitForRunningJobsQuery)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("worker_shutdown", workerId)?;
+    }
+}
+
+test "JobStatus and JobPriority sealed type variants" {
+    assert_eq(JobStatus::Queued, Queued)
+    assert_eq(JobPriority::High, High)
+}

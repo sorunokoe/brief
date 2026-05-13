@@ -1,0 +1,186 @@
+import skill "GraphQL"
+
+import skill "Cache"
+
+import skill "Analytics"
+
+sealed type PageDirection = Forward | Backward
+
+sealed type FetchPolicy = NetworkFirst | CacheFirst | NetworkOnly | CacheOnly
+
+struct PageInfo {
+    hasNextPage: String
+    hasPreviousPage: String
+    startCursor: String
+    endCursor: String
+    totalCount: String
+}
+
+struct PageArgs {
+    first: String
+    after: String
+    last: String
+    before: String
+    sortBy: @nonEmpty String
+    direction: PageDirection
+}
+
+struct Connection {
+    edges: String
+    pageInfo: PageInfo
+    totalCount: String
+}
+
+struct InfiniteScrollState {
+    items: String
+    nextCursor: String
+    hasMore: String
+    isLoading: String
+    seenIds: String
+}
+
+effect GraphQL {
+    fn query(query: String) -> Connection
+    fn mutation(mutation: String) -> String
+}
+
+effect Cache {
+    fn get(key: String) -> String
+    fn set(key: String, value: String, ttl: String) -> String
+    fn invalidate(key: String) -> String
+}
+
+@BriefBuilder
+task FetchFirstPage : TaskBrief uses [GraphQL, Cache, Analytics] {
+    goal   = "Fetch the first page of results — returns edges + pageInfo for cursor-based navigation"
+    extras = [
+        "pattern": "CursorPagination",
+        "pageSize": "20",
+        "sortBy": "createdAt_DESC"
+    ]
+
+    step CheckCache {
+        let cached = perform Cache.get(firstPageCacheKey)?;
+    }
+
+    step FetchPage {
+        let page = perform GraphQL.query(FirstPageQuery)?;
+    }
+
+    step CachePage {
+        let _ = perform Cache.set(firstPageCacheKey, page, ttl)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("page_loaded", pageNumber)?;
+    }
+}
+
+@BriefBuilder
+task FetchNextPage : TaskBrief uses [GraphQL, Cache, Analytics] {
+    goal   = "Fetch the next page using endCursor — appends to the existing result list"
+    extras = [
+        "pattern": "CursorPagination",
+        "direction": "Forward",
+        "deduplication": "true"
+    ]
+
+    step GuardHasMore {
+        // Only proceed if pageInfo.hasNextPage is true
+        let guard = perform Cache.get(pageInfoCacheKey)?;
+    }
+
+    step FetchNext {
+        let page = perform GraphQL.query(NextPageQuery)?;
+    }
+
+    step Deduplicate {
+        // Filter out items whose IDs are already in seenIds to handle edge-case duplicates
+        let deduped = perform Cache.get(seenIdsCacheKey)?;
+    }
+
+    step Append {
+        let merged = perform Cache.set(itemsCacheKey, deduped, ttl)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("next_page_fetched", cursor)?;
+    }
+}
+
+@BriefBuilder
+task FetchPreviousPage : TaskBrief uses [GraphQL, Cache, Analytics] {
+    goal   = "Fetch the previous page using startCursor — for bidirectional list navigation"
+    extras = [
+        "pattern": "CursorPagination",
+        "direction": "Backward"
+    ]
+
+    step GuardHasPrev {
+        let guard = perform Cache.get(pageInfoCacheKey)?;
+    }
+
+    step FetchPrev {
+        let page = perform GraphQL.query(PrevPageQuery)?;
+    }
+
+    step Prepend {
+        let merged = perform Cache.set(itemsCacheKey, page, ttl)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("prev_page_fetched", cursor)?;
+    }
+}
+
+@BriefBuilder
+task RefreshFirstPage : TaskBrief uses [GraphQL, Cache, Analytics] {
+    goal   = "Pull-to-refresh: invalidate cache and re-fetch the first page from the network"
+    extras = [
+        "pattern": "PullToRefresh",
+        "resetCursor": "true"
+    ]
+
+    step InvalidateCache {
+        let _ = perform Cache.invalidate(paginationCacheKey)?;
+    }
+
+    step FetchFresh {
+        let page = perform GraphQL.query(FirstPageQuery)?;
+    }
+
+    step ResetState {
+        let _ = perform Cache.set(firstPageCacheKey, page, ttl)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("list_refreshed", listId)?;
+    }
+}
+
+@BriefBuilder
+task SeekToPage : TaskBrief uses [GraphQL, Cache, Analytics] {
+    goal   = "Jump to an arbitrary page by offset — for admin/search UIs with page number input"
+    extras = [
+        "pattern": "OffsetPagination",
+        "pageSize": "50",
+        "note": "Use cursor-pagination for user-facing infinite scroll; offset for admin tables"
+    ]
+
+    step ComputeOffset {
+        let offset = perform Cache.get(pageOffsetQuery)?;
+    }
+
+    step FetchPage {
+        let page = perform GraphQL.query(OffsetPageQuery)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("page_seeked", pageNumber)?;
+    }
+}
+
+test "PageDirection and FetchPolicy sealed types" {
+    assert_eq(PageDirection::Forward, Forward)
+    assert_eq(FetchPolicy::NetworkFirst, NetworkFirst)
+}

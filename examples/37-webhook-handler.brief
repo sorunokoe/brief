@@ -1,0 +1,178 @@
+import skill "Webhook"
+
+import skill "Database"
+
+import skill "JobQueue"
+
+import skill "Analytics"
+
+sealed type WebhookEvent = PaymentSucceeded(String) | PaymentFailed(String) | SubscriptionCreated(String) | SubscriptionCancelled(String) | RefundIssued(String) | ChargebackOpened(String)
+
+sealed type ProcessingResult = Processed | Duplicate | InvalidSignature | UnknownEvent | Retryable(String)
+
+struct WebhookPayload {
+    id: @nonEmpty String
+    eventType: @nonEmpty String
+    payload: String
+    signature: @nonEmpty String
+    timestamp: String
+    provider: @nonEmpty String
+}
+
+struct IdempotencyRecord {
+    webhookId: @nonEmpty String
+    processedAt: String
+    result: ProcessingResult
+}
+
+effect Webhook {
+    fn verifySignature(payload: WebhookPayload, secret: String) -> String
+    fn parseEvent(payload: WebhookPayload) -> WebhookEvent
+    fn acknowledge(webhookId: String) -> String
+    fn reject(webhookId: String, reason: String) -> String
+}
+
+effect JobQueue {
+    fn enqueue(job: String, priority: String) -> String
+    fn schedule(job: String, runAt: String) -> String
+}
+
+@BriefBuilder
+task ReceiveWebhook : TaskBrief uses [Webhook, Database, Analytics] {
+    goal   = "Receive, verify, and route an incoming webhook — reject invalid signatures immediately"
+    extras = [
+        "pattern": "WebhookReceiver",
+        "signatureHeader": "X-Webhook-Signature",
+        "timestampTolerance": "300s"
+    ]
+
+    step VerifySignature {
+        // HMAC-SHA256 verification — reject before any DB writes on failure
+        let valid = perform Webhook.verifySignature(payload, webhookSecret)?;
+    }
+
+    step CheckIdempotency {
+        // Deduplicate: providers often retry — only process each webhook.id once
+        let seen = perform Database.query(CheckWebhookIdempotencyQuery)?;
+    }
+
+    step ParseEvent {
+        let event = perform Webhook.parseEvent(payload)?;
+    }
+
+    step Route {
+        let _ = perform Database.query(RouteWebhookEventQuery)?;
+    }
+
+    step Acknowledge {
+        // Return 2xx quickly — do heavy processing asynchronously
+        let _ = perform Webhook.acknowledge(webhookId)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("webhook_received", eventType)?;
+    }
+}
+
+@BriefBuilder
+task ProcessPaymentWebhook : TaskBrief uses [Webhook, Database, JobQueue, Analytics] {
+    goal   = "Handle a payment.succeeded or payment.failed webhook — update order state asynchronously"
+    extras = [
+        "pattern": "AsyncWebhookProcessing",
+        "eventTypes": "PaymentSucceeded|PaymentFailed",
+        "processingMode": "JobQueue"
+    ]
+
+    step LoadOrder {
+        let order = perform Database.query(LoadOrderByPaymentQuery)?;
+    }
+
+    step EnqueueUpdate {
+        // Offload to job queue so the webhook endpoint returns fast
+        let jobId = perform JobQueue.enqueue(UpdateOrderStatusJob, High)?;
+    }
+
+    step RecordProcessed {
+        let _ = perform Database.query(MarkWebhookProcessedQuery)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("payment_webhook_processed", orderId)?;
+    }
+}
+
+@BriefBuilder
+task HandleDuplicateWebhook : TaskBrief uses [Webhook, Database, Analytics] {
+    goal   = "Detect and silently skip a duplicate webhook delivery using the idempotency key"
+    extras = [
+        "pattern": "IdempotentWebhook",
+        "idempotencyKey": "webhook.id"
+    ]
+
+    step LookupRecord {
+        let record = perform Database.query(LookupIdempotencyQuery)?;
+    }
+
+    step SkipIfDuplicate {
+        // If already processed, acknowledge immediately and return — no double side-effects
+        let _ = perform Webhook.acknowledge(webhookId)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("webhook_duplicate_skipped", webhookId)?;
+    }
+}
+
+@BriefBuilder
+task RetryWebhookDelivery : TaskBrief uses [Webhook, Database, JobQueue, Analytics] {
+    goal   = "Re-enqueue a failed webhook for retry with exponential backoff budget"
+    extras = [
+        "pattern": "WebhookRetry",
+        "maxRetries": "5",
+        "retryPolicy": "ExponentialBackoff",
+        "retentionPeriod": "72h"
+    ]
+
+    step CheckRetryBudget {
+        // Drop after maxRetries to prevent infinite queues
+        let attempts = perform Database.query(LoadWebhookAttemptsQuery)?;
+    }
+
+    step ScheduleRetry {
+        let _ = perform JobQueue.schedule(retryJob, nextRetryAt)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("webhook_retry_scheduled", attemptNumber)?;
+    }
+}
+
+@BriefBuilder
+task SubscriptionLifecycleWebhook : TaskBrief uses [Webhook, Database, Analytics] {
+    goal   = "Handle subscription.created and subscription.cancelled events to sync billing state"
+    extras = [
+        "eventTypes": "SubscriptionCreated|SubscriptionCancelled",
+        "billingSystem": "Stripe"
+    ]
+
+    step ParseEvent {
+        let event = perform Webhook.parseEvent(payload)?;
+    }
+
+    step SyncBillingRecord {
+        let _ = perform Database.query(SyncSubscriptionQuery)?;
+    }
+
+    step UpdateFeatureAccess {
+        let _ = perform Database.query(UpdateUserPlanQuery)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("subscription_webhook_handled", eventType)?;
+    }
+}
+
+test "ProcessingResult sealed type variants" {
+    assert_eq(ProcessingResult::Processed, Processed)
+    assert_eq(ProcessingResult::Duplicate, Duplicate)
+}

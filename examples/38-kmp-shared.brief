@@ -1,0 +1,189 @@
+// KMP (Kotlin Multiplatform) Shared Module Specification
+//
+// This file describes the shared business logic layer of a KMP app.
+// The AI uses this to generate:
+//   - commonMain Kotlin code (pure domain logic)
+//   - iosMain / androidMain expect/actual platform implementations
+//   - Swift bridging layer via the iOS skill
+//
+// Platform-specific skills handle I/O; shared logic is platform-free.
+
+import skill "Database"
+
+import skill "Keychain"
+
+import skill "Analytics"
+
+import skill "Platform"
+
+sealed type Platform = iOS(String) | Android(String) | Desktop(String)
+
+sealed type StorageBackend = SQLDelight | Room | Realm
+
+sealed type SyncMode = OnDemand | BackgroundSync | RealtimeSync
+
+struct SharedUser {
+    id: @nonEmpty String
+    email: @nonEmpty String
+    displayName: String
+    platform: Platform
+    appVersion: @nonEmpty String
+}
+
+struct SharedSession {
+    userId: @nonEmpty String
+    token: @nonEmpty String
+    refreshToken: String
+    expiresAt: String
+    platform: Platform
+}
+
+struct DeviceInfo {
+    deviceId: @nonEmpty String
+    osVersion: @nonEmpty String
+    appVersion: @nonEmpty String
+    locale: @nonEmpty String
+    platform: Platform
+}
+
+effect Platform {
+    fn detectPlatform() -> Platform
+    fn getDeviceInfo() -> DeviceInfo
+    fn getLocale() -> String
+    fn openUrl(url: String) -> String
+    fn shareContent(content: String) -> String
+}
+
+effect Keychain {
+    fn store(key: String, value: String) -> String
+    fn load(key: String) -> String
+    fn delete(key: String) -> String
+    fn exists(key: String) -> String
+}
+
+@BriefBuilder
+task InitializeSharedModule : TaskBrief uses [Platform, Database, Analytics] {
+    goal   = "Initialize the KMP shared module — detect platform, setup SQLDelight DB, and start analytics"
+    extras = [
+        "module": "shared",
+        "platforms": "iOS|Android",
+        "dbDriver": "SQLDelight",
+        "async": "false"
+    ]
+
+    step DetectPlatform {
+        let platform = perform Platform.detectPlatform()?;
+    }
+
+    step OpenDatabase {
+        // SQLDelight uses platform-specific drivers: NativeSqliteDriver (iOS), AndroidSqliteDriver
+        let db = perform Database.query(OpenDatabaseQuery)?;
+    }
+
+    step ConfigureAnalytics {
+        let device = perform Platform.getDeviceInfo()?;
+        let _ = perform Analytics.track("module_initialized", platform)?;
+    }
+}
+
+@BriefBuilder
+task AuthenticateShared : TaskBrief uses [Keychain, Database, Analytics] {
+    goal   = "Authenticate using shared logic — token stored in platform Keychain (Keychain/EncryptedSharedPrefs)"
+    extras = [
+        "module": "shared",
+        "storage": "Keychain|EncryptedSharedPrefs",
+        "platforms": "iOS|Android"
+    ]
+
+    step LoadCachedToken {
+        // expect/actual: iOS → Keychain, Android → EncryptedSharedPreferences
+        let token = perform Keychain.load(authTokenKey)?;
+    }
+
+    step ValidateOrRefresh {
+        let session = perform Database.query(ValidateSessionQuery)?;
+    }
+
+    step PersistSession {
+        let _ = perform Keychain.store(authTokenKey, freshToken)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("shared_auth_completed", platform)?;
+    }
+}
+
+@BriefBuilder
+task SyncSharedData : TaskBrief uses [Database, Platform, Analytics] {
+    goal   = "Sync shared SQLDelight tables from the server — works identically on iOS and Android"
+    extras = [
+        "module": "shared",
+        "pattern": "BackgroundSync",
+        "conflictStrategy": "ServerWins",
+        "incremental": "true"
+    ]
+
+    step LoadLastSyncCursor {
+        let cursor = perform Database.query(LoadLastSyncQuery)?;
+    }
+
+    step FetchDeltas {
+        let deltas = perform Database.query(FetchDeltasQuery)?;
+    }
+
+    step MergeIntoLocal {
+        let _ = perform Database.query(MergeDeltasQuery)?;
+    }
+
+    step PersistCursor {
+        let _ = perform Database.query(UpdateSyncCursorQuery)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("shared_sync_completed", deltaCount)?;
+    }
+}
+
+@BriefBuilder
+task ShareContent : TaskBrief uses [Platform, Analytics] {
+    goal   = "Share content using the platform native share sheet (UIActivityViewController / ACTION_SEND)"
+    extras = [
+        "platforms": "iOS|Android",
+        "implementation": "expect/actual",
+        "apiLevel": "iOS 16+ | Android API 21+"
+    ]
+
+    step BuildSharePayload {
+        let locale = perform Platform.getLocale()?;
+    }
+
+    step InvokeNativeShare {
+        // expect/actual: resolved by the platform-specific skill
+        let _ = perform Platform.shareContent(sharePayload)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("content_shared", contentType)?;
+    }
+}
+
+@BriefBuilder
+task OpenExternalLink : TaskBrief uses [Platform, Analytics] {
+    goal   = "Open a URL in the platform browser — validates scheme before delegating to OS"
+    extras = [
+        "platforms": "iOS|Android",
+        "allowedSchemes": "https|mailto|tel"
+    ]
+
+    step ValidateUrl {
+        let device = perform Platform.getDeviceInfo()?;
+    }
+
+    step OpenUrl {
+        let _ = perform Platform.openUrl(url)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("external_link_opened", urlDomain)?;
+    }
+}

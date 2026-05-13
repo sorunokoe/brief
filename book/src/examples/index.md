@@ -1,6 +1,6 @@
 # Examples Overview
 
-Brief ships with **32 annotated example files** in [`examples/`](https://github.com/yourusername/brief/tree/main/examples).
+Brief ships with **40 annotated example files** in [`examples/`](https://github.com/yourusername/brief/tree/main/examples).
 
 ## Quick Start
 
@@ -8,6 +8,7 @@ Brief ships with **32 annotated example files** in [`examples/`](https://github.
 brief check  examples/01-hello.brief
 brief test   examples/14-test-suite.brief
 brief doc    examples/26-brief-doc.brief
+brief ci                                    # check all 40 examples at once
 ```
 
 ## Categories
@@ -17,3 +18,4 @@ brief doc    examples/26-brief-doc.brief
 | [01–14](basic.md) | Core language — tasks, skills, types, tests |
 | [15–22](skills.md) | Real-world domains — e-commerce, auth, analytics |
 | [23–32](power-types.md) | Power types — linear, sealed, MCP, concurrency |
+| [33–40](advanced-patterns.md) | Advanced patterns — realtime, jobs, OAuth, sync |

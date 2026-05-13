@@ -1,0 +1,213 @@
+import skill "Database"
+
+import skill "Analytics"
+
+sealed type MergeStrategy = LastWriteWins | ServerWins | ClientWins | ThreeWayMerge | CRDT
+
+sealed type ConflictOutcome = AutoResolved(String) | ManualResolutionRequired(String) | Discarded
+
+sealed type VectorClock = Clock(String)
+
+struct SyncRecord {
+    id: @nonEmpty String
+    entityId: @nonEmpty String
+    clientValue: String
+    serverValue: String
+    baseValue: String
+    clientClock: VectorClock
+    serverClock: VectorClock
+    updatedAt: String
+}
+
+struct MergeResult {
+    entityId: @nonEmpty String
+    mergedValue: String
+    outcome: ConflictOutcome
+    strategy: MergeStrategy
+    timestamp: String
+}
+
+struct ConflictLog {
+    id: @nonEmpty String
+    entityId: @nonEmpty String
+    userId: @nonEmpty String
+    conflict: String
+    outcome: ConflictOutcome
+    resolvedAt: String
+}
+
+effect Database {
+    fn query(query: String) -> String
+    fn mutation(mutation: String) -> String
+}
+
+@BriefBuilder
+task DetectConflict : TaskBrief uses [Database, Analytics] {
+    goal   = "Compare client and server vector clocks to detect whether a sync conflict has occurred"
+    extras = [
+        "conflictModel": "VectorClock",
+        "pattern": "OptimisticConcurrency"
+    ]
+
+    step LoadServerVersion {
+        let server = perform Database.query(LoadServerVersionQuery)?;
+    }
+
+    step CompareClock {
+        // A conflict exists when neither clock dominates the other (concurrent updates)
+        let conflict = perform Database.query(CompareVectorClocksQuery)?;
+    }
+
+    step LogConflict {
+        let _ = perform Database.query(LogConflictDetectedQuery)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("conflict_detected", entityId)?;
+    }
+}
+
+@BriefBuilder
+task AutoResolveConflict : TaskBrief uses [Database, Analytics] {
+    goal   = "Automatically resolve non-semantic conflicts using three-way merge on a known base version"
+    extras = [
+        "strategy": "ThreeWayMerge",
+        "autoResolvable": "non-overlapping field changes",
+        "fallback": "ManualResolutionRequired"
+    ]
+
+    step LoadBaseVersion {
+        // The base is the last common ancestor of client and server changes
+        let base = perform Database.query(LoadBaseVersionQuery)?;
+    }
+
+    step ThreeWayMerge {
+        // Apply non-conflicting field deltas from both client and server onto the base
+        let merged = perform Database.query(ThreeWayMergeQuery)?;
+    }
+
+    step CommitMerged {
+        let _ = perform Database.query(CommitMergedValueQuery)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("conflict_auto_resolved", entityId)?;
+    }
+}
+
+@BriefBuilder
+task ApplyCRDTMerge : TaskBrief uses [Database, Analytics] {
+    goal   = "Merge concurrent counter/set updates using CRDT semantics — no conflict, always convergent"
+    extras = [
+        "crdtTypes": "GCounter|PNCounter|ORSet|LWWRegister",
+        "pattern": "CRDT",
+        "convergence": "eventual"
+    ]
+
+    step LoadAllReplicas {
+        let replicas = perform Database.query(LoadAllReplicasQuery)?;
+    }
+
+    step MergeCRDT {
+        // CRDT join (⊔): take pairwise max of G-Counter entries, merge ORSet tombstone sets
+        let merged = perform Database.query(MergeCRDTQuery)?;
+    }
+
+    step BroadcastMerged {
+        let _ = perform Database.query(BroadcastMergedStateQuery)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("crdt_merge_applied", replicaCount)?;
+    }
+}
+
+@BriefBuilder
+task QueueManualResolution : TaskBrief uses [Database, Analytics] {
+    goal   = "Queue a semantic conflict for manual user resolution — shown as an in-app conflict prompt"
+    extras = [
+        "triggerCondition": "overlapping field changes on same object",
+        "uiPattern": "ConflictSheet"
+    ]
+
+    step ClassifyConflict {
+        let conflicts = perform Database.query(ClassifyConflictFieldsQuery)?;
+    }
+
+    step SavePendingConflict {
+        let _ = perform Database.query(SavePendingConflictQuery)?;
+    }
+
+    step NotifyUser {
+        let _ = perform Database.query(EnqueueConflictNotificationQuery)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("conflict_queued_for_manual", entityId)?;
+    }
+}
+
+@BriefBuilder
+task ResolveManualConflict : TaskBrief uses [Database, Analytics] {
+    goal   = "Apply the user's chosen resolution (keep mine / keep theirs / keep both) and close the conflict"
+    extras = [
+        "resolutionOptions": "KeepMine|KeepServer|KeepBoth|CustomEdit",
+        "auditLog": "true"
+    ]
+
+    step LoadConflict {
+        let pending = perform Database.query(LoadPendingConflictQuery)?;
+    }
+
+    step ApplyResolution {
+        let _ = perform Database.query(ApplyUserResolutionQuery)?;
+    }
+
+    step UpdateVectorClock {
+        // Increment the local clock after resolution to mark this as a new observed version
+        let _ = perform Database.query(UpdateVectorClockQuery)?;
+    }
+
+    step AuditLog {
+        let _ = perform Database.query(LogConflictResolutionQuery)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("conflict_resolved_manually", resolution)?;
+    }
+}
+
+@BriefBuilder
+task ReconcileAfterPartition : TaskBrief uses [Database, Analytics] {
+    goal   = "Reconcile all pending local changes against the server after a network partition heals"
+    extras = [
+        "pattern": "PartitionRecovery",
+        "conflictBatch": "true",
+        "maxBatchSize": "100"
+    ]
+
+    step LoadPendingChanges {
+        let pending = perform Database.query(LoadPendingLocalChangesQuery)?;
+    }
+
+    step FetchServerChanges {
+        let serverChanges = perform Database.query(FetchServerChangesQuery)?;
+    }
+
+    step BatchMerge {
+        let results = perform Database.query(BatchMergeChangesQuery)?;
+    }
+
+    step CommitResults {
+        let _ = perform Database.query(CommitReconciliationQuery)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("partition_reconciled", resolvedCount)?;
+    }
+}
+
+test "MergeStrategy and ConflictOutcome sealed type variants" {
+    assert_eq(MergeStrategy::ThreeWayMerge, ThreeWayMerge)
+    assert_eq(ConflictOutcome::Discarded, Discarded)
+}

@@ -1,0 +1,180 @@
+import skill "WebSocket"
+
+import skill "Presence"
+
+import skill "Analytics"
+
+import skill "Notifications"
+
+sealed type ConnectionState = Connecting | Connected | Reconnecting(String) | Disconnected
+
+sealed type MessageType = ChatMessage(String) | TypingIndicator(String) | PresenceUpdate(String) | SystemEvent(String)
+
+struct Connection {
+    id: @nonEmpty String
+    userId: @nonEmpty String
+    channelId: @nonEmpty String
+    state: ConnectionState
+    reconnectAttempts: String
+}
+
+struct Message {
+    id: @nonEmpty String
+    channelId: @nonEmpty String
+    authorId: @nonEmpty String
+    content: @nonEmpty String
+    sentAt: String
+}
+
+struct PresenceRecord {
+    userId: @nonEmpty String
+    channelId: @nonEmpty String
+    status: @nonEmpty String
+    lastSeen: String
+}
+
+effect WebSocket {
+    fn connect(channelId: String, userId: String) -> Connection
+    fn send(connectionId: String, message: Message) -> String
+    fn receive(connectionId: String) -> MessageType
+    fn ping(connectionId: String) -> String
+    fn disconnect(connectionId: String) -> String
+}
+
+effect Presence {
+    fn join(channelId: String, userId: String) -> PresenceRecord
+    fn leave(channelId: String, userId: String) -> String
+    fn heartbeat(channelId: String, userId: String) -> String
+    fn list(channelId: String) -> PresenceRecord
+}
+
+@BriefBuilder
+task ConnectToChannel : TaskBrief uses [WebSocket, Presence, Analytics] {
+    goal   = "Establish a WebSocket connection to a channel and announce presence"
+    extras = [
+        "pattern": "WebSocket",
+        "heartbeatInterval": "30s",
+        "reconnectPolicy": "ExponentialBackoff"
+    ]
+
+    step Connect {
+        let connection = perform WebSocket.connect(channelId, userId)?;
+    }
+
+    step AnnouncePresence {
+        let presence = perform Presence.join(channelId, userId)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("channel_joined", channelId)?;
+    }
+}
+
+@BriefBuilder
+task SendMessage : TaskBrief uses [WebSocket, Analytics] {
+    goal   = "Send a chat message over an existing WebSocket connection"
+    extras = [
+        "messageType": "ChatMessage",
+        "maxRetries": "3"
+    ]
+
+    step Validate {
+        let _ = perform WebSocket.ping(connectionId)?;
+    }
+
+    step Send {
+        let ack = perform WebSocket.send(connectionId, message)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("message_sent", channelId)?;
+    }
+}
+
+@BriefBuilder
+task HandleIncomingMessage : TaskBrief uses [WebSocket, Notifications, Analytics] {
+    goal   = "Route an incoming WebSocket message to the correct handler by type"
+    extras = [
+        "pattern": "MessageRouter",
+        "handlers": "ChatMessage|TypingIndicator|PresenceUpdate|SystemEvent"
+    ]
+
+    step Receive {
+        let incoming = perform WebSocket.receive(connectionId)?;
+    }
+
+    step Route {
+        // Sealed type match — the compiler ensures all variants are handled
+        let handled = perform Notifications.send(userId, incoming)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("message_received", messageType)?;
+    }
+}
+
+@BriefBuilder
+task ReconnectWithBackoff : TaskBrief uses [WebSocket, Presence, Analytics] {
+    goal   = "Reconnect a dropped WebSocket connection using exponential backoff"
+    extras = [
+        "pattern": "ExponentialBackoff",
+        "initialDelay": "500ms",
+        "maxDelay": "30s",
+        "maxAttempts": "8",
+        "jitter": "true"
+    ]
+
+    step WaitBackoff {
+        let delay = perform WebSocket.ping(connectionId)?;
+    }
+
+    step Reconnect {
+        let connection = perform WebSocket.connect(channelId, userId)?;
+    }
+
+    step RestorePresence {
+        let presence = perform Presence.join(channelId, userId)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("ws_reconnected", attemptCount)?;
+    }
+}
+
+@BriefBuilder
+task PresenceHeartbeat : TaskBrief uses [WebSocket, Presence] {
+    goal   = "Send periodic presence heartbeat to keep the user's online status alive"
+    extras = [
+        "interval": "30s",
+        "timeout": "5s",
+        "pattern": "Heartbeat"
+    ]
+
+    step Ping {
+        let _ = perform WebSocket.ping(connectionId)?;
+    }
+
+    step Heartbeat {
+        let _ = perform Presence.heartbeat(channelId, userId)?;
+    }
+}
+
+@BriefBuilder
+task DisconnectGracefully : TaskBrief uses [WebSocket, Presence, Analytics] {
+    goal   = "Close the WebSocket connection cleanly and remove the user's presence record"
+    extras = [
+        "pattern": "GracefulShutdown"
+    ]
+
+    step LeavePresence {
+        let _ = perform Presence.leave(channelId, userId)?;
+    }
+
+    step Disconnect {
+        let _ = perform WebSocket.disconnect(connectionId)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("channel_left", channelId)?;
+    }
+}

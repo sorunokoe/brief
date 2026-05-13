@@ -26,6 +26,7 @@ Quick reference for all `brief` subcommands. Run `brief --help` or `brief <subco
 |---------|-------------|
 | `brief init <name>` | Scaffold a new project in `<name>/` |
 | `brief watch <path>` | Live re-check on every file save |
+| `brief ci` | Check all files listed in `brief.toml [ci] examples` |
 | `brief add skill <Name>` | Install a skill from the registry |
 
 ## Documentation & Generation
@@ -42,6 +43,7 @@ Quick reference for all `brief` subcommands. Run `brief --help` or `brief <subco
 |---------|-------------|
 | `brief repl` | Interactive REPL |
 | `brief lsp` | LSP server (stdio) — for editor integration |
+| `brief completions <shell>` | Print shell completion script (bash / zsh / fish / powershell) |
 
 ---
 
@@ -58,6 +60,11 @@ Quick reference for all `brief` subcommands. Run `brief --help` or `brief <subco
 ## CI Usage
 
 ```yaml
+# Option A — run brief ci (reads brief.toml [ci] examples automatically)
+- name: CI checks
+  run: brief ci
+
+# Option B — check individual files
 - name: Check all briefs
   run: brief check path/to/file.brief
 
@@ -65,4 +72,15 @@ Quick reference for all `brief` subcommands. Run `brief --help` or `brief <subco
   run: brief fmt --check path/to/file.brief
 ```
 
-See [`.github/workflows/ci.yml`](https://github.com/yourusername/brief/blob/main/.github/workflows/ci.yml) for a full example.
+`brief ci` is the recommended approach for projects with a `brief.toml`. It reads the `[ci] examples` list and runs `brief check` on each file (supports globs like `examples/*.brief`). Exits non-zero if any file has errors.
+
+```toml
+# brief.toml
+[ci]
+examples = [
+  "examples/*.brief",
+  "features/auth.brief",
+]
+```
+
+See the [Manifest](manifest.md) page for full `brief.toml` documentation.

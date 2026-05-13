@@ -36,6 +36,7 @@
 - [Basic Patterns (01–10)](examples/basic.md)
 - [Skill Patterns (11–22)](examples/skills.md)
 - [Power Types (23–32)](examples/power-types.md)
+- [Advanced Patterns (33–40)](examples/advanced-patterns.md)
 
 ---
 
