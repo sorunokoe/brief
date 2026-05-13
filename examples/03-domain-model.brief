@@ -1,13 +1,12 @@
-// 03-domain-model.brief — a domain layer task that defines a data model from GraphQL.
-//
-// Run with: brief check 03-domain-model.brief
-
 import skill "GraphQL"
 
 @BriefBuilder
 task UserDomainModel : TaskBrief uses [GraphQL] {
     goal   = "Define the User domain model from the GraphQL schema"
-    extras = ["graphqlOperation": "UserProfileQuery", "targetLayer": "domain"]
+    extras = [
+        "graphqlOperation": "UserProfileQuery",
+        "targetLayer": "domain"
+    ]
 
     step ExtractSchema {
         let schema = perform GraphQL.schema(UserProfileQuery)?;

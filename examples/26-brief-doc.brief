@@ -1,60 +1,39 @@
-// examples/26-brief-doc.brief
-//
-// Demonstrates `brief doc` — generates Markdown documentation — Phase 3.
-//
-// This file is a comprehensive showcase designed to produce a rich doc output.
-// Run `brief doc` on it to see all sections rendered:
-//
-//   brief doc examples/26-brief-doc.brief
-//   brief doc examples/26-brief-doc.brief --output docs/api.md
-//
-// Run:  brief check examples/26-brief-doc.brief   → ✅
-// Run:  brief doc   examples/26-brief-doc.brief   → prints full Markdown
-
 import skill "Inventory"
+
 import skill "OrderService"
+
 import skill "PaymentGateway"
+
 import skill "Shipping"
+
 import skill "CustomerSupport"
 
-// ── Type aliases ──────────────────────────────────────────────────────────────
-
-type SKU         = @nonEmpty String
-type MoneyAmount = @nonEmpty String
-type TrackingUrl = @url String
-
-// ── Effect groups ─────────────────────────────────────────────────────────────
-
-type OrderEffects    = [Inventory, OrderService, PaymentGateway]
-type FulfillEffects  = [OrderService, Shipping]
-
-// ── Sealed types ──────────────────────────────────────────────────────────────
-
-sealed type OrderStatus
-    = Pending
-    | Confirmed
-    | Shipped(String)
-    | Delivered
-    | Cancelled(String)
+sealed type OrderStatus = Pending | Confirmed | Shipped(String) | Delivered | Cancelled(String)
 
 sealed type ShippingTier = Standard | Express | Overnight
 
-// ── Structs ───────────────────────────────────────────────────────────────────
+type SKU = @nonEmpty String
+
+type MoneyAmount = @nonEmpty String
+
+type TrackingUrl = @url String
+
+type OrderEffects = [Inventory, OrderService, PaymentGateway]
+
+type FulfillEffects = [OrderService, Shipping]
 
 struct OrderItem {
-    sku:      @nonEmpty String
+    sku: @nonEmpty String
     quantity: @nonEmpty String
-    price:    @nonEmpty String
+    price: @nonEmpty String
 }
 
 struct ShippingAddress {
-    street:  @nonEmpty String
-    city:    @nonEmpty String
+    street: @nonEmpty String
+    city: @nonEmpty String
     country: @nonEmpty String
     zipCode: @nonEmpty String
 }
-
-// ── Inline effect with @once return ──────────────────────────────────────────
 
 effect PaymentGateway {
     fn authorize(amount: @nonEmpty String, currency: @nonEmpty String) -> @once PaymentToken
@@ -62,19 +41,21 @@ effect PaymentGateway {
     fn void(token: PaymentToken, reason: @nonEmpty String) -> VoidResult
 }
 
-// ── Tasks ─────────────────────────────────────────────────────────────────────
-
 @BriefBuilder
 task PlaceOrder : TaskBrief uses [OrderEffects] {
-    goal = "Place a new order — validate inventory, authorize payment, create order record"
-    extras = ["domain": "commerce", "version": "3.0", "tier": "critical"]
+    goal   = "Place a new order — validate inventory, authorize payment, create order record"
+    extras = [
+        "domain": "commerce",
+        "tier": "critical",
+        "version": "3.0"
+    ]
 
     step ValidateCart {
         let availability = perform Inventory.checkBulk(items)?;
     }
 
     step AuthorizePayment {
-        let token        = perform PaymentGateway.authorize(total, currency)?;
+        let token = perform PaymentGateway.authorize(total, currency)?;
         let confirmation = perform PaymentGateway.capture(token)?;
     }
 
@@ -89,15 +70,18 @@ task PlaceOrder : TaskBrief uses [OrderEffects] {
 
 @BriefBuilder
 task FulfillOrder : TaskBrief uses [FulfillEffects] {
-    goal = "Fulfill a confirmed order — pick items, create shipment, notify customer"
-    extras = ["domain": "fulfillment", "sla": "24h"]
+    goal   = "Fulfill a confirmed order — pick items, create shipment, notify customer"
+    extras = [
+        "domain": "fulfillment",
+        "sla": "24h"
+    ]
 
     step PickItems {
         let pickList = perform OrderService.getPickList(orderId)?;
     }
 
     step CreateShipment {
-        let shipment    = perform Shipping.createLabel(orderId, address, tier)?;
+        let shipment = perform Shipping.createLabel(orderId, address, tier)?;
         let trackingUrl = perform Shipping.getTracking(shipment)?;
     }
 
@@ -107,16 +91,19 @@ task FulfillOrder : TaskBrief uses [FulfillEffects] {
 }
 
 task CancelOrder : TaskBrief uses [OrderEffects, CustomerSupport] {
-    goal = "Cancel an order and void payment if not yet captured"
-    extras = ["domain": "commerce", "selfService": "true"]
+    goal   = "Cancel an order and void payment if not yet captured"
+    extras = [
+        "domain": "commerce",
+        "selfService": "true"
+    ]
 
     step CheckCancellable {
         let status = perform OrderService.getStatus(orderId)?;
     }
 
     step VoidPayment {
-        @once let token  = perform PaymentGateway.authorize(zeroAmount, currency)?;
-        let voidResult   = perform PaymentGateway.void(token, reason)?;
+        @once let token = perform PaymentGateway.authorize(zeroAmount, currency)?;
+        let voidResult = perform PaymentGateway.void(token, reason)?;
     }
 
     step CancelRecord {

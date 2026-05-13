@@ -1,17 +1,9 @@
-// 21-error-recovery.brief — retry logic, fallbacks and circuit-breaker patterns.
-//
-// Demonstrates:
-//   - `extras` encoding resilience policy (retries, timeout, fallback URL)
-//   - Fallback chain: primary → secondary → cache → degraded mode
-//   - Separate concerns: fetch, fallback, degrade
-//
-// Expected results:
-//   brief check  21-error-recovery.brief   → ✅ (W101 warnings for missing .briefskill — expected)
-//   brief run    21-error-recovery.brief   → prints each step
-
 import skill "DataService"
+
 import skill "FallbackCache"
+
 import skill "CircuitBreaker"
+
 import skill "Alerting"
 
 sealed type ServiceHealth = Healthy | Degraded | CircuitOpen | Unknown
@@ -19,9 +11,9 @@ sealed type ServiceHealth = Healthy | Degraded | CircuitOpen | Unknown
 sealed type FallbackStrategy = StaleCache | DefaultValue | EmptyState | ErrorPage
 
 struct ResiliencePolicy {
-    maxRetries:     @nonEmpty String
-    backoffMs:      @nonEmpty String
-    timeoutMs:      @nonEmpty String
+    maxRetries: @nonEmpty String
+    backoffMs: @nonEmpty String
+    timeoutMs: @nonEmpty String
     circuitThreshold: @nonEmpty String
 }
 
@@ -29,11 +21,11 @@ struct ResiliencePolicy {
 task FetchWithRetry : TaskBrief uses [DataService, CircuitBreaker] {
     goal   = "Fetch data from the primary service with exponential backoff on transient failures"
     extras = [
-        "domain":       "resilience",
-        "maxRetries":   "3",
-        "backoffMs":    "200",
-        "timeoutMs":    "5000",
-        "jitter":       "true"
+        "backoffMs": "200",
+        "domain": "resilience",
+        "jitter": "true",
+        "maxRetries": "3",
+        "timeoutMs": "5000"
     ]
 
     step CheckCircuit {
@@ -53,10 +45,10 @@ task FetchWithRetry : TaskBrief uses [DataService, CircuitBreaker] {
 task FetchWithFallback : TaskBrief uses [DataService, FallbackCache, CircuitBreaker, Alerting] {
     goal   = "Attempt primary fetch; fall back to stale cache on failure; alert on circuit open"
     extras = [
-        "domain":            "resilience",
-        "staleCacheTTL":     "300",
-        "fallbackStrategy":  "StaleCache",
-        "alertChannel":      "pagerduty"
+        "alertChannel": "pagerduty",
+        "domain": "resilience",
+        "fallbackStrategy": "StaleCache",
+        "staleCacheTTL": "300"
     ]
 
     step TryPrimary {
@@ -80,8 +72,8 @@ task FetchWithFallback : TaskBrief uses [DataService, FallbackCache, CircuitBrea
 task DegradedModeResponse : TaskBrief uses [FallbackCache] {
     goal   = "Return a safe degraded response when all upstream services are unavailable"
     extras = [
-        "domain":    "resilience",
-        "strategy":  "EmptyState"
+        "domain": "resilience",
+        "strategy": "EmptyState"
     ]
 
     step ServeDefault {

@@ -1,11 +1,5 @@
-// 07-notifications.brief — Push notification registration and handling.
-//
-// Demonstrates: platform-specific extras, permission-request pattern,
-// and multi-platform (iOS + Android) targeting.
-//
-// Run with: brief check 07-notifications.brief
-
 import skill "PushKit"
+
 import skill "Analytics"
 
 sealed type NotificationPermission = Granted | Denied | NotDetermined
@@ -14,9 +8,9 @@ sealed type NotificationPermission = Granted | Denied | NotDetermined
 task RegisterPushNotifications : TaskBrief uses [PushKit, Analytics] {
     goal   = "Request push permission, register device token with backend"
     extras = [
-        "platform":         "iOS",
+        "categories": "marketing,transactional,alerts",
         "notificationType": "APNs",
-        "categories":       "marketing,transactional,alerts"
+        "platform": "iOS"
     ]
 
     step RequestPermission {
@@ -40,7 +34,7 @@ task RegisterPushNotifications : TaskBrief uses [PushKit, Analytics] {
 task HandleIncomingNotification : TaskBrief uses [Analytics] {
     goal   = "Process a received push notification and route to the correct screen"
     extras = [
-        "platform":   "iOS",
+        "platform": "iOS",
         "triggerType": "background,foreground"
     ]
 

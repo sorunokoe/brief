@@ -941,4 +941,140 @@ mod tests {
         assert!(matches!(&prog.tasks[0].steps[0].body[0],
             Stmt::Let { value: Expr::Await { .. }, .. }));
     }
+
+    // ── Test block parsing ────────────────────────────────────────────────
+
+    #[test]
+    fn parse_test_block_basic() {
+        let src = r#"
+            import skill "GraphQL"
+            task T : TaskBrief uses [GraphQL] { goal = "x" }
+            test "loads user" {
+                mock GraphQL { fn query(op) -> Ok("data") }
+                run T
+                assert performed GraphQL.query
+                assert result is Ok
+            }
+        "#;
+        let (prog, errs) = parse_src(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        assert_eq!(prog.tests.len(), 1);
+        assert_eq!(prog.tests[0].name, "loads user");
+    }
+
+    #[test]
+    fn parse_multiple_test_blocks() {
+        let src = r#"
+            task T : TaskBrief { goal = "x" }
+            test "first test" { run T assert result is Ok }
+            test "second test" { run T assert result is Ok }
+            test "third test" { run T }
+        "#;
+        let (prog, errs) = parse_src(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        assert_eq!(prog.tests.len(), 3);
+        assert_eq!(prog.tests[0].name, "first test");
+        assert_eq!(prog.tests[1].name, "second test");
+        assert_eq!(prog.tests[2].name, "third test");
+    }
+
+    #[test]
+    fn parse_test_block_with_nested_braces() {
+        // Test that brace-depth tracking works for nested mock bodies
+        let src = r#"
+            import skill "Auth"
+            task Login : TaskBrief uses [Auth] { goal = "auth" }
+            test "login happy path" {
+                mock Auth {
+                    fn login(email, password) -> Ok("tok_abc123")
+                }
+                mock Auth {
+                    fn refreshToken(tok) -> Ok("tok_xyz")
+                }
+                run Login
+                assert performed Auth.login
+                assert result is Ok
+            }
+        "#;
+        let (prog, errs) = parse_src(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        assert_eq!(prog.tests.len(), 1);
+        assert_eq!(prog.tests[0].name, "login happy path");
+    }
+
+    #[test]
+    fn parse_test_block_body_is_opaque() {
+        // Test body is stored as empty vec (opaque to main parser — tester.rs handles it)
+        let src = r#"
+            task T : TaskBrief { goal = "x" }
+            test "opaque body" {
+                mock Foo { fn bar(x) -> Ok("y") }
+                run T
+                assert not performed Baz.qux
+            }
+        "#;
+        let (prog, errs) = parse_src(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        assert_eq!(prog.tests.len(), 1);
+        // Body is intentionally empty — the brace-skip approach stores no stmts
+        assert_eq!(prog.tests[0].body.len(), 0);
+    }
+
+    #[test]
+    fn parse_test_and_task_coexist() {
+        // Verify tasks and tests are collected into their respective vecs
+        let src = r#"
+            import skill "GQL"
+            task A : TaskBrief uses [GQL] { goal = "first" }
+            task B : TaskBrief uses [GQL] { goal = "second" }
+            test "test A" { run A assert result is Ok }
+            test "test B" { run B assert result is Ok }
+        "#;
+        let (prog, errs) = parse_src(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        assert_eq!(prog.tasks.len(), 2);
+        assert_eq!(prog.tests.len(), 2);
+        assert_eq!(prog.tasks[0].name, "A");
+        assert_eq!(prog.tasks[1].name, "B");
+        assert_eq!(prog.tests[0].name, "test A");
+        assert_eq!(prog.tests[1].name, "test B");
+    }
+
+    // ── Fmt idempotency on test files ─────────────────────────────────────
+
+    #[test]
+    fn fmt_idempotent_on_test_file() {
+        use crate::fmt::Formatter;
+        let src = r#"import skill "GraphQL"
+
+task FetchProfile : TaskBrief uses [GraphQL] {
+    goal = "Fetch a user profile from the API"
+
+    step Load {
+        let user = perform GraphQL.query(UserProfileQuery)?;
+    }
+}
+
+test "FetchProfile loads user via GraphQL" {
+    mock GraphQL {
+        fn query(op) -> Ok(User { id: "u1", name: "Ada Lovelace" })
+    }
+
+    run FetchProfile
+    assert performed GraphQL.query
+    assert result is Ok
+}
+"#;
+        let (tokens, _)  = lex(src);
+        let (prog, errs) = parse(&tokens, src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let pass1 = Formatter::format_program(&prog);
+
+        let (tokens2, _)  = lex(&pass1);
+        let (prog2, errs2) = parse(&tokens2, &pass1);
+        assert!(errs2.is_empty(), "pass-2 parse errors: {errs2:?}");
+        let pass2 = Formatter::format_program(&prog2);
+
+        assert_eq!(pass1, pass2, "fmt is not idempotent on test file");
+    }
 }

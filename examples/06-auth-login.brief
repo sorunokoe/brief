@@ -1,27 +1,18 @@
-// 06-auth-login.brief — Authentication flow: login, token refresh, logout.
-//
-// Demonstrates: multiple tasks in one file, error propagation (?),
-// multi-step flows, and auth-specific extras.
-//
-// Run with: brief check 06-auth-login.brief
-//           brief run   06-auth-login.brief
-
 import skill "Auth"
-import skill "Keychain"
 
-// ─── Login ──────────────────────────────────────────────────────────────────
+import skill "Keychain"
 
 @BriefBuilder
 task LoginTask : TaskBrief uses [Auth, Keychain] {
     goal   = "Authenticate the user with email and password, store JWT in Keychain"
     extras = [
-        "platform":  "iOS",
-        "authType":  "JWT",
-        "tokenTTL":  "3600"
+        "authType": "JWT",
+        "platform": "iOS",
+        "tokenTTL": "3600"
     ]
 
     step ValidateInput {
-        let email    = perform Auth.validateEmail(credentials)?;
+        let email = perform Auth.validateEmail(credentials)?;
         let password = perform Auth.validatePassword(credentials)?;
     }
 
@@ -34,15 +25,13 @@ task LoginTask : TaskBrief uses [Auth, Keychain] {
     }
 }
 
-// ─── Token refresh ──────────────────────────────────────────────────────────
-
 @BriefBuilder
 task RefreshTokenTask : TaskBrief uses [Auth, Keychain] {
     goal   = "Silently refresh the JWT before it expires"
     extras = [
-        "platform":    "iOS",
-        "triggerAt":   "token.expiry - 60s",
-        "retryPolicy": "exponential"
+        "platform": "iOS",
+        "retryPolicy": "exponential",
+        "triggerAt": "token.expiry - 60s"
     ]
 
     step LoadToken {
@@ -57,8 +46,6 @@ task RefreshTokenTask : TaskBrief uses [Auth, Keychain] {
         let saved = perform Keychain.store(fresh, "auth.token")?;
     }
 }
-
-// ─── Logout ─────────────────────────────────────────────────────────────────
 
 @BriefBuilder
 task LogoutTask : TaskBrief uses [Auth, Keychain] {

@@ -1,16 +1,7 @@
-// 22-permissions.brief — role-based access control (RBAC) check before action.
-//
-// Demonstrates:
-//   - Sealed types as a first-class permission model
-//   - Guard tasks (CheckAccess) composing with action tasks
-//   - `extras` making policy decisions explicit and auditable
-//
-// Expected results:
-//   brief check  22-permissions.brief   → ✅ (W101 warnings for missing .briefskill — expected)
-//   brief run    22-permissions.brief   → prints each step
-
 import skill "Auth"
+
 import skill "RBAC"
+
 import skill "AuditLog"
 
 sealed type Role = SuperAdmin | Admin | Editor | Viewer | Guest
@@ -25,9 +16,9 @@ sealed type AccessDecision = Allowed | Denied(String) | ConditionallyAllowed(Str
 task CheckAccess : TaskBrief uses [Auth, RBAC] {
     goal   = "Verify the caller has the required permission for the requested resource"
     extras = [
-        "domain":           "rbac",
-        "enforcementMode":  "strict",
-        "cacheDecisionsTTL": "30"
+        "cacheDecisionsTTL": "30",
+        "domain": "rbac",
+        "enforcementMode": "strict"
     ]
 
     step LoadIdentity {
@@ -47,14 +38,14 @@ task CheckAccess : TaskBrief uses [Auth, RBAC] {
 task GrantRole : TaskBrief uses [RBAC, AuditLog] {
     goal   = "Assign a role to a user, subject to the caller having admin permission"
     extras = [
-        "domain":     "rbac",
-        "requireRole": "Admin",
-        "auditAction": "ROLE_GRANTED"
+        "auditAction": "ROLE_GRANTED",
+        "domain": "rbac",
+        "requireRole": "Admin"
     ]
 
     step VerifyGranter {
         let callerRoles = perform RBAC.getRoles(callerId)?;
-        let allowed     = perform RBAC.evaluate(callerRoles, Resource, Permission)?;
+        let allowed = perform RBAC.evaluate(callerRoles, Resource, Permission)?;
     }
 
     step Assign {
@@ -70,9 +61,9 @@ task GrantRole : TaskBrief uses [RBAC, AuditLog] {
 task RevokeRole : TaskBrief uses [Auth, RBAC, AuditLog] {
     goal   = "Remove a role from a user and invalidate their active sessions"
     extras = [
-        "domain":      "rbac",
-        "requireRole": "Admin",
-        "auditAction": "ROLE_REVOKED"
+        "auditAction": "ROLE_REVOKED",
+        "domain": "rbac",
+        "requireRole": "Admin"
     ]
 
     step VerifyRevoker {

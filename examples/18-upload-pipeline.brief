@@ -1,17 +1,9 @@
-// 18-upload-pipeline.brief — file upload: validate → compress → upload → CDN invalidation.
-//
-// Demonstrates:
-//   - Linear pipeline where each step's output feeds the next
-//   - `extras` with size/type constraints (business rules as metadata)
-//   - 4 distinct skills composing a real-world upload flow
-//
-// Expected results:
-//   brief check  18-upload-pipeline.brief   → ✅ (W101 warnings for missing .briefskill — expected)
-//   brief run    18-upload-pipeline.brief   → prints each step
-
 import skill "FileValidator"
+
 import skill "Compressor"
+
 import skill "Storage"
+
 import skill "CDN"
 
 sealed type FileType = Image | Video | Document | Audio | Archive
@@ -19,21 +11,21 @@ sealed type FileType = Image | Video | Document | Audio | Archive
 sealed type CompressionLevel = None | Fast | Balanced | Maximum
 
 struct UploadResult {
-    fileId:      @nonEmpty String
-    publicUrl:   @url String
+    fileId: @nonEmpty String
+    publicUrl: @url String
     contentHash: @nonEmpty String
-    sizeBytes:   @nonEmpty String
+    sizeBytes: @nonEmpty String
 }
 
 @BriefBuilder
 task UploadUserFile : TaskBrief uses [FileValidator, Compressor, Storage, CDN] {
     goal   = "Validate, compress and store a user-uploaded file, then warm the CDN edge"
     extras = [
-        "domain":      "media",
-        "maxSizeMB":   "100",
         "allowedTypes": "image,video,document",
-        "storageRegion": "us-east-1",
-        "cdnDistribution": "E1234ABCD"
+        "cdnDistribution": "E1234ABCD",
+        "domain": "media",
+        "maxSizeMB": "100",
+        "storageRegion": "us-east-1"
     ]
 
     step Validate {
@@ -57,7 +49,10 @@ task UploadUserFile : TaskBrief uses [FileValidator, Compressor, Storage, CDN] {
 @BriefBuilder
 task DeleteFile : TaskBrief uses [Storage, CDN] {
     goal   = "Remove a stored file and purge all CDN caches referencing it"
-    extras = ["domain": "media", "audit": "true"]
+    extras = [
+        "audit": "true",
+        "domain": "media"
+    ]
 
     step RemoveBlob {
         let deleted = perform Storage.delete(fileId, userId)?;

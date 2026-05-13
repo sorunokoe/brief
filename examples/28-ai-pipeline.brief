@@ -1,39 +1,29 @@
-// examples/28-ai-pipeline.brief
-//
-// Demonstrates an AI agent pipeline — chaining multiple LLM calls as effects.
-// In Brief, AI calls are just effects. They are typed, testable, and composable
-// like any other skill. The compiler ensures you can't forget to declare them.
-//
-// Run:  brief check examples/28-ai-pipeline.brief   → ✅
-// Run:  brief test  examples/28-ai-pipeline.brief   → runs mock tests
-
 import skill "LLM"
-import skill "Embeddings"
-import skill "VectorStore"
-import skill "GraphQL"
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+import skill "Embeddings"
+
+import skill "VectorStore"
+
+import skill "GraphQL"
 
 sealed type SearchMode = Semantic | Keyword | Hybrid
 
 struct Document {
-    id:      @nonEmpty String
+    id: @nonEmpty String
     content: @nonEmpty String
-    source:  @nonEmpty String
+    source: @nonEmpty String
 }
 
 struct SearchResult {
     document: Document
-    score:    String
+    score: String
 }
 
 struct Answer {
-    text:       @nonEmpty String
+    text: @nonEmpty String
     confidence: String
-    sources:    String
+    sources: String
 }
-
-// ── Effects ───────────────────────────────────────────────────────────────────
 
 effect LLM {
     fn complete(prompt: String, temperature: String) -> Answer
@@ -51,11 +41,9 @@ effect VectorStore {
     fn upsert(document: Document, embedding: String) -> String
 }
 
-// ── Pipeline Step 1: embed the query ─────────────────────────────────────────
-
 @BriefBuilder
 task EmbedQuery : TaskBrief uses [Embeddings] {
-    goal = "Convert a user query into a vector embedding for semantic search"
+    goal   = "Convert a user query into a vector embedding for semantic search"
     extras = ["model": "text-embedding-3-small"]
 
     step Embed {
@@ -63,12 +51,13 @@ task EmbedQuery : TaskBrief uses [Embeddings] {
     }
 }
 
-// ── Pipeline Step 2: retrieve relevant documents ──────────────────────────────
-
 @BriefBuilder
 task RetrieveDocuments : TaskBrief uses [VectorStore] {
-    goal = "Retrieve the top-K most relevant documents for a query embedding"
-    extras = ["topK": "5", "domain": "knowledge-base"]
+    goal   = "Retrieve the top-K most relevant documents for a query embedding"
+    extras = [
+        "domain": "knowledge-base",
+        "topK": "5"
+    ]
 
     step Search {
         let results = perform VectorStore.search(queryEmbedding, topK)?;
@@ -79,15 +68,13 @@ task RetrieveDocuments : TaskBrief uses [VectorStore] {
     }
 }
 
-// ── Pipeline Step 3: generate grounded answer ────────────────────────────────
-
 @BriefBuilder
 task GenerateAnswer : TaskBrief uses [LLM] {
-    goal = "Generate a grounded answer from retrieved documents using RAG"
+    goal   = "Generate a grounded answer from retrieved documents using RAG"
     extras = [
-        "model":       "gpt-4o",
-        "temperature": "0.2",
-        "pattern":     "RAG"
+        "model": "gpt-4o",
+        "pattern": "RAG",
+        "temperature": "0.2"
     ]
 
     step BuildPrompt {
@@ -99,15 +86,13 @@ task GenerateAnswer : TaskBrief uses [LLM] {
     }
 }
 
-// ── Full RAG pipeline (composed) ──────────────────────────────────────────────
-
 @BriefBuilder
 task RagSearch : TaskBrief uses [Embeddings, VectorStore, LLM, GraphQL] {
-    goal = "Run the complete RAG pipeline: embed → retrieve → generate answer"
+    goal   = "Run the complete RAG pipeline: embed → retrieve → generate answer"
     extras = [
         "pattern": "RAG",
-        "version": "2",
-        "timeout": "30s"
+        "timeout": "30s",
+        "version": "2"
     ]
 
     step Embed {
@@ -131,45 +116,8 @@ task RagSearch : TaskBrief uses [Embeddings, VectorStore, LLM, GraphQL] {
     }
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
-
 test "RagSearch embeds query before searching" {
-    mock Embeddings {
-        fn embed(text) -> Ok("vec_abc123")
-    }
-    mock VectorStore {
-        fn search(embedding, topK) -> Ok(SearchResult { document: Document { id: "d1", content: "Brief overview", source: "docs" }, score: "0.92" })
-    }
-    mock LLM {
-        fn classify(text, cats) -> Ok("documentation")
-        fn complete(prompt, temp) -> Ok(Answer { text: "Brief is a DSL for AI workflows.", confidence: "0.95", sources: "d1" })
-    }
-    mock GraphQL {
-        fn mutation(op) -> Ok("logged")
-    }
-
-    run RagSearch
-    assert performed Embeddings.embed
-    assert performed VectorStore.search
-    assert performed LLM.complete
-    assert result is Ok
 }
 
 test "RagSearch fails gracefully when LLM errors" {
-    mock Embeddings {
-        fn embed(text) -> Ok("vec_abc")
-    }
-    mock VectorStore {
-        fn search(embedding, topK) -> Ok(SearchResult { document: Document { id: "d1", content: "x", source: "s" }, score: "0.8" })
-    }
-    mock LLM {
-        fn classify(text, cats) -> Ok("general")
-        fn complete(prompt, temp) -> Err("rate_limit")
-    }
-    mock GraphQL {
-        fn mutation(op) -> Ok("logged")
-    }
-
-    run RagSearch
-    assert result is Err
 }

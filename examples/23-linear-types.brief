@@ -1,20 +1,6 @@
-// examples/23-linear-types.brief
-//
-// Demonstrates @once linear bindings — Phase 3 power type.
-//
-// A linear binding (`@once let x = ...`) must be consumed exactly once.
-// This prevents double-charging, double-sending, or silently dropping
-// side-effectful operations.
-//
-// Run:  brief check examples/23-linear-types.brief   → ✅
-// Run:  brief doc   examples/23-linear-types.brief   → prints Markdown docs
-
 import skill "Payment"
-import skill "Receipt"
 
-// ── Inline effect with @once return type ─────────────────────────────────────
-// The `charge` function returns a linear PaymentHandle.
-// The compiler will auto-mark any `let x = perform Payment.charge(...)` as linear.
+import skill "Receipt"
 
 effect Payment {
     fn charge(amount: String, currency: String) -> @once PaymentHandle
@@ -27,31 +13,26 @@ effect Receipt {
     fn email(url: String, recipientEmail: String) -> SendResult
 }
 
-// ── Task 1: successful charge ────────────────────────────────────────────────
-// The @once return from Payment.charge auto-marks `handle` as linear.
-// It is consumed exactly once by Payment.confirm — no E104 / E105.
-
 task ChargeCard : TaskBrief uses [Payment, Receipt] {
-    goal = "Charge a card and generate a receipt — linear handle consumed exactly once"
-    extras = ["domain": "payments", "risk": "high"]
+    goal   = "Charge a card and generate a receipt — linear handle consumed exactly once"
+    extras = [
+        "domain": "payments",
+        "risk": "high"
+    ]
 
     step Charge {
-        let handle       = perform Payment.charge(amount, currency)?;
+        let handle = perform Payment.charge(amount, currency)?;
         let confirmation = perform Payment.confirm(handle)?;
     }
 
     step GenerateReceipt {
-        let url    = perform Receipt.generate(confirmation)?;
+        let url = perform Receipt.generate(confirmation)?;
         let result = perform Receipt.email(url, recipientEmail)?;
     }
 }
 
-// ── Task 2: explicit @once annotation ────────────────────────────────────────
-// When there is no inline effect declaration, use `@once let` explicitly
-// to mark that a binding is a one-time resource.
-
 task RefundOrder : TaskBrief uses [Payment] {
-    goal = "Refund an order — explicit @once prevents accidentally reusing the handle"
+    goal   = "Refund an order — explicit @once prevents accidentally reusing the handle"
 
     step Validate {
         let orderId = perform Payment.lookupOrder(orderId)?;
@@ -59,6 +40,6 @@ task RefundOrder : TaskBrief uses [Payment] {
 
     step Refund {
         @once let handle = perform Payment.charge(negativeAmount, currency)?;
-        let result       = perform Payment.refund(handle, reason)?;
+        let result = perform Payment.refund(handle, reason)?;
     }
 }

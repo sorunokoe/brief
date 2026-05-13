@@ -38,8 +38,73 @@ jobs:
       - name: Run tests
         run: cargo test --verbose
 
-      - name: Check hello.brief
+      # ── Smoke-check core examples ────────────────────────────────────────
+      - name: brief check — hello
         run: cargo run --bin brief -- check examples/01-hello.brief
 
-      - name: Run hello.brief
+      - name: brief run — hello
         run: cargo run --bin brief -- run examples/01-hello.brief
+
+      - name: brief check — profile screen
+        run: cargo run --bin brief -- check examples/02-profile-screen.brief
+
+      - name: brief check — test suite (must have 0 errors)
+        run: cargo run --bin brief -- check examples/14-test-suite.brief
+
+      # ── Check all 32 examples pass brief check ───────────────────────────
+      - name: brief check — all examples (no hard errors)
+        run: |
+          FAIL=0
+          for f in examples/[0-9]*.brief; do
+            output=$(cargo run --bin brief -- check "$f" 2>&1)
+            errs=$(echo "$output" | grep -c "^error\[" || true)
+            if [ "$errs" -gt 0 ]; then
+              echo "FAIL: $f ($errs errors)"
+              echo "$output"
+              FAIL=1
+            fi
+          done
+          exit $FAIL
+
+      # ── brief test on files with test blocks ─────────────────────────────
+      - name: brief test — 14-test-suite
+        run: cargo run --bin brief -- test examples/14-test-suite.brief
+
+      - name: brief test — 28-ai-pipeline
+        run: cargo run --bin brief -- test examples/28-ai-pipeline.brief
+
+      - name: brief test — 32-mcp-integration
+        run: cargo run --bin brief -- test examples/32-mcp-integration.brief
+
+      # ── brief fmt --check on all examples ────────────────────────────────
+      - name: brief fmt --check — all examples
+        run: |
+          FAIL=0
+          for f in examples/[0-9]*.brief; do
+            output=$(cargo run --bin brief -- fmt --check "$f" 2>&1)
+            if echo "$output" | grep -q "❌"; then
+              echo "UNFORMATTED: $f"
+              FAIL=1
+            fi
+          done
+          exit $FAIL
+
+      # ── Phase 3 power types examples ─────────────────────────────────────
+      - name: brief check — linear types (23)
+        run: cargo run --bin brief -- check examples/23-linear-types.brief
+
+      - name: brief check — type aliases (24)
+        run: cargo run --bin brief -- check examples/24-type-aliases.brief
+
+      - name: brief check — effect groups (25)
+        run: cargo run --bin brief -- check examples/25-effect-groups.brief
+
+      # ── Advanced pattern examples ─────────────────────────────────────────
+      - name: brief check — task composition (27)
+        run: cargo run --bin brief -- check examples/27-task-composition.brief
+
+      - name: brief check — AI pipeline (28)
+        run: cargo run --bin brief -- check examples/28-ai-pipeline.brief
+
+      - name: brief check — MCP integration (32)
+        run: cargo run --bin brief -- check examples/32-mcp-integration.brief

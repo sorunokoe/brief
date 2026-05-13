@@ -1,45 +1,34 @@
-// examples/29-platform-branching.brief
-//
-// Demonstrates platform-specific branching via sealed types and extras metadata.
-// The Brief type system ensures platform variants are exhaustive — the AI agent
-// knows which platform it is building for at compile time, not at runtime.
-//
-// Run:  brief check examples/29-platform-branching.brief   → ✅
-
 import skill "DesignSystem"
+
 import skill "Analytics"
+
 import skill "GraphQL"
 
-// ── Platform taxonomy ─────────────────────────────────────────────────────────
+sealed type Platform = iOS | Android | Web | tvOS
 
-sealed type Platform  = iOS | Android | Web | tvOS
 sealed type FormFactor = Phone | Tablet | Desktop | TV
+
 sealed type ThemeMode = Light | Dark | SystemDefault
 
 struct PlatformContext {
-    platform:    Platform
-    formFactor:  FormFactor
-    osVersion:   @nonEmpty String
-    appVersion:  @nonEmpty String
+    platform: Platform
+    formFactor: FormFactor
+    osVersion: @nonEmpty String
+    appVersion: @nonEmpty String
 }
 
-// ── Shared screen definition ─────────────────────────────────────────────────
-// Same data, different rendering per platform.
-
 struct HomeScreenData {
-    userId:    @nonEmpty String
+    userId: @nonEmpty String
     feedItems: String
     bannerUrl: @url String
 }
 
-// ── iOS variant ───────────────────────────────────────────────────────────────
-
 @BriefBuilder
 task HomeScreen_iOS : TaskBrief uses [DesignSystem, GraphQL, Analytics] {
-    goal = "Render the home screen for iOS using native SwiftUI components"
+    goal   = "Render the home screen for iOS using native SwiftUI components"
     extras = [
-        "platform":       "iOS",
-        "minOSVersion":   "17.0",
+        "minOSVersion": "17.0",
+        "platform": "iOS",
         "renderFramework": "SwiftUI"
     ]
 
@@ -49,7 +38,7 @@ task HomeScreen_iOS : TaskBrief uses [DesignSystem, GraphQL, Analytics] {
 
     step Render {
         let header = perform DesignSystem.navigationHeader(title, backButton)?;
-        let list   = perform DesignSystem.feedList(feed, separatorStyle)?;
+        let list = perform DesignSystem.feedList(feed, separatorStyle)?;
         let banner = perform DesignSystem.heroBanner(bannerUrl)?;
     }
 
@@ -58,14 +47,12 @@ task HomeScreen_iOS : TaskBrief uses [DesignSystem, GraphQL, Analytics] {
     }
 }
 
-// ── Android variant ───────────────────────────────────────────────────────────
-
 @BriefBuilder
 task HomeScreen_Android : TaskBrief uses [DesignSystem, GraphQL, Analytics] {
-    goal = "Render the home screen for Android using Compose Material 3 components"
+    goal   = "Render the home screen for Android using Compose Material 3 components"
     extras = [
-        "platform":        "Android",
-        "minApiLevel":     "26",
+        "minApiLevel": "26",
+        "platform": "Android",
         "renderFramework": "JetpackCompose"
     ]
 
@@ -75,8 +62,8 @@ task HomeScreen_Android : TaskBrief uses [DesignSystem, GraphQL, Analytics] {
 
     step Render {
         let topBar = perform DesignSystem.topAppBar(title, navigationIcon)?;
-        let list   = perform DesignSystem.lazyColumn(feed, itemContent)?;
-        let fab    = perform DesignSystem.floatingActionButton(icon, onClick)?;
+        let list = perform DesignSystem.lazyColumn(feed, itemContent)?;
+        let fab = perform DesignSystem.floatingActionButton(icon, onClick)?;
     }
 
     step Track {
@@ -84,16 +71,14 @@ task HomeScreen_Android : TaskBrief uses [DesignSystem, GraphQL, Analytics] {
     }
 }
 
-// ── Web variant ───────────────────────────────────────────────────────────────
-
 @BriefBuilder
 task HomeScreen_Web : TaskBrief uses [DesignSystem, GraphQL, Analytics] {
-    goal = "Render the home screen for Web using responsive design system tokens"
+    goal   = "Render the home screen for Web using responsive design system tokens"
     extras = [
-        "platform":        "Web",
+        "platform": "Web",
         "renderFramework": "React",
-        "responsive":      "true",
-        "ssr":             "true"
+        "responsive": "true",
+        "ssr": "true"
     ]
 
     step FetchData {
@@ -101,8 +86,8 @@ task HomeScreen_Web : TaskBrief uses [DesignSystem, GraphQL, Analytics] {
     }
 
     step Render {
-        let nav    = perform DesignSystem.navbar(logo, navItems, ctaButton)?;
-        let grid   = perform DesignSystem.contentGrid(feed, columns)?;
+        let nav = perform DesignSystem.navbar(logo, navItems, ctaButton)?;
+        let grid = perform DesignSystem.contentGrid(feed, columns)?;
         let footer = perform DesignSystem.footer(links, copyright)?;
     }
 
@@ -111,17 +96,13 @@ task HomeScreen_Web : TaskBrief uses [DesignSystem, GraphQL, Analytics] {
     }
 }
 
-// ── Universal coordinator ─────────────────────────────────────────────────────
-// A meta-task that routes to the correct platform variant at the type level.
-// The AI knows the full set of supported platforms from the extras metadata.
-
 @BriefBuilder
 task HomeScreen : TaskBrief uses [DesignSystem, GraphQL, Analytics] {
-    goal = "Entry point for the home screen — delegates to platform-specific task"
+    goal   = "Entry point for the home screen — delegates to platform-specific task"
     extras = [
-        "platforms":    "iOS,Android,Web",
-        "coordinator":  "true",
-        "figma":        "https://figma.com/file/abc?node-id=1:2"
+        "coordinator": "true",
+        "figma": "https://figma.com/file/abc?node-id=1:2",
+        "platforms": "iOS,Android,Web"
     ]
 
     step Resolve {

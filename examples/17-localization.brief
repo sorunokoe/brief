@@ -1,30 +1,24 @@
-// 17-localization.brief — i18n string lookup, locale detection, pluralisation.
-//
-// Demonstrates:
-//   - Locale-aware tasks with `extras` declaring supported locales
-//   - Optional types (Locale?) with fallback chain
-//   - Two-skill composition (Locale + CMS)
-//
-// Expected results:
-//   brief check  17-localization.brief   → ✅ (W101 warnings for missing .briefskill — expected)
-//   brief run    17-localization.brief   → prints each step
-
 import skill "Locale"
+
 import skill "CMS"
 
 sealed type SupportedLocale = EnUS | EnGB | FrFR | DeDE | JaJP | ZhCN | ArSA
 
 struct LocaleConfig {
-    locale:        @nonEmpty String
-    fallback:      @nonEmpty String
-    pluralRules:   @nonEmpty String
-    rtl:           @nonEmpty String
+    locale: @nonEmpty String
+    fallback: @nonEmpty String
+    pluralRules: @nonEmpty String
+    rtl: @nonEmpty String
 }
 
 @BriefBuilder
 task DetectLocale : TaskBrief uses [Locale] {
     goal   = "Detect the user's preferred locale from device settings, falling back to en-US"
-    extras = ["domain": "i18n", "defaultLocale": "en-US", "supportedLocales": "en-US,en-GB,fr-FR,de-DE,ja-JP"]
+    extras = [
+        "defaultLocale": "en-US",
+        "domain": "i18n",
+        "supportedLocales": "en-US,en-GB,fr-FR,de-DE,ja-JP"
+    ]
 
     step ReadDevice {
         let preferred = perform Locale.fromDevice()?;
@@ -42,7 +36,11 @@ task DetectLocale : TaskBrief uses [Locale] {
 @BriefBuilder
 task LoadStrings : TaskBrief uses [CMS, Locale] {
     goal   = "Fetch all UI strings for the resolved locale from the CMS"
-    extras = ["domain": "i18n", "cachePolicy": "stale-while-revalidate", "ttl": "3600"]
+    extras = [
+        "cachePolicy": "stale-while-revalidate",
+        "domain": "i18n",
+        "ttl": "3600"
+    ]
 
     step FetchBundle {
         let bundle = perform CMS.fetchStringBundle(locale)?;

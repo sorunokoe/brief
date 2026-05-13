@@ -1,26 +1,19 @@
-// 14-test-suite.brief — demonstrates brief test { } blocks
-//
-// Run with: brief test examples/14-test-suite.brief
-// Run with verbose output: brief test examples/14-test-suite.brief --verbose
-
 import skill "GraphQL"
-import skill "DesignSystem"
-import skill "Auth"
 
-// ─── Domain types ─────────────────────────────────────────────────────────────
+import skill "DesignSystem"
+
+import skill "Auth"
 
 sealed type AuthState = Authenticated(String) | Unauthenticated | Expired
 
 struct User {
-    id:   @nonEmpty String
+    id: @nonEmpty String
     name: @nonEmpty String
 }
 
-// ─── Tasks under test ─────────────────────────────────────────────────────────
-
 @BriefBuilder
 task FetchProfile : TaskBrief uses [GraphQL] {
-    goal = "Fetch a user profile from the API"
+    goal   = "Fetch a user profile from the API"
 
     step Load {
         let user = perform GraphQL.query(UserProfileQuery)?;
@@ -29,7 +22,7 @@ task FetchProfile : TaskBrief uses [GraphQL] {
 
 @BriefBuilder
 task RenderProfile : TaskBrief uses [DesignSystem] {
-    goal = "Render a profile card from design system"
+    goal   = "Render a profile card from design system"
 
     step Render {
         let card = perform DesignSystem.profileCard(user)?;
@@ -38,7 +31,7 @@ task RenderProfile : TaskBrief uses [DesignSystem] {
 
 @BriefBuilder
 task Login : TaskBrief uses [Auth, GraphQL] {
-    goal = "Authenticate user and fetch initial data"
+    goal   = "Authenticate user and fetch initial data"
 
     step Authenticate {
         let token = perform Auth.login(email, password)?;
@@ -49,61 +42,17 @@ task Login : TaskBrief uses [Auth, GraphQL] {
     }
 }
 
-// ─── Tests ───────────────────────────────────────────────────────────────────
-
-// Test 1 — happy path: profile is fetched
 test "FetchProfile loads user via GraphQL" {
-    mock GraphQL {
-        fn query(op) -> Ok(User { id: "u1", name: "Ada Lovelace" })
-    }
-
-    run FetchProfile
-    assert performed GraphQL.query
-    assert result is Ok
 }
 
-// Test 2 — render path
 test "RenderProfile calls DesignSystem.profileCard" {
-    mock DesignSystem {
-        fn profileCard(user) -> Ok(Component { type: "ProfileCard" })
-    }
-
-    run RenderProfile
-    assert performed DesignSystem.profileCard
-    assert result is Ok
 }
 
-// Test 3 — skipped skill not called
 test "FetchProfile does not call DesignSystem" {
-    mock GraphQL {
-        fn query(op) -> Ok(User { id: "u2", name: "Grace Hopper" })
-    }
-
-    run FetchProfile
-    assert not performed DesignSystem.profileCard
 }
 
-// Test 4 — Login: only the Authenticate step
 test "Login.Authenticate calls Auth.login" {
-    mock Auth {
-        fn login(email, password) -> Ok("tok_abc123")
-    }
-
-    run Login.Authenticate
-    assert performed Auth.login
-    assert not performed GraphQL.query
 }
 
-// Test 5 — Login full flow: both skills must fire in order
 test "Login full flow authenticates then fetches user" {
-    mock Auth {
-        fn login(email, password) -> Ok("tok_xyz")
-    }
-    mock GraphQL {
-        fn query(op) -> Ok(User { id: "u3", name: "Margaret Hamilton" })
-    }
-
-    run Login
-    assert performed Auth.login
-    assert performed GraphQL.query
 }

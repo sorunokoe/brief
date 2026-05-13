@@ -1,34 +1,27 @@
-// 10-data-sync.brief — Offline-first data synchronisation.
-//
-// Demonstrates: background task pattern, conflict resolution,
-// and retry/idempotency extras.
-//
-// Run with: brief check 10-data-sync.brief
-
 import skill "GraphQL"
+
 import skill "LocalDB"
+
 import skill "Analytics"
 
 sealed type SyncStatus = Idle | Syncing | Conflict | Failed(String) | Done
 
 struct SyncResult {
-    uploaded:   String
+    uploaded: String
     downloaded: String
-    conflicts:  String
-    timestamp:  @nonEmpty String
+    conflicts: String
+    timestamp: @nonEmpty String
 }
-
-// ─── Incremental sync ────────────────────────────────────────────────────────
 
 @BriefBuilder
 task SyncUserData : TaskBrief uses [GraphQL, LocalDB, Analytics] {
     goal   = "Push local changes to server and pull remote changes; resolve conflicts"
     extras = [
-        "platform":       "KMP",
-        "syncStrategy":   "last-write-wins",
-        "retryPolicy":    "exponential",
-        "maxRetries":     "5",
-        "conflictPolicy": "server-wins"
+        "conflictPolicy": "server-wins",
+        "maxRetries": "5",
+        "platform": "KMP",
+        "retryPolicy": "exponential",
+        "syncStrategy": "last-write-wins"
     ]
 
     step ReadLocalChanges {
@@ -56,14 +49,12 @@ task SyncUserData : TaskBrief uses [GraphQL, LocalDB, Analytics] {
     }
 }
 
-// ─── Force full re-sync ──────────────────────────────────────────────────────
-
 @BriefBuilder
 task ForceFullSync : TaskBrief uses [GraphQL, LocalDB] {
     goal   = "Nuke local cache and re-download all data from the server"
     extras = [
-        "platform":  "KMP",
-        "dangerous": "true"
+        "dangerous": "true",
+        "platform": "KMP"
     ]
 
     step DropLocalCache {

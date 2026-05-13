@@ -1,29 +1,21 @@
-// examples/31-concurrent-steps.brief
-//
-// Demonstrates concurrent/async step execution in Brief.
-// Steps that have no data dependency can run in parallel.
-// The `async` and `await` keywords express concurrent intent;
-// the scheduler decides actual execution strategy.
-//
-// Run:  brief check examples/31-concurrent-steps.brief   → ✅
-
 import skill "GraphQL"
-import skill "Cache"
-import skill "Analytics"
-import skill "FeatureFlags"
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+import skill "Cache"
+
+import skill "Analytics"
+
+import skill "FeatureFlags"
 
 sealed type CachePolicy = AlwaysFresh | StaleWhileRevalidate | CacheFirst
 
 struct FeedItem {
-    id:      @nonEmpty String
-    title:   @nonEmpty String
+    id: @nonEmpty String
+    title: @nonEmpty String
     imageUrl: @url String
 }
 
 struct UserPreferences {
-    theme:    String
+    theme: String
     language: @nonEmpty String
     timezone: @nonEmpty String
 }
@@ -31,8 +23,6 @@ struct UserPreferences {
 struct FeatureSet {
     flags: String
 }
-
-// ── Effect declarations ───────────────────────────────────────────────────────
 
 effect Cache {
     fn get(key: String) -> String
@@ -45,13 +35,13 @@ effect FeatureFlags {
     fn evaluateAll(userId: String) -> FeatureSet
 }
 
-// ── Sequential baseline ───────────────────────────────────────────────────────
-// All four data sources loaded one at a time — simple but slow.
-
 @BriefBuilder
 task LoadDashboard_Sequential : TaskBrief uses [GraphQL, Cache, FeatureFlags, Analytics] {
-    goal = "Load all dashboard data sequentially (baseline — not recommended for production)"
-    extras = ["async": "false", "pattern": "Sequential"]
+    goal   = "Load all dashboard data sequentially (baseline — not recommended for production)"
+    extras = [
+        "async": "false",
+        "pattern": "Sequential"
+    ]
 
     step LoadFeed {
         let feed = perform GraphQL.query(FeedQuery)?;
@@ -74,23 +64,16 @@ task LoadDashboard_Sequential : TaskBrief uses [GraphQL, Cache, FeatureFlags, An
     }
 }
 
-// ── Concurrent variant ────────────────────────────────────────────────────────
-// The three independent data-fetching steps can run concurrently.
-// Steps with no data dependency between them are candidates for parallel dispatch.
-// The compiler validates the dependency graph — if you reference a binding from
-// a prior step, the scheduler ensures that step completes first.
-
 @BriefBuilder
 task LoadDashboard_Concurrent : TaskBrief uses [GraphQL, Cache, FeatureFlags, Analytics] {
-    goal = "Load all dashboard data concurrently — feed, prefs, and flags in parallel"
+    goal   = "Load all dashboard data concurrently — feed, prefs, and flags in parallel"
     extras = [
-        "async":     "true",
-        "pattern":   "FanOut",
-        "timeout":   "5s",
-        "cacheTTL":  "60s"
+        "async": "true",
+        "cacheTTL": "60s",
+        "pattern": "FanOut",
+        "timeout": "5s"
     ]
 
-    // These three steps have no shared bindings → eligible for parallel execution
     step LoadFeed {
         let feed = perform GraphQL.query(FeedQuery)?;
     }
@@ -103,26 +86,21 @@ task LoadDashboard_Concurrent : TaskBrief uses [GraphQL, Cache, FeatureFlags, An
         let flags = perform FeatureFlags.evaluateAll(userId)?;
     }
 
-    // This step depends on `feed` from LoadFeed → must execute after it
     step EnrichFeed {
         let enriched = perform GraphQL.query(EnrichFeedQuery)?;
     }
 
-    // Always last — collects timing from all prior steps
     step Track {
         let _ = perform Analytics.track("dashboard_loaded_concurrent", loadTimeMs)?;
     }
 }
 
-// ── Cache-aside pattern ───────────────────────────────────────────────────────
-// Check cache first; on miss, fetch from source and backfill.
-
 @BriefBuilder
 task FeedWithCacheAside : TaskBrief uses [GraphQL, Cache, Analytics] {
-    goal = "Load feed with cache-aside: serve from cache, revalidate in background"
+    goal   = "Load feed with cache-aside: serve from cache, revalidate in background"
     extras = [
         "cachePolicy": "StaleWhileRevalidate",
-        "ttl":         "120s"
+        "ttl": "120s"
     ]
 
     step ReadCache {
@@ -142,16 +120,13 @@ task FeedWithCacheAside : TaskBrief uses [GraphQL, Cache, Analytics] {
     }
 }
 
-// ── Fan-in aggregation ────────────────────────────────────────────────────────
-// Multiple concurrent sources → single aggregated response.
-
 @BriefBuilder
 task AggregatedHomeFeed : TaskBrief uses [GraphQL, Analytics] {
-    goal = "Aggregate personalised home feed from three independent GraphQL sources"
+    goal   = "Aggregate personalised home feed from three independent GraphQL sources"
     extras = [
-        "pattern":  "FanIn",
-        "sources":  "3",
-        "async":    "true"
+        "async": "true",
+        "pattern": "FanIn",
+        "sources": "3"
     ]
 
     step LoadPersonalised {

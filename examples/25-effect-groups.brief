@@ -1,38 +1,29 @@
-// examples/25-effect-groups.brief
-//
-// Demonstrates effect group aliases — Phase 3 power type.
-//
-// `type GroupName = [SkillA, SkillB, SkillC]`
-//
-// Effect groups let you name a set of skills that always travel together.
-// Instead of repeating `uses [Auth, Session, Permissions, AuditLog]` in every
-// task, declare once and use the group name.
-//
-// Run:  brief check examples/25-effect-groups.brief   → ✅
-// Run:  brief doc   examples/25-effect-groups.brief   → prints Markdown docs
-
 import skill "Auth"
+
 import skill "Session"
+
 import skill "Permissions"
+
 import skill "AuditLog"
+
 import skill "UserService"
+
 import skill "NotificationService"
 
-// ── Effect group aliases ──────────────────────────────────────────────────────
-// Declare once, reuse everywhere.
+type SecurityEffects = [Auth, Session, Permissions]
 
-type SecurityEffects   = [Auth, Session, Permissions]
-type AccountEffects    = [UserService, AuditLog]
-type NotifyEffects     = [NotificationService]
+type AccountEffects = [UserService, AuditLog]
 
-// Both security and notification combined:
-type FullUserEffects   = [Auth, Session, Permissions, UserService, AuditLog, NotificationService]
+type NotifyEffects = [NotificationService]
 
-// ── Tasks using group aliases ─────────────────────────────────────────────────
+type FullUserEffects = [Auth, Session, Permissions, UserService, AuditLog, NotificationService]
 
 task Login : TaskBrief uses [SecurityEffects, AccountEffects] {
-    goal = "Authenticate user and establish session — uses SecurityEffects + AccountEffects groups"
-    extras = ["domain": "auth", "mfa": "optional"]
+    goal   = "Authenticate user and establish session — uses SecurityEffects + AccountEffects groups"
+    extras = [
+        "domain": "auth",
+        "mfa": "optional"
+    ]
 
     step Authenticate {
         let identity = perform Auth.verify(credentials)?;
@@ -52,8 +43,11 @@ task Login : TaskBrief uses [SecurityEffects, AccountEffects] {
 }
 
 task UpdateAccountSettings : TaskBrief uses [SecurityEffects, AccountEffects] {
-    goal = "Update account settings with auth check and full audit trail"
-    extras = ["domain": "accounts", "requiresAuth": "true"]
+    goal   = "Update account settings with auth check and full audit trail"
+    extras = [
+        "domain": "accounts",
+        "requiresAuth": "true"
+    ]
 
     step VerifyToken {
         let identity = perform Auth.verify(bearerToken)?;
@@ -73,12 +67,15 @@ task UpdateAccountSettings : TaskBrief uses [SecurityEffects, AccountEffects] {
 }
 
 task SendSecureNotification : TaskBrief uses [SecurityEffects, NotifyEffects, AccountEffects] {
-    goal = "Send notification after verifying permissions — triple group composition"
-    extras = ["domain": "notifications", "priority": "high"]
+    goal   = "Send notification after verifying permissions — triple group composition"
+    extras = [
+        "domain": "notifications",
+        "priority": "high"
+    ]
 
     step VerifyPermission {
         let identity = perform Auth.verify(bearerToken)?;
-        let allowed  = perform Permissions.canSendNotification(identity)?;
+        let allowed = perform Permissions.canSendNotification(identity)?;
     }
 
     step Deliver {

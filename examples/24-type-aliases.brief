@@ -1,38 +1,24 @@
-// examples/24-type-aliases.brief
-//
-// Demonstrates user-defined refinement type aliases — Phase 3 power type.
-//
-// `type AliasName = @constraint BaseType`
-//
-// Type aliases let you name a constrained type once and reuse it everywhere.
-// The compiler validates the attributes when you call `brief check`.
-//
-// Run:  brief check examples/24-type-aliases.brief   → ✅
-// Run:  brief doc   examples/24-type-aliases.brief   → prints Markdown docs
-
 import skill "UserService"
+
 import skill "EmailGateway"
+
 import skill "Storage"
-
-// ── Refinement type aliases ───────────────────────────────────────────────────
-
-type Email        = @matches("[^@]+@[^@]+\\..+") String
-type NonEmptyText = @nonEmpty String
-type ProfileUrl   = @url String
-
-// ── Sealed types using aliases ────────────────────────────────────────────────
 
 sealed type UserRole = Admin | Editor | Viewer
 
-struct UserProfile {
-    id:         @nonEmpty String
-    email:      @matches("[^@]+@[^@]+\\..+") String
-    displayName: @nonEmpty String
-    avatarUrl:  @url String
-    role:       UserRole
-}
+type Email = @matches("[^@]+@[^@]+\\..+") String
 
-// ── Effects using refined types ───────────────────────────────────────────────
+type NonEmptyText = @nonEmpty String
+
+type ProfileUrl = @url String
+
+struct UserProfile {
+    id: @nonEmpty String
+    email: @matches("[^@]+@[^@]+\\..+") String
+    displayName: @nonEmpty String
+    avatarUrl: @url String
+    role: UserRole
+}
 
 effect UserService {
     fn create(email: @matches("[^@]+@[^@]+\\..+") String, name: @nonEmpty String) -> Result
@@ -49,11 +35,12 @@ effect Storage {
     fn uploadAvatar(userId: @nonEmpty String, imageData: String) -> @url String
 }
 
-// ── Tasks ─────────────────────────────────────────────────────────────────────
-
 task RegisterUser : TaskBrief uses [UserService, EmailGateway, Storage] {
-    goal = "Register a new user — validate email and name constraints before storing"
-    extras = ["domain": "accounts", "version": "2.0"]
+    goal   = "Register a new user — validate email and name constraints before storing"
+    extras = [
+        "domain": "accounts",
+        "version": "2.0"
+    ]
 
     step Validate {
         let existing = perform UserService.findByEmail(email)?;
@@ -68,14 +55,17 @@ task RegisterUser : TaskBrief uses [UserService, EmailGateway, Storage] {
     }
 
     step SendWelcome {
-        let welcome      = perform EmailGateway.sendWelcome(email, displayName)?;
+        let welcome = perform EmailGateway.sendWelcome(email, displayName)?;
         let verification = perform EmailGateway.sendVerification(email, verificationToken)?;
     }
 }
 
 task UpdateUserProfile : TaskBrief uses [UserService, Storage] {
-    goal = "Update user profile with avatar upload — all fields validated by type constraints"
-    extras = ["domain": "accounts", "requiresAuth": "true"]
+    goal   = "Update user profile with avatar upload — all fields validated by type constraints"
+    extras = [
+        "domain": "accounts",
+        "requiresAuth": "true"
+    ]
 
     step FetchExisting {
         let current = perform UserService.findByEmail(email)?;

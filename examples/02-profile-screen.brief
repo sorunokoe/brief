@@ -1,19 +1,14 @@
-// 02-profile-screen.brief — a UI task that uses Figma and GraphQL skills.
-//
-// Before running, generate the skill interfaces:
-//   brief skillgen .claude/skills/DesignSystem/
-//   brief skillgen .claude/skills/GraphQL/
-//
-// Then validate:
-//   brief check 02-profile-screen.brief
-
 import skill "DesignSystem"
+
 import skill "GraphQL"
 
 @BriefBuilder
 task ProfileScreen : TaskBrief uses [DesignSystem, GraphQL] {
     goal   = "Display user profile with design-system components"
-    extras = ["platform": "iOS", "figmaURL": "https://figma.com/file/abc?node-id=1:2"]
+    extras = [
+        "figmaURL": "https://figma.com/file/abc?node-id=1:2",
+        "platform": "iOS"
+    ]
 
     step FetchData {
         let user = perform GraphQL.query(UserProfileQuery)?;

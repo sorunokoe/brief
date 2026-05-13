@@ -1,22 +1,15 @@
-// 09-settings.brief — App settings screen with persistence.
-//
-// Demonstrates: KMP cross-platform task, DataStore/SharedPreferences pattern,
-// and multiple independent tasks in a settings module.
-//
-// Run with: brief check 09-settings.brief
-
 import skill "DataStore"
-import skill "DesignSystem"
-import skill "Analytics"
 
-// ─── Load settings ───────────────────────────────────────────────────────────
+import skill "DesignSystem"
+
+import skill "Analytics"
 
 @BriefBuilder
 task LoadSettings : TaskBrief uses [DataStore, DesignSystem] {
     goal   = "Load user preferences from local storage and render the settings screen"
     extras = [
-        "platform": "KMP",
-        "figmaURL": "https://figma.com/file/settings?node-id=1:1"
+        "figmaURL": "https://figma.com/file/settings?node-id=1:1",
+        "platform": "KMP"
     ]
 
     step FetchPreferences {
@@ -28,15 +21,13 @@ task LoadSettings : TaskBrief uses [DataStore, DesignSystem] {
     }
 }
 
-// ─── Update theme ─────────────────────────────────────────────────────────────
-
 @BriefBuilder
 task UpdateTheme : TaskBrief uses [DataStore, Analytics] {
     goal   = "Persist the user's chosen colour theme (light / dark / system)"
     extras = [
-        "platform":      "KMP",
-        "defaultTheme":  "system",
-        "allowedValues": "light,dark,system"
+        "allowedValues": "light,dark,system",
+        "defaultTheme": "system",
+        "platform": "KMP"
     ]
 
     step ValidateTheme {
@@ -52,15 +43,13 @@ task UpdateTheme : TaskBrief uses [DataStore, Analytics] {
     }
 }
 
-// ─── Delete account ───────────────────────────────────────────────────────────
-
 @BriefBuilder
 task DeleteAccount : TaskBrief uses [DataStore, Analytics] {
     goal   = "Permanently delete user account and wipe all local data (GDPR)"
     extras = [
-        "platform":     "KMP",
         "confirmSteps": "2",
-        "gdprArticle":  "17"
+        "gdprArticle": "17",
+        "platform": "KMP"
     ]
 
     step ConfirmIntent {

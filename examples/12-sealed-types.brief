@@ -1,60 +1,43 @@
-// 12-sealed-types.brief — Showcase of sealed types, structs, and protocols.
-//
-// Demonstrates: the full type system — sealed types with associated values,
-// generic structs, protocol declarations, and effect definitions with generics.
-//
-// No task — this is a type library file you can import from other briefs.
-// Run with: brief check 12-sealed-types.brief
-
-// ─── Platform targeting ──────────────────────────────────────────────────────
-
 sealed type Platform = iOS | Android | Web | KMP | All
 
-// ─── Result / Option (re-declared locally for illustration) ──────────────────
-
 sealed type Result<T> = Success(T) | Failure(String)
-sealed type Option<T> = Some(T)    | None
 
-// ─── Network layer ───────────────────────────────────────────────────────────
+sealed type Option<T> = Some(T) | None
 
-sealed type HttpMethod   = GET | POST | PUT | DELETE | PATCH
+sealed type HttpMethod = GET | POST | PUT | DELETE | PATCH
+
 sealed type NetworkError = Timeout | Unauthorized | NotFound | ServerError(String)
 
+sealed type FlagState = Enabled | Disabled | Rollout(String)
+
+sealed type UserRole = Admin | Editor | Viewer | Guest
+
+sealed type AccountTier = Free | Pro | Enterprise(String)
+
 struct HttpRequest {
-    url:    @url    @nonEmpty String
+    url: @url @nonEmpty String
     method: @nonEmpty String
-    body:   @nonEmpty String
+    body: @nonEmpty String
 }
 
 struct HttpResponse {
     statusCode: @nonEmpty String
-    body:       @nonEmpty String
-    headers:    @nonEmpty String
+    body: @nonEmpty String
+    headers: @nonEmpty String
 }
 
-// ─── Feature flags ───────────────────────────────────────────────────────────
-
-sealed type FlagState = Enabled | Disabled | Rollout(String)
-
 struct FeatureFlag {
-    name:       @nonEmpty String
-    state:      @nonEmpty String
+    name: @nonEmpty String
+    state: @nonEmpty String
     rolloutPct: @nonEmpty String
 }
 
-// ─── User model ──────────────────────────────────────────────────────────────
-
-sealed type UserRole    = Admin | Editor | Viewer | Guest
-sealed type AccountTier = Free | Pro | Enterprise(String)
-
 struct User {
-    id:       @nonEmpty String
-    email:    @matches("[^@]+@[^@]+") String
-    role:     @nonEmpty String
-    tier:     @nonEmpty String
+    id: @nonEmpty String
+    email: @matches("[^@]+@[^@]+") String
+    role: @nonEmpty String
+    tier: @nonEmpty String
 }
-
-// ─── Protocols ───────────────────────────────────────────────────────────────
 
 protocol Identifiable {
     fn id() -> String
@@ -65,11 +48,9 @@ protocol Equatable<T> {
 }
 
 protocol Serializable {
-    fn toJson()   -> String
+    fn toJson() -> String
     fn fromJson(json: String) -> Result
 }
-
-// ─── Effects ─────────────────────────────────────────────────────────────────
 
 effect Storage {
     fn save(key: @nonEmpty String, value: @nonEmpty String) -> Result

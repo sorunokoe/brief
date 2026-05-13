@@ -1,18 +1,9 @@
-// 15-checkout-flow.brief — e-commerce checkout: cart validation → payment → order.
-//
-// Demonstrates:
-//   - Multi-step transactional flow with 4 skills
-//   - Error propagation with ? across payment, inventory and notification
-//   - `extras` carrying business context (currency, region)
-//
-// Expected results:
-//   brief check  15-checkout-flow.brief   → ✅ (W101 warnings for missing .briefskill — expected)
-//   brief run    15-checkout-flow.brief   → prints each step
-//   brief build  15-checkout-flow.brief   → compiles to ./15-checkout-flow binary
-
 import skill "Cart"
+
 import skill "Payment"
+
 import skill "Inventory"
+
 import skill "Notifications"
 
 sealed type Currency = USD | EUR | GBP | JPY
@@ -21,21 +12,24 @@ sealed type PaymentMethod = CreditCard(String) | ApplePay | GooglePay | Crypto(S
 
 struct CartItem {
     productId: @nonEmpty String
-    quantity:  @nonEmpty String
-    price:     @nonEmpty String
+    quantity: @nonEmpty String
+    price: @nonEmpty String
 }
 
 struct Order {
-    id:       @nonEmpty String
-    total:    @nonEmpty String
+    id: @nonEmpty String
+    total: @nonEmpty String
     currency: @nonEmpty String
-    status:   @nonEmpty String
+    status: @nonEmpty String
 }
 
 @BriefBuilder
 task ValidateCart : TaskBrief uses [Cart, Inventory] {
     goal   = "Validate cart items are in stock and prices are current"
-    extras = ["domain": "checkout", "stage": "validation"]
+    extras = [
+        "domain": "checkout",
+        "stage": "validation"
+    ]
 
     step CheckStock {
         let items = perform Cart.getItems(sessionToken)?;
@@ -50,7 +44,11 @@ task ValidateCart : TaskBrief uses [Cart, Inventory] {
 @BriefBuilder
 task ProcessPayment : TaskBrief uses [Payment] {
     goal   = "Charge the customer and obtain a payment confirmation"
-    extras = ["domain": "checkout", "pciScope": "true", "currency": "USD"]
+    extras = [
+        "currency": "USD",
+        "domain": "checkout",
+        "pciScope": "true"
+    ]
 
     step Authorise {
         let intent = perform Payment.createIntent(amount, currency, method)?;
@@ -64,7 +62,10 @@ task ProcessPayment : TaskBrief uses [Payment] {
 @BriefBuilder
 task ConfirmOrder : TaskBrief uses [Cart, Notifications] {
     goal   = "Create the order record and notify the customer"
-    extras = ["domain": "checkout", "notificationChannels": "email,push"]
+    extras = [
+        "domain": "checkout",
+        "notificationChannels": "email,push"
+    ]
 
     step CreateRecord {
         let order = perform Cart.convertToOrder(sessionToken, receipt)?;
@@ -72,6 +73,6 @@ task ConfirmOrder : TaskBrief uses [Cart, Notifications] {
 
     step NotifyCustomer {
         let email = perform Notifications.sendOrderConfirmation(order, email)?;
-        let push  = perform Notifications.sendPushAlert(order, deviceToken)?;
+        let push = perform Notifications.sendPushAlert(order, deviceToken)?;
     }
 }

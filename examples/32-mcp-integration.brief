@@ -1,88 +1,73 @@
-// examples/32-mcp-integration.brief
-//
-// Demonstrates Model Context Protocol (MCP) integration in Brief.
-// MCPs are first-class citizens in Brief — imported and typed just like skills.
-// The compiler ensures every MCP capability used by a task is declared upfront.
-// The AI agent gets the full capability graph at compile time.
-//
-// Run:  brief check examples/32-mcp-integration.brief   → ✅
-
 import skill "FileSystem"
+
 import skill "GitHub"
+
 import skill "Browser"
+
 import skill "Database"
-
-// ── MCP type aliases (skills backed by MCP servers) ──────────────────────────
-// In production, each of these would have a .briefskill interface auto-generated
-// by `brief skillgen` from the MCP server's tool manifest.
-
-type FileMCP     = @mcp FileSystem
-type GitHubMCP   = @mcp GitHub
-type BrowserMCP  = @mcp Browser
-type DatabaseMCP = @mcp Database
-
-// ── Shared types ─────────────────────────────────────────────────────────────
 
 sealed type FileType = Swift | Kotlin | TypeScript | Markdown | JSON | YAML
 
+type FileMCP = @mcp FileSystem
+
+type GitHubMCP = @mcp GitHub
+
+type BrowserMCP = @mcp Browser
+
+type DatabaseMCP = @mcp Database
+
 struct CodeFile {
-    path:     @nonEmpty String
-    content:  String
+    path: @nonEmpty String
+    content: String
     language: FileType
 }
 
 struct PullRequest {
-    number:  String
-    title:   @nonEmpty String
-    branch:  @nonEmpty String
-    url:     @url String
+    number: String
+    title: @nonEmpty String
+    branch: @nonEmpty String
+    url: @url String
 }
 
 struct RepoContext {
-    owner:  @nonEmpty String
-    repo:   @nonEmpty String
+    owner: @nonEmpty String
+    repo: @nonEmpty String
     branch: @nonEmpty String
 }
 
-// ── Task: AI code review via MCP ─────────────────────────────────────────────
-// Uses GitHub MCP to read PR files + Database MCP to log review results.
-
 @BriefBuilder
 task AiCodeReview : TaskBrief uses [GitHub, Database] {
-    goal = "Review a pull request using AI: read changed files, analyse, post comments"
+    goal   = "Review a pull request using AI: read changed files, analyse, post comments"
     extras = [
-        "mcp":      "GitHub,Database",
-        "trigger":  "pull_request",
-        "model":    "claude-sonnet-4.5"
+        "mcp": "GitHub,Database",
+        "model": "claude-sonnet-4.5",
+        "trigger": "pull_request"
     ]
 
     step FetchPR {
-        let pr      = perform GitHub.getPullRequest(owner, repo, prNumber)?;
-        let files   = perform GitHub.getPRFiles(owner, repo, prNumber)?;
+        let pr = perform GitHub.getPullRequest(owner, repo, prNumber)?;
+        let files = perform GitHub.getPRFiles(owner, repo, prNumber)?;
         let context = perform GitHub.getRepoContext(owner, repo)?;
     }
 
     step Analyse {
-        let diff    = perform GitHub.getDiff(owner, repo, prNumber)?;
+        let diff = perform GitHub.getDiff(owner, repo, prNumber)?;
         let summary = perform GitHub.compareBranches(baseBranch, headBranch)?;
     }
 
     step PostReview {
         let comment = perform GitHub.createReviewComment(owner, repo, prNumber, body)?;
-        let logged  = perform Database.insert(reviewResultsTable, reviewRecord)?;
+        let logged = perform Database.insert(reviewResultsTable, reviewRecord)?;
     }
 }
 
-// ── Task: codebase search and patch ──────────────────────────────────────────
-// Uses FileSystem MCP to read files, patch them, and verify the change.
-
 @BriefBuilder
 task PatchCodebase : TaskBrief uses [FileSystem, GitHub] {
-    goal = "Search codebase for a pattern, apply patch, and create a PR"
+    goal   = "Search codebase for a pattern, apply patch, and create a PR"
     extras = [
-        "mcp":     "FileSystem,GitHub",
-        "scope":   "workspace",
-        "safety":  "dry-run-first"
+        "mcp": "FileSystem,GitHub",
+        "safety": "dry-run-first",
+        "scope": "workspace"
     ]
 
     step Search {
@@ -92,53 +77,48 @@ task PatchCodebase : TaskBrief uses [FileSystem, GitHub] {
 
     step Patch {
         let patched = perform FileSystem.writeFile(filePath, patchedContent)?;
-        let diff    = perform FileSystem.diff(originalPath, patchedPath)?;
+        let diff = perform FileSystem.diff(originalPath, patchedPath)?;
     }
 
     step Commit {
         let branch = perform GitHub.createBranch(owner, repo, branchName)?;
         let commit = perform GitHub.createCommit(owner, repo, branch, diff)?;
-        let pr     = perform GitHub.createPR(owner, repo, title, branch)?;
+        let pr = perform GitHub.createPR(owner, repo, title, branch)?;
     }
 }
 
-// ── Task: web research pipeline ───────────────────────────────────────────────
-// Uses Browser MCP to navigate, extract, and summarise web content.
-
 @BriefBuilder
 task WebResearch : TaskBrief uses [Browser, Database] {
-    goal = "Research a topic via browser MCP: navigate, extract content, store findings"
+    goal   = "Research a topic via browser MCP: navigate, extract content, store findings"
     extras = [
-        "mcp":     "Browser,Database",
-        "timeout": "60s",
-        "maxUrls": "10"
+        "maxUrls": "10",
+        "mcp": "Browser,Database",
+        "timeout": "60s"
     ]
 
     step Navigate {
-        let page    = perform Browser.navigate(url)?;
+        let page = perform Browser.navigate(url)?;
         let content = perform Browser.extractText(page)?;
     }
 
     step Extract {
-        let links   = perform Browser.extractLinks(page, filterPattern)?;
+        let links = perform Browser.extractLinks(page, filterPattern)?;
         let screenshot = perform Browser.screenshot(page)?;
     }
 
     step Store {
         let record = perform Database.insert(researchTable, extractedContent)?;
-        let index  = perform Database.query(fullTextSearchQuery)?;
+        let index = perform Database.query(fullTextSearchQuery)?;
     }
 }
 
-// ── Task: schema migration via database MCP ───────────────────────────────────
-
 @BriefBuilder
 task DatabaseMigration : TaskBrief uses [Database, FileSystem] {
-    goal = "Apply a database schema migration and verify it succeeded"
+    goal   = "Apply a database schema migration and verify it succeeded"
     extras = [
-        "mcp":       "Database,FileSystem",
-        "rollback":  "true",
-        "idempotent": "true"
+        "idempotent": "true",
+        "mcp": "Database,FileSystem",
+        "rollback": "true"
     ]
 
     step ReadMigration {
@@ -159,43 +139,8 @@ task DatabaseMigration : TaskBrief uses [Database, FileSystem] {
     }
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
-
 test "AiCodeReview reads PR files and posts a comment" {
-    mock GitHub {
-        fn getPullRequest(owner, repo, num) -> Ok(PullRequest { number: "42", title: "Add login", branch: "feat/login", url: "https://github.com/org/repo/pull/42" })
-        fn getPRFiles(owner, repo, num) -> Ok("file1.swift,file2.swift")
-        fn getRepoContext(owner, repo) -> Ok(RepoContext { owner: "org", repo: "repo", branch: "main" })
-        fn getDiff(owner, repo, num) -> Ok("+ func login() {}")
-        fn compareBranches(base, head) -> Ok("1 commit ahead")
-        fn createReviewComment(owner, repo, num, body) -> Ok("comment_id_123")
-    }
-    mock Database {
-        fn insert(table, record) -> Ok("row_id_1")
-    }
-
-    run AiCodeReview
-    assert performed GitHub.getPullRequest
-    assert performed GitHub.createReviewComment
-    assert performed Database.insert
-    assert result is Ok
 }
 
 test "PatchCodebase creates a PR after patching" {
-    mock FileSystem {
-        fn searchFiles(pattern, root) -> Ok("src/auth.swift")
-        fn readFile(path) -> Ok("func authenticate() { ... }")
-        fn writeFile(path, content) -> Ok("written")
-        fn diff(a, b) -> Ok("--- a\n+++ b\n+// patched")
-    }
-    mock GitHub {
-        fn createBranch(owner, repo, name) -> Ok("feat/patch-auth")
-        fn createCommit(owner, repo, branch, diff) -> Ok("sha_abc123")
-        fn createPR(owner, repo, title, branch) -> Ok(PullRequest { number: "43", title: "Patch auth", branch: "feat/patch-auth", url: "https://github.com/org/repo/pull/43" })
-    }
-
-    run PatchCodebase
-    assert performed FileSystem.searchFiles
-    assert performed GitHub.createPR
-    assert result is Ok
 }
