@@ -128,7 +128,6 @@ pub fn run_repl() {
 
 fn read_input(prompt: &str) -> Option<String> {
     let mut buffer = String::new();
-    let mut depth  = 0i32;
 
     loop {
         let current_prompt = if buffer.is_empty() { prompt } else { "  ... " };
@@ -142,16 +141,11 @@ fn read_input(prompt: &str) -> Option<String> {
             Err(_) => return None,
         }
 
-        // Track brace depth for multi-line block detection.
-        for ch in line.chars() {
-            match ch {
-                '{' => depth += 1,
-                '}' => depth -= 1,
-                _   => {}
-            }
-        }
-
         buffer.push_str(&line);
+
+        // Use the lexer for accurate brace-depth tracking — raw char counting
+        // incorrectly increments inside string literals and comments.
+        let depth = brace_depth_via_lexer(&buffer);
 
         // A complete input: depth balanced AND not empty AND last non-whitespace is `}`
         // or it's a single-line declaration (depth never went above 0).
@@ -168,6 +162,21 @@ fn read_input(prompt: &str) -> Option<String> {
             return Some(buffer);
         }
     }
+}
+
+/// Count unmatched open-braces in `src` by lexing it, ignoring any tokens the
+/// lexer cannot parse. This is accurate over string literals and comments.
+fn brace_depth_via_lexer(src: &str) -> i32 {
+    let (tokens, _) = lex(src);
+    let mut depth = 0i32;
+    for tok in &tokens {
+        match tok.token {
+            crate::lexer::Token::LBrace => depth += 1,
+            crate::lexer::Token::RBrace => depth -= 1,
+            _ => {}
+        }
+    }
+    depth
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

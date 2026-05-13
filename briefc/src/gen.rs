@@ -6,7 +6,7 @@
 use std::path::Path;
 use colored::Colorize;
 
-pub fn gen(description: &str, output: Option<&Path>) {
+pub fn gen(description: &str, output: Option<&Path>, force: bool) -> bool {
     println!("{} Generating brief from description...", "●".blue().bold());
     println!("  {}", description.italic());
     println!();
@@ -21,6 +21,15 @@ pub fn gen(description: &str, output: Option<&Path>) {
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|| format!("{task_name}.brief"));
 
+    // Refuse to overwrite an existing file unless --force is given.
+    if !force && std::path::Path::new(&output_path).exists() {
+        eprintln!(
+            "{}: output file '{}' already exists — use {} to overwrite",
+            "error".red().bold(), output_path, "--force".cyan()
+        );
+        return false;
+    }
+
     match std::fs::write(&output_path, &brief) {
         Ok(_) => {
             println!("{} Generated: {}", "✅".green().bold(), output_path.green().bold());
@@ -34,10 +43,11 @@ pub fn gen(description: &str, output: Option<&Path>) {
             println!("  3. Run {} to validate", "`brief check`".cyan());
             println!();
             println!("{} LLM-powered generation coming in v0.1 (set BRIEF_LLM_API_KEY)", "💡".yellow());
+            true
         }
         Err(e) => {
             eprintln!("{}: cannot write {}: {}", "error".red().bold(), output_path, e);
-            std::process::exit(1);
+            false
         }
     }
 }

@@ -30,15 +30,21 @@ mod backend {
 
     struct StringPool {
         entries: Vec<String>,
+        index:   std::collections::HashMap<String, usize>,
     }
 
     impl StringPool {
-        fn new() -> Self { StringPool { entries: Vec::new() } }
+        fn new() -> Self { StringPool { entries: Vec::new(), index: std::collections::HashMap::new() } }
 
         /// Intern a string, returning its global name (`@str.N`).
+        /// Identical strings share a single constant via the dedup index.
         fn intern(&mut self, s: &str) -> String {
+            if let Some(&idx) = self.index.get(s) {
+                return format!("@str.{idx}");
+            }
             let idx = self.entries.len();
             self.entries.push(s.to_string());
+            self.index.insert(s.to_string(), idx);
             format!("@str.{idx}")
         }
 
@@ -167,7 +173,13 @@ mod backend {
                     format!("  call void @brief_rt_perform(ptr {sk}, ptr {fn_}, i32 {n})\n")
                 }
                 Expr::Await { expr: inner, .. } => self.compile_expr(inner),
-                _ => String::new(),
+                other => {
+                    eprintln!(
+                        "brief codegen: unsupported expression form '{}' — skipped in IR output",
+                        expr_kind_name(other)
+                    );
+                    String::new()
+                }
             }
         }
 
@@ -179,6 +191,17 @@ mod backend {
     }
 
     // ── Entry point ──────────────────────────────────────────────────────────
+
+    fn expr_kind_name(expr: &crate::ast::Expr) -> &'static str {
+        use crate::ast::Expr;
+        match expr {
+            Expr::Ident { .. }   => "Ident",
+            Expr::Str { .. }     => "Str",
+            Expr::Perform { .. } => "Perform",
+            Expr::Await { .. }   => "Await",
+            Expr::Call { .. }    => "Call",
+        }
+    }
 
     pub fn build_file(
         source_path: &std::path::Path,

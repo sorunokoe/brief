@@ -1,0 +1,137 @@
+// GolfApp — Language Settings Screen (Android)
+//
+// Task type: ComposeUI (Circuit UDF — Presenter + UiState + Composable)
+// Platform:  Android (Jetpack Compose + TdsCompose design system)
+// Feature:   Settings > Language — allow user to pick their preferred app language
+// iOS parity: TrackmanSettings/Features/Preferences/Language/ (already shipped)
+//
+// KEY INGREDIENTS this brief encodes:
+//   CircuitUDF  — Presenter/UiState/UiEvent pattern (no direct UI → business logic calls)
+//   DesignSystem — TdsScaffold, TdsNavigationHeader, TdsListItem + RadioButton trailing
+//   GolfPreferences — read/write language: Preference<Language>
+//
+// Compile gate: `brief check language-settings-android.brief`
+// If this passes, the AI has every ingredient it needs.
+
+import skill "CircuitUDF"
+
+import skill "DesignSystem"
+
+import skill "GolfPreferences"
+
+// ── Skill interfaces (inline — no external .briefskill needed) ──────────────
+
+effect CircuitUDF {
+    fn createPresenter(screen: String, navigator: String) -> String
+    fn emitUiState(state: String) -> String
+    fn sendEvent(event: String) -> String
+    fn collectRetainedState(flow: String) -> String
+}
+
+effect DesignSystem {
+    fn scaffold(topBar: String, content: String) -> String
+    fn navigationHeader(title: String, onBack: String) -> String
+    fn listItem(headline: String, trailing: String, onClick: String) -> String
+    fn radioButton(selected: String) -> String
+    fn themeToken(name: String) -> String
+}
+
+effect GolfPreferences {
+    fn readLanguage() -> String
+    fn writeLanguage(language: String) -> String
+}
+
+// ── Domain types ──────────────────────────────────────────────────────────────
+
+// Mirrors iOS LanguageOption enum exactly.
+// Maps to IGolfPreferences.Language in Kotlin.
+sealed type Language =
+    System
+    | English
+    | German
+    | French
+    | Spanish
+    | SimplifiedChinese
+    | TraditionalChinese
+    | Japanese
+    | Korean
+    | Danish
+
+struct LanguageData {
+    displayText: @nonEmpty String
+    isSelected: String
+    language: Language
+}
+
+// ── Acceptance criteria (become test stubs in W2) ─────────────────────────────
+
+// AC1: On load, the radio button for the language stored in GolfPreferences is selected.
+// AC2: Tapping a language option updates GolfPreferences.language and selects that option.
+// AC3: Back navigation pops the screen without side effects.
+// AC4: All spacing, colour, and typography values use TdsTheme tokens — no magic numbers.
+// AC5: The language list contains exactly 10 options mirroring the iOS enum order.
+
+// ── Main task ─────────────────────────────────────────────────────────────────
+
+@BriefBuilder
+task LanguageSettingsAndroid : TaskBrief uses [CircuitUDF, DesignSystem, GolfPreferences] {
+    goal = "Implement Language Settings screen on Android mirroring the iOS LanguageView"
+
+    extras = [
+        "platform":             "Android",
+        "pattern":              "CircuitUDF",
+        "nearestAnalogue":      "SettingsAppearance* (theme picker — same pattern, same module)",
+        "newFiles":             "SettingsLanguageUiState.kt | SettingsLanguagePresenter.kt | SettingsLanguageUi.kt | LanguageData.kt | LanguageToPresentationMapper.kt",
+        "modifiedFiles":       "IGolfPreferences.kt | GolfPreferences.kt",
+        "iOSParity":           "iosApp/Packages/Features/Settings/TrackmanSettings/Sources/TrackmanSettings/Features/Preferences/Language/",
+        "presentationMapper":   "LanguageToPresentationMapper : Mapper<List<Language>, List<DisplayText>>",
+        "preferenceKey":        "GolfPreferences.language: Preference<IGolfPreferences.Language>",
+        "noGraphQL":            "true — this is a local preference screen only",
+        "injectionFramework":   "kotlin-inject + CircuitInject annotation",
+        "testFramework":        "JUnit5 + Fakes (no mocks)",
+        "module":               "feature/settings (commonMain — KMP shared UI layer)"
+    ]
+
+    step LoadCurrentLanguage {
+        let savedLanguage = perform GolfPreferences.readLanguage()?;
+        let languageData  = perform CircuitUDF.collectRetainedState(savedLanguage)?;
+    }
+
+    step BuildLanguageList {
+        // Map all Language enum cases to LanguageData using LanguageToPresentationMapper.
+        // isSelected = (language == savedLanguage).
+        // Order mirrors iOS LanguageOption.allCases: system, en, de, fr, es, zh-Hans, zh-Hant, ja, ko, da.
+        let items = perform CircuitUDF.emitUiState(languageData)?;
+    }
+
+    step SelectLanguage {
+        // UiEvent: OnLanguageChanged(index: Int)
+        // Persist new selection via GolfPreferences.writeLanguage.
+        let _ = perform GolfPreferences.writeLanguage(selectedLanguage)?;
+        let _ = perform CircuitUDF.sendEvent("OnLanguageChanged")?;
+    }
+
+    step NavigateBack {
+        // UiEvent: NavigateUp
+        // navigator.pop() — no side effects, no state mutation.
+        let _ = perform CircuitUDF.sendEvent("NavigateUp")?;
+    }
+
+    step RenderScreen {
+        // Two-overload Composable pattern (GolfApp standard):
+        //   SettingsLanguageUi(state, modifier) → LanguageUi(data, onNavigateUp, onLanguageSelected, modifier)
+        // TdsScaffold > TdsNavigationHeader (back button) > LazyColumn > SettingsListItem + RadioButton
+        let container = perform DesignSystem.scaffold("header", "list")?;
+        let header    = perform DesignSystem.navigationHeader("language", "onBack")?;
+        let row       = perform DesignSystem.listItem("displayText", "radioButton", "onSelect")?;
+        let radio     = perform DesignSystem.radioButton("isSelected")?;
+        let _spacing  = perform DesignSystem.themeToken("TdsTheme.spacing")?;
+    }
+}
+
+// ── Acceptance criteria tests (top-level — brief test runs these) ─────────────
+
+test "AC1: selected language on load matches GolfPreferences" {}
+test "AC2: selecting a language updates GolfPreferences and UiState" {}
+test "AC3: NavigateUp event calls navigator.pop() with no other side effects" {}
+test "AC5: language list contains exactly 10 items in iOS-parity order" {}

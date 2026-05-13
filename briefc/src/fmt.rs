@@ -176,7 +176,11 @@ impl Formatter {
     fn fmt_type_alias(&mut self, a: &TypeAliasDecl) {
         let attrs = Self::fmt_attrs(&a.attrs);
         let base  = Self::fmt_type_ref(&a.base);
-        self.line(&format!("type {} = {attrs} {base}", a.name));
+        if attrs.is_empty() {
+            self.line(&format!("type {} = {base}", a.name));
+        } else {
+            self.line(&format!("type {} = {attrs} {base}", a.name));
+        }
     }
 
     // ── Effect group ──────────────────────────────────────────────────────

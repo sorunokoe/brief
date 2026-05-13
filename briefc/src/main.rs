@@ -93,6 +93,10 @@ enum Commands {
         /// Output file path (defaults to <TaskName>.brief)
         #[arg(short, long)]
         output: Option<PathBuf>,
+
+        /// Overwrite the output file if it already exists
+        #[arg(long)]
+        force: bool,
     },
 
     /// Run test { } blocks inside a .brief file
@@ -173,31 +177,32 @@ enum AddResource {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn main() {
+fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
 
     match cli.command {
         Commands::Check { file } => {
             print_brief_banner();
             let ok = runner::run_file(&file, runner::RunMode::Check);
-            std::process::exit(if ok { 0 } else { 1 });
+            if ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::FAILURE }
         }
 
         Commands::Run { file } => {
             print_brief_banner();
             let ok = runner::run_file(&file, runner::RunMode::Run);
-            std::process::exit(if ok { 0 } else { 1 });
+            if ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::FAILURE }
         }
 
         Commands::Build { file, output, emit_ir, target } => {
             print_brief_banner();
             let ok = codegen::build_file(&file, output.as_deref(), emit_ir, target.as_deref());
-            std::process::exit(if ok { 0 } else { 1 });
+            if ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::FAILURE }
         }
 
         Commands::Repl => {
             print_brief_banner();
             repl::run_repl();
+            std::process::ExitCode::SUCCESS
         }
 
         Commands::Lsp => {
@@ -205,46 +210,48 @@ fn main() {
             tokio::runtime::Runtime::new()
                 .expect("tokio runtime")
                 .block_on(lsp::run_lsp_server());
+            std::process::ExitCode::SUCCESS
         }
 
         Commands::Skillgen { skill_path, check } => {
             print_brief_banner();
-            if check {
-                skillgen::skillgen_check(&skill_path);
+            let ok = if check {
+                skillgen::skillgen_check(&skill_path)
             } else {
-                skillgen::skillgen(&skill_path);
-            }
+                skillgen::skillgen(&skill_path)
+            };
+            if ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::FAILURE }
         }
 
-        Commands::Gen { description, output } => {
+        Commands::Gen { description, output, force } => {
             print_brief_banner();
-            gen::gen(&description, output.as_deref());
+            let ok = gen::gen(&description, output.as_deref(), force);
+            if ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::FAILURE }
         }
 
         Commands::Test { file, verbose } => {
             print_brief_banner();
             let ok = tester::test_file(&file, verbose);
-            std::process::exit(if ok { 0 } else { 1 });
+            if ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::FAILURE }
         }
 
         Commands::Fmt { file, write, check } => {
             print_brief_banner();
             let ok = fmt::fmt_file(&file, write, check);
-            std::process::exit(if ok { 0 } else { 1 });
+            if ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::FAILURE }
         }
 
         Commands::Add { resource } => {
             print_brief_banner();
             match resource {
                 AddResource::Skill { name_or_path, list } => {
-                    if list {
-                        let ok = registry::list_registry_skills();
-                        std::process::exit(if ok { 0 } else { 1 });
+                    let ok = if list {
+                        registry::list_registry_skills()
                     } else {
                         let root = registry::find_install_root();
-                        let ok   = registry::add_skill(&name_or_path, &root);
-                        std::process::exit(if ok { 0 } else { 1 });
-                    }
+                        registry::add_skill(&name_or_path, &root)
+                    };
+                    if ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::FAILURE }
                 }
             }
         }
@@ -252,32 +259,35 @@ fn main() {
         Commands::Doc { file, output } => {
             print_brief_banner();
             let ok = doc::doc_file(&file, output.as_deref());
-            std::process::exit(if ok { 0 } else { 1 });
+            if ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::FAILURE }
         }
 
         Commands::Watch { path } => {
             print_brief_banner();
             let ok = watch::watch(&path);
-            std::process::exit(if ok { 0 } else { 1 });
+            if ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::FAILURE }
         }
 
         Commands::Init { name } => {
             print_brief_banner();
             let ok = init::init(&name);
-            std::process::exit(if ok { 0 } else { 1 });
+            if ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::FAILURE }
         }
+
         Commands::Completions { shell } => {
             generate(shell, &mut Cli::command(), "brief", &mut std::io::stdout());
+            std::process::ExitCode::SUCCESS
         }
+
         Commands::Ci => {
             print_brief_banner();
             let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
             let ok  = ci::run_ci(&cwd);
-            std::process::exit(if ok { 0 } else { 1 });
+            if ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::FAILURE }
         }
     }
 }
 
 fn print_brief_banner() {
-    println!("{}", format!("brief v{}", env!("CARGO_PKG_VERSION")).dimmed());
+    eprintln!("{}", format!("brief v{}", env!("CARGO_PKG_VERSION")).dimmed());
 }

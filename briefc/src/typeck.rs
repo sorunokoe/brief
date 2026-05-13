@@ -19,16 +19,35 @@ use crate::skillgen::SkillInterface;
 // Built-in types (always in scope)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const BUILTIN_TYPES: &[&str] = &[
-    "String", "Bool", "Int", "Float", "Unit",
-    "Result", "Option",         // generic built-ins
-    "Component", "Theme", "Color", "Schema", "Operation", "Mutation",
-    "Handle", "IOError", "AsyncError", "QueryError", "MutationError",
-    "DesignError", "TokenError", "FetchError", "ButtonStyle", "User",
-    "UserProfile",
-    // Allow T, E, U etc. as unconstrained generics
-    "T", "E", "U", "V", "A", "B",
-];
+/// Domain-specific built-in types that are always in scope.
+/// Separate from generic placeholders (T, E, U …) for clarity.
+fn builtin_types() -> &'static HashSet<&'static str> {
+    use std::sync::OnceLock;
+    static SET: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    SET.get_or_init(|| {
+        [
+            "String", "Bool", "Int", "Float", "Unit",
+            "Result", "Option",
+            "Component", "Theme", "Color", "Schema", "Operation", "Mutation",
+            "Handle", "IOError", "AsyncError", "QueryError", "MutationError",
+            "DesignError", "TokenError", "FetchError", "ButtonStyle", "User",
+            "UserProfile",
+        ].into_iter().collect()
+    })
+}
+
+/// Single-letter unconstrained generic type parameters.
+/// Kept separate from domain builtins so callers can distinguish "real" types.
+fn generic_placeholders() -> &'static HashSet<&'static str> {
+    use std::sync::OnceLock;
+    static SET: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    SET.get_or_init(|| ["T", "E", "U", "V", "A", "B"].into_iter().collect())
+}
+
+/// Return true if `name` is a built-in domain type or a generic placeholder.
+fn is_builtin_or_generic(name: &str) -> bool {
+    builtin_types().contains(name) || generic_placeholders().contains(name)
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Type environment
@@ -37,7 +56,7 @@ const BUILTIN_TYPES: &[&str] = &[
 /// Recursively collect all named types from a `TypeRef` tree.
 fn collect_type_names(ty: &TypeRef, out: &mut HashSet<String>) {
     // Skip built-in/generic single-letter names and known builtins
-    if !ty.name.is_empty() && !BUILTIN_TYPES.contains(&ty.name.as_str()) {
+    if !ty.name.is_empty() && !is_builtin_or_generic(&ty.name) {
         out.insert(ty.name.clone());
     }
     for arg in &ty.args {
@@ -87,7 +106,7 @@ impl<'a> TypeEnv<'a> {
 
     /// Check whether a type name is declared (built-in or user-defined).
     pub fn type_exists(&self, name: &str) -> bool {
-        BUILTIN_TYPES.contains(&name)
+        is_builtin_or_generic(name)
             || self.sealed_types.contains_key(name)
             || self.structs.contains_key(name)
             || self.protocols.contains_key(name)

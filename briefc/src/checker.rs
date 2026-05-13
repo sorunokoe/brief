@@ -150,9 +150,25 @@ fn check_task(
     }
 
     // E103: validate perform calls inside steps.
+    // Two-level linear tracking (TRIZ P5 Merging):
+    //   task_linear = bindings declared @once in a previous step and not yet consumed.
+    //   step_linear = bindings declared @once in the current step.
+    // This lets us detect cross-step E104/E105 violations.
     let uses_set: HashSet<&str> = expanded_uses.iter().copied().collect();
+    let mut task_linear: HashMap<String, (Span, usize)> = HashMap::new();
+
     for step in &task.steps {
-        check_step(step, &uses_set, imported, inline_effects, diags);
+        check_step(step, &uses_set, imported, inline_effects, &mut task_linear, diags);
+    }
+
+    // After all steps: any remaining task_linear binding was never consumed → E105.
+    for (name, (span, _)) in &task_linear {
+        diags.push(BriefError {
+            code:    ErrorCode::LinearBindingDropped,
+            message: format!("linear binding '{name}' is declared but never consumed across all task steps"),
+            span:    *span,
+            hint:    Some(format!("use '{name}' in a step, or remove the `@once` annotation")),
+        });
     }
 }
 
@@ -175,62 +191,91 @@ fn check_step(
     uses_set:       &HashSet<&str>,
     imported:       &HashSet<&str>,
     inline_effects: &HashMap<(&str, &str), &[Attribute]>,
+    task_linear:    &mut HashMap<String, (Span, usize)>,
     diags:          &mut Vec<BriefError>,
 ) {
-    // Collect linear bindings: (name, span, use_count)
-    // A binding is linear if:
-    //   a) its let statement has `@once` in attrs, OR
-    //   b) it is bound to a `perform Skill.fn()` whose inline effect declares `@once` return
-    let mut linear: HashMap<String, (Span, usize)> = HashMap::new();
+    // step_linear: @once bindings introduced in this step.
+    let mut step_linear: HashMap<String, (Span, usize)> = HashMap::new();
 
+    // First pass: validate performs and collect step_linear bindings.
     for stmt in &step.body {
         check_expr_for_perform(stmt_value(stmt), uses_set, imported, diags);
 
-        match stmt {
-            Stmt::Let { attrs, name, value, span } => {
-                // Explicit `@once let x = ...`
-                let is_once = attrs.iter().any(|a| a == "once" || a == "affine");
-                // Auto-infer from inline effect declaration.
-                let auto_once = match value {
-                    Expr::Perform { skill, func, .. } => {
-                        let key = (skill.as_str(), func.as_str());
-                        inline_effects.get(&key)
-                            .map(|ret_attrs| ret_attrs.iter().any(|a| a.name == "once" || a.name == "affine"))
-                            .unwrap_or(false)
-                    }
-                    _ => false,
-                };
-                if is_once || auto_once {
-                    linear.insert(name.clone(), (*span, 0));
+        if let Stmt::Let { attrs, name, value, span } = stmt {
+            let is_once  = attrs.iter().any(|a| a == "once" || a == "affine");
+            let auto_once = match value {
+                Expr::Perform { skill, func, .. } => {
+                    let key = (skill.as_str(), func.as_str());
+                    inline_effects.get(&key)
+                        .map(|ret_attrs| ret_attrs.iter().any(|a| a.name == "once" || a.name == "affine"))
+                        .unwrap_or(false)
                 }
+                _ => false,
+            };
+
+            if is_once || auto_once {
+                // Shadowing: a new @once x while task_linear still holds an earlier x.
+                if let Some((old_span, _)) = task_linear.remove(name) {
+                    diags.push(BriefError {
+                        code:    ErrorCode::LinearBindingDropped,
+                        message: format!("linear binding '{name}' is shadowed before being consumed"),
+                        span:    old_span,
+                        hint:    Some(format!("use '{name}' before re-binding it with `@once`")),
+                    });
+                }
+                step_linear.insert(name.clone(), (*span, 0));
             }
-            Stmt::Expr { .. } => {}
         }
     }
 
-    // Count usages of each linear binding across all expressions in the step.
+    // Second pass: count usages of all linear bindings across every expression in this step.
     for stmt in &step.body {
-        count_ident_uses(stmt_value(stmt), &mut linear);
+        count_ident_uses(stmt_value(stmt), &mut step_linear);
+        count_ident_uses(stmt_value(stmt), task_linear);
     }
 
-    // Emit E104 / E105 for linear binding violations.
-    for (name, (span, uses)) in &linear {
-        if *uses == 0 {
-            diags.push(BriefError {
-                code:    ErrorCode::LinearBindingDropped,
-                message: format!("linear binding '{name}' is never consumed"),
-                span:    *span,
-                hint:    Some(format!("use '{name}' in a subsequent statement or remove the `@once` annotation")),
-            });
-        } else if *uses > 1 {
-            diags.push(BriefError {
-                code:    ErrorCode::LinearBindingReused,
-                message: format!("linear binding '{name}' is consumed {uses} times (must be exactly once)"),
-                span:    *span,
-                hint:    Some(format!("a `@once` binding may only be used once — split into separate `perform` calls")),
-            });
+    // Resolve step_linear:
+    //   used once  → consumed, discard
+    //   not used   → promote to task_linear (will be consumed in a later step)
+    //   used > 1   → E104
+    for (name, (span, uses)) in step_linear {
+        match uses {
+            0 => { task_linear.insert(name, (span, 0)); }
+            1 => { /* consumed exactly once — done */ }
+            n => {
+                diags.push(BriefError {
+                    code:    ErrorCode::LinearBindingReused,
+                    message: format!("linear binding '{name}' is consumed {n} times (must be exactly once)"),
+                    span,
+                    hint:    Some("a `@once` binding may only be used once — split into separate `perform` calls".to_string()),
+                });
+            }
         }
     }
+
+    // Resolve task_linear (bindings from earlier steps):
+    //   used once  → consumed, remove
+    //   not used   → leave for future steps (reset count to 0)
+    //   used > 1   → E104, then remove
+    let mut to_remove = Vec::new();
+    for (name, (span, uses)) in task_linear.iter() {
+        match *uses {
+            0 => { /* not used in this step — leave */ }
+            1 => { to_remove.push(name.clone()); }
+            n => {
+                diags.push(BriefError {
+                    code:    ErrorCode::LinearBindingReused,
+                    message: format!("linear binding '{name}' is consumed {n} times in one step (must be exactly once total)"),
+                    span:    *span,
+                    hint:    Some("a `@once` binding from a previous step may only be used once".to_string()),
+                });
+                to_remove.push(name.clone());
+            }
+        }
+    }
+    for name in &to_remove { task_linear.remove(name); }
+    // Reset use-counts on remaining task_linear entries for the next step.
+    for (_, (_, uses)) in task_linear.iter_mut() { *uses = 0; }
 }
 
 fn stmt_value(stmt: &Stmt) -> &Expr {
@@ -643,5 +688,91 @@ mod tests {
         let diags = check_src(r#"type GitHubMCP = @mcp GitHub"#);
         let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
         assert!(errors.is_empty(), "unexpected errors for @mcp alias: {errors:?}");
+    }
+
+    // ── Cross-step linear tracking (two-level task_linear) ────────────────────
+
+    #[test]
+    fn linear_binding_consumed_in_later_step_is_ok() {
+        // @once let handle declared in step 1, consumed in step 2 — no error.
+        let diags = check_src(r#"
+            import skill "Payment"
+            task Pay : TaskBrief uses [Payment] {
+                goal = "charge"
+                step Charge {
+                    @once let handle = perform Payment.charge(amount)?;
+                }
+                step Confirm {
+                    let r = perform Payment.confirm(handle)?;
+                }
+            }
+        "#);
+        let linear_errors: Vec<_> = diags.iter()
+            .filter(|d| d.code == ErrorCode::LinearBindingDropped || d.code == ErrorCode::LinearBindingReused)
+            .collect();
+        assert!(linear_errors.is_empty(), "unexpected linear errors: {linear_errors:?}");
+    }
+
+    #[test]
+    fn linear_binding_never_consumed_across_steps_is_e105() {
+        // @once let handle declared in step 1, never used in any step → E105.
+        let diags = check_src(r#"
+            import skill "Payment"
+            task Pay : TaskBrief uses [Payment] {
+                goal = "charge"
+                step Charge {
+                    @once let handle = perform Payment.charge(amount)?;
+                }
+                step Done {
+                    let x = perform Payment.finalize(amount)?;
+                }
+            }
+        "#);
+        assert!(diags.iter().any(|d| d.code == ErrorCode::LinearBindingDropped), "{diags:?}");
+    }
+
+    #[test]
+    fn linear_binding_reused_across_steps_is_e104() {
+        // @once handle promoted to task_linear (step 1 declares but doesn't use it).
+        // Step 2 uses it twice in one step → E104.
+        let diags = check_src(r#"
+            import skill "Payment"
+            task Pay : TaskBrief uses [Payment] {
+                goal = "charge"
+                step Charge {
+                    @once let handle = perform Payment.charge(amount)?;
+                }
+                step Confirm {
+                    let a = perform Payment.confirm(handle)?;
+                    let b = perform Payment.confirm(handle)?;
+                }
+            }
+        "#);
+        assert!(
+            diags.iter().any(|d| d.code == ErrorCode::LinearBindingReused),
+            "expected E104 for cross-step reuse: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn linear_binding_shadowed_before_consumed_is_e105() {
+        // @once x declared in step 1, then re-declared @once in step 2 → E105 for old x.
+        let diags = check_src(r#"
+            import skill "Payment"
+            task Pay : TaskBrief uses [Payment] {
+                goal = "charge"
+                step A {
+                    @once let handle = perform Payment.charge(amount)?;
+                }
+                step B {
+                    @once let handle = perform Payment.charge(other)?;
+                    let _ = perform Payment.confirm(handle)?;
+                }
+            }
+        "#);
+        assert!(
+            diags.iter().any(|d| d.code == ErrorCode::LinearBindingDropped),
+            "expected E105 for shadow-before-consume: {diags:?}"
+        );
     }
 }

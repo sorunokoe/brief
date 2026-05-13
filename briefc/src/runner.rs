@@ -4,7 +4,7 @@
 /// In Phase 1 this will be complemented by an LLVM backend for `brief build`.
 
 use std::path::{Path, PathBuf};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use colored::Colorize;
 
@@ -74,6 +74,15 @@ pub fn run_file(path: &Path, mode: RunMode) -> bool {
     // ── 4b. Type checking (with skill interfaces for cross-file E202) ──────
     let skill_ifaces = load_skill_interfaces(&program, file_dir, &cwd);
     diags.extend(typeck::type_check_with_skills(&program, skill_ifaces));
+
+    // ── 4c. Deduplicate diagnostics by (code, span) ───────────────────────
+    // Multiple passes (checker + typeck) can produce identical diagnostics when
+    // the same issue is caught by more than one analysis phase.
+    let mut seen: HashSet<(u32, u32, u32)> = HashSet::new();
+    diags.retain(|d| {
+        let key = (d.code.clone() as u32, d.span.start as u32, d.span.end as u32);
+        seen.insert(key)
+    });
 
     // ── 5. Print header ───────────────────────────────────────────────────
     // Show type declarations (sealed types, structs, effects, protocols)

@@ -29,10 +29,19 @@
 /// ```
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use colored::Colorize;
 
 const REGISTRY_BASE: &str =
     "https://raw.githubusercontent.com/brief-lang/skills/main";
+
+/// Maximum size of a downloaded or locally-read .briefskill file (512 KB).
+const MAX_SKILL_CONTENT_BYTES: usize = 512 * 1024;
+
+/// HTTP connect timeout for registry requests.
+const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// HTTP read timeout for registry requests.
+const HTTP_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public entry points
@@ -84,11 +93,23 @@ pub fn list_registry_skills() -> bool {
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn install_from_registry(name: &str, dest_root: &Path) -> bool {
+    if let Err(e) = validate_skill_name(name) {
+        eprintln!("{} Invalid skill name '{}': {e}", "error".red().bold(), name);
+        return false;
+    }
+
     let url = format!("{REGISTRY_BASE}/{name}/{name}.briefskill");
     println!("{} {}...", "Fetching".dimmed(), url.dimmed());
 
     match fetch_url(&url) {
         Ok(content) => {
+            if content.len() > MAX_SKILL_CONTENT_BYTES {
+                eprintln!(
+                    "{} Downloaded skill '{}' exceeds size limit ({} bytes > {} bytes). Refusing to install.",
+                    "error".red().bold(), name, content.len(), MAX_SKILL_CONTENT_BYTES
+                );
+                return false;
+            }
             save_skill(name, &content, dest_root)
         }
         Err(e) => {
@@ -154,12 +175,30 @@ fn install_local(skill_dir: &Path, dest_root: &Path) -> bool {
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn save_skill(name: &str, content: &str, dest_root: &Path) -> bool {
+    if let Err(e) = validate_skill_name(name) {
+        eprintln!("{} Invalid skill name '{}': {e}", "error".red().bold(), name);
+        return false;
+    }
+
     let dir  = dest_root.join(".claude").join("skills").join(name);
     let path = dir.join(format!("{name}.briefskill"));
 
     if let Err(e) = std::fs::create_dir_all(&dir) {
         eprintln!("{} Cannot create {}: {e}", "error".red().bold(), dir.display());
         return false;
+    }
+
+    // Belt-and-suspenders: verify the created directory is actually under dest_root.
+    // This guards against any OS-level symlink or edge case that slips past name validation.
+    if let (Ok(canon_dir), Ok(canon_root)) = (dir.canonicalize(), dest_root.canonicalize()) {
+        if !canon_dir.starts_with(&canon_root) {
+            eprintln!(
+                "{} Skill installation path '{}' resolved outside the project root. Refusing.",
+                "error".red().bold(), canon_dir.display()
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+            return false;
+        }
     }
 
     match std::fs::write(&path, content) {
@@ -180,7 +219,12 @@ fn save_skill(name: &str, content: &str, dest_root: &Path) -> bool {
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn fetch_url(url: &str) -> Result<String, String> {
-    ureq::get(url)
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(HTTP_CONNECT_TIMEOUT)
+        .timeout_read(HTTP_READ_TIMEOUT)
+        .build();
+
+    agent.get(url)
         .call()
         .map_err(|e| e.to_string())
         .and_then(|resp| {
@@ -213,6 +257,36 @@ pub fn find_install_root() -> PathBuf {
     }
 
     cwd
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Security helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Validate a skill name to prevent path traversal.
+///
+/// Valid names match `^[A-Za-z][A-Za-z0-9_-]{0,63}$`:
+/// - Start with an ASCII letter
+/// - Contain only letters, digits, hyphens, and underscores
+/// - Be 1–64 characters long
+fn validate_skill_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("skill name must not be empty".to_string());
+    }
+    if name.len() > 64 {
+        return Err(format!("skill name must be ≤ 64 characters (got {})", name.len()));
+    }
+    let mut chars = name.chars();
+    let first = chars.next().unwrap();
+    if !first.is_ascii_alphabetic() {
+        return Err(format!("skill name must start with a letter (got '{first}')"));
+    }
+    for c in chars {
+        if !c.is_ascii_alphanumeric() && c != '_' && c != '-' {
+            return Err(format!("skill name contains invalid character '{c}' (allowed: A-Z a-z 0-9 _ -)"));
+        }
+    }
+    Ok(())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -275,5 +349,50 @@ mod tests {
 
         fs::remove_dir_all(&root).ok();
         fs::remove_dir_all(&src).ok();
+    }
+
+    // ─── Security: skill name validation ────────────────────────────────────
+
+    #[test]
+    fn test_validate_skill_name_valid() {
+        assert!(validate_skill_name("GraphQL").is_ok());
+        assert!(validate_skill_name("My-Skill").is_ok());
+        assert!(validate_skill_name("Auth123").is_ok());
+        assert!(validate_skill_name("A").is_ok());
+        assert!(validate_skill_name("a_b_c").is_ok());
+    }
+
+    #[test]
+    fn test_validate_skill_name_path_traversal() {
+        assert!(validate_skill_name("../etc/passwd").is_err());
+        assert!(validate_skill_name("../../etc").is_err());
+        assert!(validate_skill_name("foo/bar").is_err());
+        assert!(validate_skill_name("foo\\bar").is_err());
+        assert!(validate_skill_name(".hidden").is_err());
+    }
+
+    #[test]
+    fn test_validate_skill_name_empty_and_too_long() {
+        assert!(validate_skill_name("").is_err());
+        assert!(validate_skill_name(&"A".repeat(65)).is_err());
+        assert!(validate_skill_name(&"A".repeat(64)).is_ok());
+    }
+
+    #[test]
+    fn test_validate_skill_name_starts_with_digit() {
+        assert!(validate_skill_name("1Skill").is_err());
+        assert!(validate_skill_name("-Skill").is_err());
+    }
+
+    #[test]
+    fn test_save_skill_rejects_malicious_name() {
+        let root = tmp_dir();
+        let content = "skill content";
+        let ok = save_skill("../evil", content, &root);
+        assert!(!ok, "save_skill must reject path-traversal names");
+        // The evil file must NOT have been created outside root
+        let evil_path = root.parent().unwrap().join("evil.briefskill");
+        assert!(!evil_path.exists(), "evil file must not be written outside root");
+        fs::remove_dir_all(&root).ok();
     }
 }
