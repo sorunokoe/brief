@@ -561,7 +561,9 @@ task_body      ::= ('goal' '=' STRING)?
                    step_decl*
 step_decl      ::= 'step' Ident '{' stmt* '}'
 
-test_decl      ::= 'test' STRING '{' stmt* '}'
+test_decl      ::= 'test' STRING '{' test_body '}'
+                 (* test_body uses mock/run/assert syntax; parsed by brief test, *)
+                 (* skipped by brief check — see §4.10 for test body grammar *)
 
 stmt           ::= let_stmt | expr_stmt
 let_stmt       ::= attribute* 'let' Ident '=' expr ';'
