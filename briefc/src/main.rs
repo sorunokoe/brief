@@ -1,5 +1,6 @@
 mod ast;
 mod checker;
+mod ci;
 mod codegen;
 mod doc;
 mod errors;
@@ -19,7 +20,8 @@ mod typeck;
 mod watch;
 
 use std::path::PathBuf;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::generate;
 use colored::Colorize;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -144,6 +146,16 @@ enum Commands {
         /// Project name (also used as the new directory name)
         name: String,
     },
+
+    /// Generate shell completion scripts (bash, zsh, fish, powershell)
+    Completions {
+        /// Shell to generate completions for
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
+
+    /// Run all checks listed in brief.toml [ci] examples
+    Ci,
 }
 
 #[derive(Subcommand)]
@@ -252,6 +264,15 @@ fn main() {
         Commands::Init { name } => {
             print_brief_banner();
             let ok = init::init(&name);
+            std::process::exit(if ok { 0 } else { 1 });
+        }
+        Commands::Completions { shell } => {
+            generate(shell, &mut Cli::command(), "brief", &mut std::io::stdout());
+        }
+        Commands::Ci => {
+            print_brief_banner();
+            let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let ok  = ci::run_ci(&cwd);
             std::process::exit(if ok { 0 } else { 1 });
         }
     }

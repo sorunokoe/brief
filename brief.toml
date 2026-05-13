@@ -1,0 +1,9 @@
+[project]
+name = "brief"
+version = "0.4.0"
+authors = ["Brief Contributors"]
+
+[ci]
+examples = [
+  "examples/*.brief",
+]
