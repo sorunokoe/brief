@@ -1,25 +1,30 @@
-/// Error types and formatting for Brief v0.0.1.
+/// Error types and formatting for Brief v0.1.
 ///
 /// Error codes follow the pattern used in the plan:
 /// - E0xx: Parse errors
 /// - E1xx: Structural/semantic errors
+/// - E2xx: Type errors
 /// - W1xx: Warnings (missing interfaces, stale skills)
 
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ErrorCode {
-    /// Parse-level errors
+    // ── Parse errors ──────────────────────────────────────────────────────
     ParseError,
-    /// Task is missing a required `goal` field
+    // ── Structural/semantic errors ────────────────────────────────────────
     MissingGoal,
-    /// A skill listed in `uses [X]` was never imported
     UndeclaredSkillInUses,
-    /// A `perform X.fn()` call references a skill not listed in `uses [...]`
     PerformWithoutUses,
-    /// A skill import has no matching `.briefskill` interface file (warning)
+    // ── Type errors ───────────────────────────────────────────────────────
+    /// A type reference resolves to an unknown name
+    UnknownType,
+    /// Effect function called with wrong number of arguments
+    WrongArgCount,
+    /// Struct field attribute value fails constraint (e.g. @url on non-URL)
+    AttributeConstraint,
+    // ── Warnings ──────────────────────────────────────────────────────────
     MissingSkillInterface,
-    /// A `.briefskill` interface is potentially stale (warning)
     #[allow(dead_code)]
     StaleSkillInterface,
 }
@@ -27,12 +32,15 @@ pub enum ErrorCode {
 impl fmt::Display for ErrorCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let code = match self {
-            ErrorCode::ParseError              => "E001",
-            ErrorCode::MissingGoal             => "E101",
-            ErrorCode::UndeclaredSkillInUses   => "E102",
-            ErrorCode::PerformWithoutUses       => "E103",
-            ErrorCode::MissingSkillInterface    => "W101",
-            ErrorCode::StaleSkillInterface      => "W102",
+            ErrorCode::ParseError            => "E001",
+            ErrorCode::MissingGoal           => "E101",
+            ErrorCode::UndeclaredSkillInUses => "E102",
+            ErrorCode::PerformWithoutUses    => "E103",
+            ErrorCode::UnknownType           => "E201",
+            ErrorCode::WrongArgCount         => "E202",
+            ErrorCode::AttributeConstraint   => "E203",
+            ErrorCode::MissingSkillInterface => "W101",
+            ErrorCode::StaleSkillInterface   => "W102",
         };
         write!(f, "{code}")
     }
@@ -40,8 +48,15 @@ impl fmt::Display for ErrorCode {
 
 impl ErrorCode {
     pub fn is_error(&self) -> bool {
-        matches!(self, ErrorCode::ParseError | ErrorCode::MissingGoal
-            | ErrorCode::UndeclaredSkillInUses | ErrorCode::PerformWithoutUses)
+        matches!(self,
+            ErrorCode::ParseError
+            | ErrorCode::MissingGoal
+            | ErrorCode::UndeclaredSkillInUses
+            | ErrorCode::PerformWithoutUses
+            | ErrorCode::UnknownType
+            | ErrorCode::WrongArgCount
+            | ErrorCode::AttributeConstraint
+        )
     }
 }
 

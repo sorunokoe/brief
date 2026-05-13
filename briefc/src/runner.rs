@@ -12,6 +12,7 @@ use crate::checker::{self, CheckContext};
 use crate::errors::{print_diagnostics, BriefError};
 use crate::lexer::lex;
 use crate::parser::parse;
+use crate::typeck;
 
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -65,6 +66,9 @@ pub fn run_file(path: &Path, mode: RunMode) -> bool {
 
     let mut diags: Vec<BriefError> = parse_errors;
     diags.extend(checker::check(&program, &ctx));
+
+    // ── 4b. Type checking ─────────────────────────────────────────────────
+    diags.extend(typeck::type_check(&program));
 
     // ── 5. Print header ───────────────────────────────────────────────────
     // Show type declarations (sealed types, structs, effects, protocols)

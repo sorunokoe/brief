@@ -6,6 +6,7 @@ mod lexer;
 mod parser;
 mod runner;
 mod skillgen;
+mod typeck;
 
 use std::path::PathBuf;
 use clap::{Parser, Subcommand};
@@ -15,7 +16,7 @@ use colored::Colorize;
 
 #[derive(Parser)]
 #[command(name = "brief")]
-#[command(version = "0.0.1")]
+#[command(version = "0.1.0")]
 #[command(about = "If it compiles, the AI has everything it needs.")]
 #[command(long_about = None)]
 struct Cli {
