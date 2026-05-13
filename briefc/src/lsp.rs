@@ -251,7 +251,7 @@ fn validate_source(source: &str) -> Vec<crate::errors::BriefError> {
 
     let file_dir = std::path::Path::new(".");
     let cwd      = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let ctx      = CheckContext { file_dir, cwd: &cwd };
+    let ctx      = CheckContext { file_dir, cwd: &cwd, manifest: None };
 
     let mut diags: Vec<crate::errors::BriefError> = parse_errors;
     diags.extend(checker::check(&program, &ctx));

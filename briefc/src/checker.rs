@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 
 use crate::ast::*;
 use crate::errors::{BriefError, ErrorCode};
+use crate::manifest::BriefManifest;
 
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -20,6 +21,8 @@ pub struct CheckContext<'a> {
     pub file_dir: &'a Path,
     /// Current working directory — fallback for skill lookups.
     pub cwd:      &'a Path,
+    /// Optional parsed `brief.toml` — used for manifest-defined skill path overrides.
+    pub manifest: Option<&'a BriefManifest>,
 }
 
 /// Check a program and return all diagnostics.
@@ -285,10 +288,19 @@ fn check_expr_for_perform(expr: &Expr, uses_set: &HashSet<&str>, _imported: &Has
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Returns the path of the `.briefskill` file if it exists, searching in order:
-/// 1. `<file_dir>/.claude/skills/<name>/<name>.briefskill`
-/// 2. `<cwd>/.claude/skills/<name>/<name>.briefskill`
-/// 3. `~/.brief/skills/<name>.briefskill`  (user-global, future)
+/// 1. `brief.toml` `[skills]` manifest override (if manifest present)
+/// 2. `<file_dir>/.claude/skills/<name>/<name>.briefskill`
+/// 3. `<cwd>/.claude/skills/<name>/<name>.briefskill`
+/// 4. `~/.brief/skills/<name>.briefskill`  (user-global, future)
 pub fn find_skill_interface(name: &str, ctx: &CheckContext<'_>) -> Option<PathBuf> {
+    // 1. Manifest-defined path override
+    if let Some(manifest) = ctx.manifest {
+        if let Some(p) = manifest.resolve_skill(name) {
+            return Some(p);
+        }
+    }
+
+    // 2 & 3. Default discovery: .claude/skills/<name>/<name>.briefskill
     let relative = format!(".claude/skills/{name}/{name}.briefskill");
 
     let candidates = [
@@ -314,7 +326,7 @@ mod tests {
     fn check_src(src: &str) -> Vec<BriefError> {
         let (tokens, _) = lex(src);
         let (program, _) = parse(&tokens, src);
-        let ctx = CheckContext { file_dir: Path::new("."), cwd: Path::new(".") };
+        let ctx = CheckContext { file_dir: Path::new("."), cwd: Path::new("."), manifest: None };
         check(&program, &ctx)
     }
 

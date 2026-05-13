@@ -8,6 +8,7 @@ mod gen;
 mod init;
 mod lexer;
 mod lsp;
+mod manifest;
 mod parser;
 mod registry;
 mod repl;

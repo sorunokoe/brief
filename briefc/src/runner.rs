@@ -12,6 +12,7 @@ use crate::ast::*;
 use crate::checker::{self, CheckContext};
 use crate::errors::{print_diagnostics, BriefError};
 use crate::lexer::lex;
+use crate::manifest;
 use crate::parser::parse;
 use crate::skillgen;
 use crate::typeck;
@@ -64,7 +65,8 @@ pub fn run_file(path: &Path, mode: RunMode) -> bool {
     // ── 4. Semantic check ─────────────────────────────────────────────────
     let file_dir = path.parent().unwrap_or(Path::new("."));
     let cwd      = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let ctx      = CheckContext { file_dir, cwd: &cwd };
+    let mf       = manifest::load_manifest(file_dir);
+    let ctx      = CheckContext { file_dir, cwd: &cwd, manifest: mf.as_ref() };
 
     let mut diags: Vec<BriefError> = parse_errors;
     diags.extend(checker::check(&program, &ctx));

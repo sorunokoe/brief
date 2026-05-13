@@ -24,6 +24,7 @@ ureq       = { version = "2", features = ["json"] }
 tower-lsp  = "0.20"
 tokio      = { version = "1", features = ["full"] }
 notify     = { version = "6", features = ["macos_kqueue"] }
+toml       = { version = "0.8", features = ["parse"] }
 
 # Optional: LLVM backend (requires `brew install llvm@18` or equivalent)
 # Enable with: cargo build --features llvm-backend

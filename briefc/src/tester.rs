@@ -376,7 +376,7 @@ pub fn test_file(path: &Path, verbose: bool) -> bool {
     // ── 3. Type check ─────────────────────────────────────────────────────
     let file_dir = path.parent().unwrap_or(Path::new("."));
     let cwd      = std::env::current_dir().unwrap_or_default();
-    let ctx      = CheckContext { file_dir, cwd: &cwd };
+    let ctx      = CheckContext { file_dir, cwd: &cwd, manifest: None };
     let mut diags: Vec<BriefError> = parse_errors;
     diags.extend(checker::check(&program, &ctx));
     let skill_ifaces = {

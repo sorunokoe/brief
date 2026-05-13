@@ -14,6 +14,7 @@ use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watche
 use crate::checker;
 use crate::errors::{BriefError, ErrorCode, print_diagnostics};
 use crate::lexer::lex;
+use crate::manifest;
 use crate::parser::parse;
 
 /// Entry point for `brief watch`.
@@ -111,7 +112,8 @@ fn run_check(path: &Path) -> Vec<(Vec<BriefError>, String, String)> {
 
     let ctx_dir = path.parent().unwrap_or(Path::new("."));
     let cwd = std::env::current_dir().unwrap_or_else(|_| ctx_dir.to_path_buf());
-    let ctx = checker::CheckContext { file_dir: ctx_dir, cwd: &cwd };
+    let mf = manifest::load_manifest(ctx_dir);
+    let ctx = checker::CheckContext { file_dir: ctx_dir, cwd: &cwd, manifest: mf.as_ref() };
 
     let mut results = Vec::new();
 
