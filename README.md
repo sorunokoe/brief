@@ -24,7 +24,7 @@ task Hello : TaskBrief {
 
 ```bash
 brief check hello.brief
-# brief v0.3.0
+# brief v0.4.0
 # ● Brief: Hello
 #   goal:    Say hello to the world
 #   skills:  none required
@@ -93,7 +93,7 @@ The `.briefskill` file is the typed contract — committed to your repo. `brief 
 | "How do I know the skill interface is correct?" | `brief skillgen` generates it from your skill's docs |
 | "I want to see all tasks and their effects documented" | `brief doc my-feature.brief` |
 
-## Language Features (v0.3)
+## Language Features (v0.4)
 
 - **Algebraic data types** — `sealed type`, `struct`
 - **Generics** — `Result<T, E>`, `Option<T>`
@@ -101,27 +101,30 @@ The `.briefskill` file is the typed contract — committed to your repo. `brief 
 - **Algebraic effects** — `uses [Skill1, Skill2]` tracked in the type signature
 - **Effect group aliases** — `type AuthEffects = [Auth, Session, Permissions]` — name sets of skills
 - **Refinement type aliases** — `type Email = @matches("[^@]+@[^@]+") String`
+- **MCP type aliases** — `type FileMCP = @mcp FileSystem` — mark MCP-backed skills
 - **Linear types** — `@once` enforces handles are consumed exactly once (E104/E105)
 - **Result propagation** — `perform Skill.fn()?`
-- **Test blocks** — `test { }` with mock skill system
+- **Test blocks** — `test { }` with `mock`, `run`, `assert` — parsed by both `brief test` and `brief check`
 - **Doc generation** — `brief doc` renders Markdown from any `.brief` file
 
 ## Examples
 
-26 examples in [`examples/`](examples/):
+32 examples in [`examples/`](examples/):
 
 | Range | What they cover |
 |-------|----------------|
 | 01–14 | Core language: hello, UI task, domain model, mapper, effects, auth, notifications, onboarding, settings, sync, AI chat, sealed types, feature flags, test suite |
 | 15–22 | Real-world: checkout, analytics, i18n, upload pipeline, OTP, search, resilience, RBAC |
 | 23–26 | Phase 3 power types: linear types, type aliases, effect groups, doc showcase |
+| 27–32 | Advanced patterns: composition, AI/RAG pipeline, platform branching, event sourcing, concurrency, MCP integration |
 
 ## Roadmap
 
 - **v0.1** ✅ — Full type system, skill imports, error messages, examples
 - **v0.2** ✅ — `brief test`, `brief fmt`, LSP, WASM, skill registry
 - **v0.3** ✅ — Linear types (`@once`), type aliases, effect groups, `brief doc`
-- **v1.0** — Language specification 1.0, documentation website, performance
+- **v0.4** ✅ — Test block parsing in main parser, `@mcp` attribute, 32 examples
+- **v1.0** — Language specification 1.0, documentation website, CI workflows, performance
 
 ## Contributing
 

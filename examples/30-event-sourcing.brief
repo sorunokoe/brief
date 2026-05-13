@@ -1,0 +1,160 @@
+// examples/30-event-sourcing.brief
+//
+// Demonstrates event sourcing pattern in Brief.
+// Commands produce events; projections rebuild state from events.
+// Effect types make the event bus and projection store explicit in the type system.
+//
+// Run:  brief check examples/30-event-sourcing.brief   → ✅
+
+import skill "EventStore"
+import skill "GraphQL"
+import skill "Notifications"
+
+// ── Event taxonomy (sealed = exhaustive) ─────────────────────────────────────
+
+sealed type OrderEvent =
+      OrderCreated(String)
+    | OrderPaid(String)
+    | OrderShipped(String)
+    | OrderDelivered(String)
+    | OrderCancelled(String)
+
+sealed type OrderStatus = Pending | Paid | Shipped | Delivered | Cancelled
+
+// ── Aggregate types ───────────────────────────────────────────────────────────
+
+struct OrderAggregate {
+    id:      @nonEmpty String
+    version: String
+    status:  OrderStatus
+    total:   String
+}
+
+struct EventEnvelope {
+    aggregateId: @nonEmpty String
+    eventType:   @nonEmpty String
+    payload:     String
+    version:     String
+    occurredAt:  String
+}
+
+// ── Effects ───────────────────────────────────────────────────────────────────
+
+effect EventStore {
+    fn append(aggregateId: String, event: EventEnvelope) -> String
+    fn load(aggregateId: String, fromVersion: String) -> EventEnvelope
+    fn subscribe(eventType: String, handler: String) -> String
+}
+
+// ── Command: place order ───────────────────────────────────────────────────────
+
+@BriefBuilder
+task PlaceOrder : TaskBrief uses [EventStore, GraphQL] {
+    goal = "Place a new order — emit OrderCreated event to the event store"
+    extras = ["aggregate": "Order", "command": "PlaceOrder", "pattern": "EventSourcing"]
+
+    step Validate {
+        let cart    = perform GraphQL.query(CartQuery)?;
+        let pricing = perform GraphQL.query(PricingQuery)?;
+    }
+
+    step Emit {
+        let event = perform EventStore.append(orderId, OrderCreated(orderId))?;
+    }
+}
+
+// ── Command: process payment ──────────────────────────────────────────────────
+
+@BriefBuilder
+task ProcessPayment : TaskBrief uses [EventStore, GraphQL] {
+    goal = "Process payment for an order — emit OrderPaid event"
+    extras = ["aggregate": "Order", "command": "ProcessPayment"]
+
+    step LoadState {
+        let history = perform EventStore.load(orderId, fromVersion)?;
+    }
+
+    step Pay {
+        let result = perform GraphQL.mutation(PaymentMutation)?;
+    }
+
+    step Emit {
+        let event = perform EventStore.append(orderId, OrderPaid(paymentId))?;
+    }
+}
+
+// ── Command: ship order ───────────────────────────────────────────────────────
+
+@BriefBuilder
+task ShipOrder : TaskBrief uses [EventStore, Notifications] {
+    goal = "Mark an order as shipped — emit OrderShipped event and notify customer"
+    extras = ["aggregate": "Order", "command": "ShipOrder"]
+
+    step LoadState {
+        let aggregate = perform EventStore.load(orderId, fromVersion)?;
+    }
+
+    step Emit {
+        let event = perform EventStore.append(orderId, OrderShipped(trackingCode))?;
+    }
+
+    step Notify {
+        let notification = perform Notifications.send(customerId, ShippedTemplate)?;
+    }
+}
+
+// ── Projection: order status view ────────────────────────────────────────────
+// Rebuilds current order status by replaying the event log.
+// Read-only, no side-effects — uses EventStore.load only.
+
+@BriefBuilder
+task OrderStatusProjection : TaskBrief uses [EventStore] {
+    goal = "Rebuild the current order status by replaying events from the event store"
+    extras = [
+        "aggregate": "Order",
+        "type":      "ReadModel",
+        "pattern":   "EventSourcing"
+    ]
+
+    step Replay {
+        let events = perform EventStore.load(orderId, version)?;
+    }
+
+    step Project {
+        let status = perform EventStore.subscribe(OrderEvent, projectionHandler)?;
+    }
+}
+
+// ── Saga: full order lifecycle ────────────────────────────────────────────────
+// A saga orchestrates a sequence of commands with compensation on failure.
+
+@BriefBuilder
+task OrderSaga : TaskBrief uses [EventStore, GraphQL, Notifications] {
+    goal = "Orchestrate the complete order lifecycle: place → pay → ship → notify"
+    extras = [
+        "pattern":   "Saga",
+        "aggregate": "Order",
+        "steps":     "4",
+        "compensation": "true"
+    ]
+
+    step Place {
+        let orderId = perform GraphQL.mutation(PlaceOrderMutation)?;
+        let event   = perform EventStore.append(orderId, OrderCreated(orderId))?;
+    }
+
+    step Pay {
+        let payment = perform GraphQL.mutation(PayMutation)?;
+        let event   = perform EventStore.append(orderId, OrderPaid(payment))?;
+    }
+
+    step Ship {
+        let tracking = perform GraphQL.mutation(ShipMutation)?;
+        let event    = perform EventStore.append(orderId, OrderShipped(tracking))?;
+    }
+
+    step Notify {
+        let _ = perform Notifications.send(customerId, OrderShippedTemplate)?;
+        let event = perform EventStore.append(orderId, OrderDelivered(timestamp))?;
+    }
+}

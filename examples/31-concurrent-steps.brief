@@ -1,0 +1,176 @@
+// examples/31-concurrent-steps.brief
+//
+// Demonstrates concurrent/async step execution in Brief.
+// Steps that have no data dependency can run in parallel.
+// The `async` and `await` keywords express concurrent intent;
+// the scheduler decides actual execution strategy.
+//
+// Run:  brief check examples/31-concurrent-steps.brief   → ✅
+
+import skill "GraphQL"
+import skill "Cache"
+import skill "Analytics"
+import skill "FeatureFlags"
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+sealed type CachePolicy = AlwaysFresh | StaleWhileRevalidate | CacheFirst
+
+struct FeedItem {
+    id:      @nonEmpty String
+    title:   @nonEmpty String
+    imageUrl: @url String
+}
+
+struct UserPreferences {
+    theme:    String
+    language: @nonEmpty String
+    timezone: @nonEmpty String
+}
+
+struct FeatureSet {
+    flags: String
+}
+
+// ── Effect declarations ───────────────────────────────────────────────────────
+
+effect Cache {
+    fn get(key: String) -> String
+    fn set(key: String, value: String, ttl: String) -> String
+    fn invalidate(key: String) -> String
+}
+
+effect FeatureFlags {
+    fn evaluate(flagKey: String, userId: String) -> String
+    fn evaluateAll(userId: String) -> FeatureSet
+}
+
+// ── Sequential baseline ───────────────────────────────────────────────────────
+// All four data sources loaded one at a time — simple but slow.
+
+@BriefBuilder
+task LoadDashboard_Sequential : TaskBrief uses [GraphQL, Cache, FeatureFlags, Analytics] {
+    goal = "Load all dashboard data sequentially (baseline — not recommended for production)"
+    extras = ["async": "false", "pattern": "Sequential"]
+
+    step LoadFeed {
+        let feed = perform GraphQL.query(FeedQuery)?;
+    }
+
+    step LoadPrefs {
+        let prefs = perform GraphQL.query(UserPrefsQuery)?;
+    }
+
+    step LoadFlags {
+        let flags = perform FeatureFlags.evaluateAll(userId)?;
+    }
+
+    step LoadCached {
+        let cached = perform Cache.get(dashboardCacheKey)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("dashboard_loaded", loadTimeMs)?;
+    }
+}
+
+// ── Concurrent variant ────────────────────────────────────────────────────────
+// The three independent data-fetching steps can run concurrently.
+// Steps with no data dependency between them are candidates for parallel dispatch.
+// The compiler validates the dependency graph — if you reference a binding from
+// a prior step, the scheduler ensures that step completes first.
+
+@BriefBuilder
+task LoadDashboard_Concurrent : TaskBrief uses [GraphQL, Cache, FeatureFlags, Analytics] {
+    goal = "Load all dashboard data concurrently — feed, prefs, and flags in parallel"
+    extras = [
+        "async":     "true",
+        "pattern":   "FanOut",
+        "timeout":   "5s",
+        "cacheTTL":  "60s"
+    ]
+
+    // These three steps have no shared bindings → eligible for parallel execution
+    step LoadFeed {
+        let feed = perform GraphQL.query(FeedQuery)?;
+    }
+
+    step LoadPrefs {
+        let prefs = perform Cache.get(userPrefsCacheKey)?;
+    }
+
+    step LoadFlags {
+        let flags = perform FeatureFlags.evaluateAll(userId)?;
+    }
+
+    // This step depends on `feed` from LoadFeed → must execute after it
+    step EnrichFeed {
+        let enriched = perform GraphQL.query(EnrichFeedQuery)?;
+    }
+
+    // Always last — collects timing from all prior steps
+    step Track {
+        let _ = perform Analytics.track("dashboard_loaded_concurrent", loadTimeMs)?;
+    }
+}
+
+// ── Cache-aside pattern ───────────────────────────────────────────────────────
+// Check cache first; on miss, fetch from source and backfill.
+
+@BriefBuilder
+task FeedWithCacheAside : TaskBrief uses [GraphQL, Cache, Analytics] {
+    goal = "Load feed with cache-aside: serve from cache, revalidate in background"
+    extras = [
+        "cachePolicy": "StaleWhileRevalidate",
+        "ttl":         "120s"
+    ]
+
+    step ReadCache {
+        let cached = perform Cache.get(feedCacheKey)?;
+    }
+
+    step FetchIfMiss {
+        let fresh = perform GraphQL.query(FeedQuery)?;
+    }
+
+    step Backfill {
+        let _ = perform Cache.set(feedCacheKey, fresh, ttl)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("feed_cache_hit", cacheHit)?;
+    }
+}
+
+// ── Fan-in aggregation ────────────────────────────────────────────────────────
+// Multiple concurrent sources → single aggregated response.
+
+@BriefBuilder
+task AggregatedHomeFeed : TaskBrief uses [GraphQL, Analytics] {
+    goal = "Aggregate personalised home feed from three independent GraphQL sources"
+    extras = [
+        "pattern":  "FanIn",
+        "sources":  "3",
+        "async":    "true"
+    ]
+
+    step LoadPersonalised {
+        let personal = perform GraphQL.query(PersonalisedFeedQuery)?;
+    }
+
+    step LoadTrending {
+        let trending = perform GraphQL.query(TrendingQuery)?;
+    }
+
+    step LoadSponsored {
+        let sponsored = perform GraphQL.query(SponsoredQuery)?;
+    }
+
+    step Merge {
+        let merged = perform GraphQL.query(MergeFeedsQuery)?;
+    }
+
+    step Track {
+        let _ = perform Analytics.track("home_feed_aggregated", sourceCount)?;
+    }
+}

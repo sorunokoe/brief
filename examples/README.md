@@ -62,6 +62,24 @@ brief doc examples/26-brief-doc.brief
 brief doc examples/26-brief-doc.brief --output docs/26-brief-doc.md
 ```
 
+## Examples (27–32 · Advanced Patterns)
+
+| File | Pattern | What it shows | `brief check` |
+|------|---------|---------------|---------------|
+| [27-task-composition.brief](27-task-composition.brief) | Composition | Building-block tasks composed into startup + concurrent dashboard flows | ✅ W101 |
+| [28-ai-pipeline.brief](28-ai-pipeline.brief) | AI / RAG | Embed → retrieve → generate: full RAG pipeline with LLM, Embeddings, VectorStore effects | ✅ W101 |
+| [29-platform-branching.brief](29-platform-branching.brief) | Multi-platform | iOS / Android / Web screen variants; platform sealed type; coordinator task | ✅ W101 |
+| [30-event-sourcing.brief](30-event-sourcing.brief) | Event Sourcing | Commands emit events; projections replay event log; saga orchestration | ✅ W101 |
+| [31-concurrent-steps.brief](31-concurrent-steps.brief) | Concurrency | Fan-out parallel loading; cache-aside; fan-in aggregation | ✅ W101 |
+| [32-mcp-integration.brief](32-mcp-integration.brief) | MCP | GitHub / FileSystem / Browser / Database MCP skills; `@mcp` type alias; full test suite | ✅ W101 |
+
+```bash
+# Run tests in examples that have test { } blocks:
+brief test examples/14-test-suite.brief
+brief test examples/28-ai-pipeline.brief
+brief test examples/32-mcp-integration.brief
+```
+
 ---
 
 ## Error examples (intentional — learn from failures)

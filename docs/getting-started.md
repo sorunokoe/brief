@@ -273,12 +273,91 @@ brief doc my-feature.brief --output docs/my-feature.md
 
 ---
 
+## Advanced Patterns (v0.4 — examples 27–32)
+
+### Test Blocks (`brief test`)
+
+Write tests directly in your `.brief` files. `brief check` parses them without errors;
+`brief test` executes them with mock skills:
+
+```brief
+test "FetchProfile loads user via GraphQL" {
+    mock GraphQL {
+        fn query(op) -> Ok(User { id: "u1", name: "Ada Lovelace" })
+    }
+
+    run FetchProfile
+    assert performed GraphQL.query
+    assert result is Ok
+}
+```
+
+```bash
+brief test examples/14-test-suite.brief
+# ✅ 5 tests passed, 0 failed
+```
+
+### MCP Integration (`@mcp` attribute)
+
+Mark skills that are backed by MCP servers using the `@mcp` type alias:
+
+```brief
+type GitHubMCP   = @mcp GitHub
+type FileSystemMCP = @mcp FileSystem
+```
+
+This signals to the AI agent (and future tooling) that these effects are served
+by a Model Context Protocol server rather than a traditional HTTP API.
+
+See `examples/32-mcp-integration.brief` for a full AI code-review pipeline using
+GitHub + FileSystem + Browser + Database MCP skills.
+
+### AI / RAG Pipeline
+
+Chain LLM calls as typed effects — the compiler ensures every AI capability is declared:
+
+```brief
+import skill "LLM"
+import skill "Embeddings"
+import skill "VectorStore"
+
+task RagSearch : TaskBrief uses [Embeddings, VectorStore, LLM] {
+    goal = "Embed → retrieve → generate grounded answer"
+
+    step Embed   { let embedding = perform Embeddings.embed(query)?; }
+    step Retrieve { let results  = perform VectorStore.search(embedding, topK)?; }
+    step Generate { let answer   = perform LLM.complete(ragPrompt, temperature)?; }
+}
+```
+
+See `examples/28-ai-pipeline.brief` for the full RAG pipeline with tests.
+
+### Event Sourcing
+
+Commands emit typed events; projections replay them. All via `EventStore` effect:
+
+```brief
+sealed type OrderEvent = OrderCreated(String) | OrderPaid(String) | OrderShipped(String)
+
+task PlaceOrder : TaskBrief uses [EventStore, GraphQL] {
+    goal = "Place a new order — emit OrderCreated event"
+
+    step Validate { let cart = perform GraphQL.query(CartQuery)?; }
+    step Emit     { let _    = perform EventStore.append(orderId, OrderCreated(orderId))?; }
+}
+```
+
+See `examples/30-event-sourcing.brief` for commands, projections, and saga orchestration.
+
+---
+
 ## Next: v1.0
 
 v1.0 (stability):
 - Language Specification 1.0 (frozen syntax)
+- CI/CD GitHub Actions workflows (`ci.yml`, `release.yml`)
+- `brief fmt --check` mode for CI diff enforcement
 - Documentation website
 - Performance optimization
-- Editor extension polish
 
 Watch [releases](https://github.com/yourusername/brief/releases) for updates.

@@ -1,4 +1,4 @@
-# Brief Language Specification — v0.3
+# Brief Language Specification — v0.4
 
 > *"If it compiles, the AI has everything it needs."*
 
@@ -254,6 +254,60 @@ step BadDrop {
     // error[E105]: @once binding 'h' is never consumed — resource leak
 }
 ```
+
+---
+
+### 4.10 Test Blocks (`test`)
+
+Test blocks declare in-source tests that can be run with `brief test`. They live at the top level of a `.brief` file, after all task declarations.
+
+**Syntax:**
+```
+'test' STRING '{' test_body '}'
+
+test_body ::=
+    mock_decl*
+    run_stmt
+    assert_stmt*
+
+mock_decl   ::= 'mock' Ident '{' fn_mock+ '}'
+fn_mock     ::= 'fn' Ident '(' ident_list ')' '->' expr
+run_stmt    ::= 'run' Ident ('.' Ident)?
+assert_stmt ::= 'assert' ('not')? assertion_expr
+assertion_expr ::=
+      'performed' Ident '.' Ident
+    | 'result' 'is' ('Ok' | 'Err')
+    | 'eq' expr expr
+```
+
+**Example:**
+```brief
+test "FetchProfile loads user via GraphQL" {
+    mock GraphQL {
+        fn query(op) -> Ok(User { id: "u1", name: "Ada Lovelace" })
+    }
+
+    run FetchProfile
+    assert performed GraphQL.query
+    assert result is Ok
+}
+
+test "Login does not call DesignSystem" {
+    mock Auth {
+        fn login(email, password) -> Ok("tok_abc")
+    }
+
+    run Login.Authenticate
+    assert performed Auth.login
+    assert not performed DesignSystem.profileCard
+}
+```
+
+**Notes:**
+- `brief test <file>` executes all `test { }` blocks in the file using the mock skill system.
+- `brief check <file>` parses and validates the task declarations; test bodies are skipped during type-checking (mocks replace real skill types).
+- `run Task.Step` runs a single step in isolation. `run Task` runs all steps in sequence.
+- Test blocks do **not** contribute to the task's `uses` declaration — they are invisible to the type checker.
 
 ---
 
@@ -553,10 +607,11 @@ kv_pairs       ::= STRING ':' STRING (',' STRING ':' STRING)*
 
 ## 12. Versioning
 
-This document describes Brief v0.3. The language is under active development.
+This document describes Brief v0.4. The language is under active development.
 Syntax and semantics may change between minor versions until v1.0.
 
 **Version history:**
 - `v0.1` — Core language: tasks, steps, effects, sealed types, structs, protocols, skill imports
 - `v0.2` — Ecosystem: `brief test`, `brief fmt`, LSP go-to-def/find-refs, WASM, skill registry
 - `v0.3` — Power types: `@once` linear types, type aliases, effect groups, `brief doc`
+- `v0.4` — Test block support in main parser (`brief check` handles `test { }` files); `@mcp` alias attribute; 32 examples (27–32: composition, AI pipeline, platform branching, event sourcing, concurrency, MCP)

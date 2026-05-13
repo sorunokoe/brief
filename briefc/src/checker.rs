@@ -92,7 +92,7 @@ fn check_type_alias(alias: &TypeAliasDecl, diags: &mut Vec<BriefError>) {
         });
     }
     // Known refinement attributes for type aliases.
-    const KNOWN_ATTRS: &[&str] = &["url", "nonEmpty", "matches", "once", "affine"];
+    const KNOWN_ATTRS: &[&str] = &["url", "nonEmpty", "matches", "once", "affine", "mcp"];
     for attr in &alias.attrs {
         if !KNOWN_ATTRS.contains(&attr.name.as_str()) {
             diags.push(BriefError {

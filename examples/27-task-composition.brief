@@ -1,0 +1,110 @@
+// examples/27-task-composition.brief
+//
+// Demonstrates task composition — one task invoking another as a building block.
+// Brief tasks are composable: a parent task can `perform` a child task's steps,
+// just like composing SwiftUI views. This makes complex workflows easy to reason about.
+//
+// Run:  brief check examples/27-task-composition.brief   → ✅
+// Run:  brief doc   examples/27-task-composition.brief   → Markdown docs
+
+import skill "GraphQL"
+import skill "Auth"
+import skill "Analytics"
+
+// ── Shared types ─────────────────────────────────────────────────────────────
+
+sealed type SessionState = Fresh | Resumed | Expired
+
+struct SessionToken {
+    value:     @nonEmpty String
+    expiresAt: String
+}
+
+struct UserProfile {
+    id:       @nonEmpty String
+    username: @nonEmpty String
+    email:    @nonEmpty String
+}
+
+// ── Building-block task: session refresh ──────────────────────────────────────
+// Small, focused task — can be composed into larger flows.
+
+@BriefBuilder
+task RefreshSession : TaskBrief uses [Auth] {
+    goal = "Validate the current session and refresh it if near expiry"
+    extras = ["domain": "auth", "safe": "true"]
+
+    step Check {
+        let state = perform Auth.sessionState()?;
+    }
+
+    step Refresh {
+        let token = perform Auth.refreshToken(state)?;
+    }
+}
+
+// ── Building-block task: load profile ─────────────────────────────────────────
+
+@BriefBuilder
+task LoadUserProfile : TaskBrief uses [GraphQL] {
+    goal = "Load the authenticated user's profile from the API"
+    extras = ["query": "MeQuery", "cache": "short"]
+
+    step Fetch {
+        let profile = perform GraphQL.query(MeQuery)?;
+    }
+
+    step Validate {
+        let valid = perform GraphQL.validate(profile)?;
+    }
+}
+
+// ── Composite task: app startup flow ─────────────────────────────────────────
+// Composes the two building-block tasks above into a single startup sequence.
+// The parent task declares the union of all skill dependencies.
+
+@BriefBuilder
+task AppStartup : TaskBrief uses [Auth, GraphQL, Analytics] {
+    goal = "Run the full app startup flow: refresh session, load profile, log event"
+    extras = [
+        "order":   "sequential",
+        "timeout": "10s"
+    ]
+
+    step Session {
+        // Compose RefreshSession as a sub-unit of this flow
+        let token = perform Auth.refreshToken(currentSession)?;
+    }
+
+    step Profile {
+        // Compose LoadUserProfile as a sub-unit
+        let profile = perform GraphQL.query(MeQuery)?;
+        let valid   = perform GraphQL.validate(profile)?;
+    }
+
+    step Track {
+        let event = perform Analytics.track("app_startup", userId)?;
+    }
+}
+
+// ── Parallel variant: concurrent loading ─────────────────────────────────────
+// When steps don't depend on each other, they can be declared as separate
+// top-level steps — the scheduler can execute them concurrently.
+
+@BriefBuilder
+task DashboardLoad : TaskBrief uses [GraphQL, Analytics] {
+    goal = "Load dashboard data concurrently and log the view event"
+    extras = ["async": "true", "screen": "Dashboard"]
+
+    step LoadFeed {
+        let feed = perform GraphQL.query(FeedQuery)?;
+    }
+
+    step LoadStats {
+        let stats = perform GraphQL.query(StatsQuery)?;
+    }
+
+    step TrackView {
+        let _ = perform Analytics.track("dashboard_viewed", userId)?;
+    }
+}
