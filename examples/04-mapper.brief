@@ -1,0 +1,35 @@
+// 04-mapper.brief — Example: Mapper task between domain and presentation layers
+//
+// Demonstrates: sealed type, struct definitions, and a mapper task that
+// bridges a domain model to a UI-ready presentation model.
+
+sealed type UserStatus = Active | Inactive | Suspended(String)
+
+struct UserDomain {
+    id:    @nonEmpty String
+    name:  @nonEmpty String
+    email: @matches("[^@]+@[^@]+") String
+}
+
+struct UserPresentation {
+    displayName:    @nonEmpty String
+    avatarInitials: @nonEmpty String
+    statusLabel:    @nonEmpty String
+    isActive:       String
+}
+
+@BriefBuilder
+task UserDomainToPresentation : TaskBrief {
+    goal   = "Map UserDomain to UserPresentation for display in the profile screen"
+    extras = ["platform": "KMP", "direction": "domain→presentation"]
+
+    step MapName {
+        let display  = formatDisplayName(user);
+        let initials = extractInitials(display);
+    }
+
+    step MapStatus {
+        let label    = statusToLabel(user);
+        let isActive = statusIsActive(user);
+    }
+}

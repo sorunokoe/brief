@@ -1,6 +1,6 @@
 use logos::Logos;
 
-/// All tokens in the Brief language (v0.0.1).
+/// All tokens in the Brief language (v0.1).
 /// Keywords take priority over Ident because they are declared first in the enum
 /// and logos applies the longest-then-first-declared rule.
 #[derive(Logos, Debug, PartialEq, Clone)]
@@ -8,16 +8,22 @@ use logos::Logos;
 #[logos(skip r"//[^\n]*")]   // skip line comments
 pub enum Token {
     // ── Keywords ──────────────────────────────────────────────────────────
-    #[token("task")]    Task,
-    #[token("step")]    Step,
-    #[token("import")]  Import,
-    #[token("skill")]   Skill,
-    #[token("uses")]    Uses,
-    #[token("perform")] Perform,
-    #[token("let")]     Let,
-
-    // ── Decorator ─────────────────────────────────────────────────────────
-    #[token("@BriefBuilder")] BriefBuilder,
+    #[token("task")]     Task,
+    #[token("step")]     Step,
+    #[token("import")]   Import,
+    #[token("skill")]    Skill,
+    #[token("uses")]     Uses,
+    #[token("perform")]  Perform,
+    #[token("let")]      Let,
+    #[token("sealed")]   Sealed,
+    #[token("type")]     Type,
+    #[token("struct")]   Struct,
+    #[token("protocol")] Protocol,
+    #[token("effect")]   Effect,
+    #[token("fn")]       Fn,
+    #[token("async")]    Async,
+    #[token("await")]    Await,
+    #[token("return")]   Return,
 
     // ── Literals ──────────────────────────────────────────────────────────
     /// String literal — logos captures the full `"..."` slice; we strip quotes below.
@@ -32,13 +38,18 @@ pub enum Token {
     #[regex(r"[a-zA-Z_][a-zA-Z0-9_]*", |lex| lex.slice().to_string())]
     Ident(String),
 
-    // ── Punctuation ───────────────────────────────────────────────────────
+    // ── Operators & Punctuation ───────────────────────────────────────────
+    #[token("->")] Arrow,   // function return type
     #[token("{")] LBrace,
     #[token("}")] RBrace,
     #[token("[")] LBracket,
     #[token("]")] RBracket,
     #[token("(")] LParen,
     #[token(")")] RParen,
+    #[token("<")]  LAngle,  // generic type arguments
+    #[token(">")]  RAngle,
+    #[token("|")]  Pipe,    // sealed type variant separator
+    #[token("@")]  At,      // decorator / attribute prefix
     #[token(":")] Colon,
     #[token(",")] Comma,
     #[token(".")] Dot,
@@ -93,10 +104,43 @@ mod tests {
     }
 
     #[test]
-    fn lex_skips_comment() {
-        let src = "// this is a comment\ntask";
-        let (toks, _) = lex(src);
-        assert_eq!(toks.len(), 1);
-        assert_eq!(toks[0].token, Token::Task);
+    fn lex_decorator() {
+        let src = "@BriefBuilder\ntask";
+        let (toks, errs) = lex(src);
+        assert!(errs.is_empty(), "unexpected lex errors: {:?}", errs);
+        // @BriefBuilder lexes as: At, Ident("BriefBuilder"), Task
+        assert_eq!(toks[0].token, Token::At);
+        assert!(matches!(&toks[1].token, Token::Ident(s) if s == "BriefBuilder"));
+        assert_eq!(toks[2].token, Token::Task);
+    }
+
+    #[test]
+    fn lex_sealed_type() {
+        let src = "sealed type Platform = iOS | Android";
+        let (toks, errs) = lex(src);
+        assert!(errs.is_empty(), "unexpected lex errors: {:?}", errs);
+        assert_eq!(toks[0].token, Token::Sealed);
+        assert_eq!(toks[1].token, Token::Type);
+        assert!(matches!(&toks[2].token, Token::Ident(s) if s == "Platform"));
+        assert!(toks.iter().any(|t| t.token == Token::Pipe));
+    }
+
+    #[test]
+    fn lex_fn_signature() {
+        let src = "fn query(op: Operation) -> Result";
+        let (toks, errs) = lex(src);
+        assert!(errs.is_empty(), "unexpected lex errors: {:?}", errs);
+        assert_eq!(toks[0].token, Token::Fn);
+        assert_eq!(toks[toks.len()-1].token, Token::Ident("Result".to_string()));
+        assert!(toks.iter().any(|t| t.token == Token::Arrow));
+    }
+
+    #[test]
+    fn lex_generics() {
+        let src = "Result<T, E>";
+        let (toks, errs) = lex(src);
+        assert!(errs.is_empty(), "unexpected lex errors: {:?}", errs);
+        assert_eq!(toks[1].token, Token::LAngle);
+        assert_eq!(toks[toks.len()-1].token, Token::RAngle);
     }
 }

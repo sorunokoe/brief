@@ -1,0 +1,56 @@
+// 05-effect-definition.brief — Example: Defining custom effect interfaces
+//
+// Demonstrates: effect declarations, protocol declarations, and generic types.
+// This file shows how to define the typed interfaces that .briefskill files
+// would normally auto-generate via `brief skillgen`.
+
+sealed type Platform = iOS | Android | Web | KMP
+
+struct FigmaURL {
+    url: @url String
+}
+
+struct GraphQLOperation {
+    name:  @nonEmpty String
+    query: @nonEmpty String
+}
+
+protocol Renderable {
+    fn render() -> Component
+}
+
+protocol Fetchable<T> {
+    fn fetch(id: @nonEmpty String) -> Result
+}
+
+effect DesignSystem {
+    fn profileCard(userId: @nonEmpty String, theme: String) -> Result
+    fn button(label: @nonEmpty String, style: String) -> Result
+    fn colorToken(name: @nonEmpty String) -> Result
+}
+
+effect GraphQL {
+    fn query(op: GraphQLOperation) -> Result
+    fn mutation(op: GraphQLOperation) -> Result
+    fn schema(operationName: @nonEmpty String) -> Result
+}
+
+import skill "DesignSystem"
+import skill "GraphQL"
+
+@BriefBuilder
+task ProfileScreenV2 : TaskBrief uses [DesignSystem, GraphQL] {
+    goal   = "Display user profile — v2 with full effect types defined in brief"
+    extras = [
+        "platform": "iOS",
+        "figmaURL": "https://figma.com/file/abc?node-id=2:1"
+    ]
+
+    step FetchProfile {
+        let user = perform GraphQL.query(UserProfileQuery)?;
+    }
+
+    step RenderCard {
+        let card = perform DesignSystem.profileCard(user, "default")?;
+    }
+}

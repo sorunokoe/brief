@@ -1,4 +1,4 @@
-/// Tree-walking runner for Brief v0.0.1.
+/// Tree-walking runner for Brief v0.1.
 ///
 /// Used by both `brief check` (validation only) and `brief run` (validate + execute).
 /// In Phase 1 this will be complemented by an LLVM backend for `brief build`.
@@ -67,6 +67,29 @@ pub fn run_file(path: &Path, mode: RunMode) -> bool {
     diags.extend(checker::check(&program, &ctx));
 
     // ── 5. Print header ───────────────────────────────────────────────────
+    // Show type declarations (sealed types, structs, effects, protocols)
+    let decl_count = program.types.len() + program.structs.len()
+                   + program.effects.len() + program.protocols.len();
+    if decl_count > 0 {
+        println!();
+        if !program.types.is_empty() {
+            let names: Vec<_> = program.types.iter().map(|t| t.name.as_str()).collect();
+            println!("{} sealed types: {}", "●".blue(), names.join(", ").cyan());
+        }
+        if !program.structs.is_empty() {
+            let names: Vec<_> = program.structs.iter().map(|s| s.name.as_str()).collect();
+            println!("{} structs: {}", "●".blue(), names.join(", ").cyan());
+        }
+        if !program.effects.is_empty() {
+            let names: Vec<_> = program.effects.iter().map(|e| e.name.as_str()).collect();
+            println!("{} effects: {}", "●".blue(), names.join(", ").cyan());
+        }
+        if !program.protocols.is_empty() {
+            let names: Vec<_> = program.protocols.iter().map(|p| p.name.as_str()).collect();
+            println!("{} protocols: {}", "●".blue(), names.join(", ").cyan());
+        }
+    }
+
     for task in &program.tasks {
         print_task_summary(task);
     }
@@ -108,6 +131,10 @@ pub fn run_file(path: &Path, mode: RunMode) -> bool {
 
 fn print_task_summary(task: &Task) {
     println!();
+    // Show decorators
+    for d in &task.decorators {
+        println!("  {} @{}", "✦".blue(), d.name.cyan());
+    }
     println!("{} Brief: {}", "●".blue().bold(), task.name.bold());
     println!("  {:<8} {}", "goal:".dimmed(), task.goal.as_deref().unwrap_or("<missing>").green());
 
@@ -132,23 +159,29 @@ fn print_task_summary(task: &Task) {
     }
 }
 
+fn collect_perform_calls(expr: &crate::ast::Expr) -> Vec<String> {
+    match expr {
+        crate::ast::Expr::Perform { skill, func, .. } => vec![format!("{skill}.{func}()")],
+        crate::ast::Expr::Await { expr: inner, .. }   => collect_perform_calls(inner),
+        crate::ast::Expr::Call  { args, .. }           => {
+            args.iter().flat_map(collect_perform_calls).collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
 fn execute_task(task: &Task) {
     println!("{} Running brief: {}", "●".blue().bold(), task.name.bold());
 
     for step in &task.steps {
         print!("  {} step {}... ", "→".dimmed(), step.name.bold());
-        // v0.0.1: interpret statements by describing what they would do
         let effects: Vec<String> = step.body.iter()
-            .filter_map(|stmt| {
+            .flat_map(|stmt| {
                 let expr = match stmt {
                     crate::ast::Stmt::Let { value, .. }  => value,
                     crate::ast::Stmt::Expr { value, .. } => value,
                 };
-                if let crate::ast::Expr::Perform { skill, func, .. } = expr {
-                    Some(format!("{skill}.{func}()"))
-                } else {
-                    None
-                }
+                collect_perform_calls(expr)
             })
             .collect();
 

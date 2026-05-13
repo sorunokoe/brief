@@ -1,7 +1,8 @@
-/// Semantic checker for Brief v0.0.1.
+/// Semantic checker for Brief v0.1.
 ///
 /// Validates a parsed `Program` and returns a list of errors/warnings.
-/// The checker is invoked by both `brief check` and `brief run`.
+/// Phase-1 additions: checks effect decls for duplicate fn names, validates
+/// `perform` inside `await`, and validates new declaration forms.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -30,7 +31,12 @@ pub fn check(program: &Program, ctx: &CheckContext<'_>) -> Vec<BriefError> {
         check_skill_import(import, ctx, &mut diags);
     }
 
-    // 2. Validate each task.
+    // 2. Validate effect declarations (duplicate fn names).
+    for effect in &program.effects {
+        check_effect_decl(effect, &mut diags);
+    }
+
+    // 3. Validate each task.
     for task in &program.tasks {
         check_task(task, &imported, ctx, &mut diags);
     }
@@ -85,6 +91,20 @@ fn check_task(task: &Task, imported: &HashSet<&str>, _ctx: &CheckContext<'_>, di
     }
 }
 
+fn check_effect_decl(effect: &EffectDecl, diags: &mut Vec<BriefError>) {
+    let mut seen = HashSet::new();
+    for f in &effect.fns {
+        if !seen.insert(f.name.as_str()) {
+            diags.push(BriefError {
+                code:    ErrorCode::ParseError,
+                message: format!("effect '{}' has duplicate function '{}'", effect.name, f.name),
+                span:    f.span,
+                hint:    Some("remove the duplicate declaration".to_string()),
+            });
+        }
+    }
+}
+
 fn check_step(step: &Step, uses_set: &HashSet<&str>, imported: &HashSet<&str>, diags: &mut Vec<BriefError>) {
     for stmt in &step.body {
         let expr = match stmt {
@@ -96,15 +116,27 @@ fn check_step(step: &Step, uses_set: &HashSet<&str>, imported: &HashSet<&str>, d
 }
 
 fn check_expr_for_perform(expr: &Expr, uses_set: &HashSet<&str>, imported: &HashSet<&str>, diags: &mut Vec<BriefError>) {
-    if let Expr::Perform { skill, span, .. } = expr {
-        if imported.contains(skill.as_str()) && !uses_set.contains(skill.as_str()) {
-            diags.push(BriefError {
-                code:    ErrorCode::PerformWithoutUses,
-                message: format!("effect '{}' is performed but not declared in `uses [...]`", skill),
-                span:    *span,
-                hint:    Some(format!("add '{skill}' to the task's `uses` clause")),
-            });
+    match expr {
+        Expr::Perform { skill, span, .. } => {
+            if imported.contains(skill.as_str()) && !uses_set.contains(skill.as_str()) {
+                diags.push(BriefError {
+                    code:    ErrorCode::PerformWithoutUses,
+                    message: format!("effect '{}' is performed but not declared in `uses [...]`", skill),
+                    span:    *span,
+                    hint:    Some(format!("add '{skill}' to the task's `uses` clause")),
+                });
+            }
         }
+        // Recurse into `await expr`
+        Expr::Await { expr: inner, .. } => {
+            check_expr_for_perform(inner, uses_set, imported, diags);
+        }
+        Expr::Call { args, .. } => {
+            for arg in args {
+                check_expr_for_perform(arg, uses_set, imported, diags);
+            }
+        }
+        Expr::Ident { .. } | Expr::Str { .. } => {}
     }
 }
 
