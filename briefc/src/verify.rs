@@ -261,6 +261,10 @@ fn collect_expr_performs<'a>(
         }
         Expr::Await  { expr: inner, .. } => collect_expr_performs(inner, out),
         Expr::Call   { args, ..         } => { for a in args { collect_expr_performs(a, out); } }
+        Expr::Match  { scrutinee, arms   } => {
+            collect_expr_performs(scrutinee, out);
+            for arm in arms { collect_expr_performs(&arm.body, out); }
+        }
         Expr::Ident { .. } | Expr::Str { .. } | Expr::Int { .. } => {}
     }
 }

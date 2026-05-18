@@ -45,6 +45,7 @@ pub enum Token {
     #[token("async")]    Async,
     #[token("await")]    Await,
     #[token("return")]   Return,
+    #[token("match")]    Match,
     #[token("test")]     Test,
 
     // ── Literals ──────────────────────────────────────────────────────────
@@ -82,6 +83,7 @@ pub enum Token {
     #[token(":")] Colon,
     #[token(",")] Comma,
     #[token(".")] Dot,
+    #[token("=>")] FatArrow,
     #[token("=")] Eq,
     #[token("?")] Question,
     #[token(";")] Semi,
@@ -181,6 +183,15 @@ mod tests {
         assert_eq!(toks[0].token, Token::Int(0));
         assert_eq!(toks[1].token, Token::Int(100));
         assert_eq!(toks[2].token, Token::Int(-42));
+    }
+
+    #[test]
+    fn lex_match_tokens() {
+        let (toks, errs) = lex("match value { Ok(v) => v _ => other }");
+        assert!(errs.is_empty(), "unexpected lex errors: {:?}", errs);
+        assert_eq!(toks[0].token, Token::Match);
+        assert!(toks.iter().any(|t| t.token == Token::FatArrow));
+        assert!(toks.iter().any(|t| matches!(&t.token, Token::Ident(name) if name == "_")));
     }
 
     #[test]

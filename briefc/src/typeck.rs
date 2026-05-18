@@ -399,6 +399,12 @@ fn check_expr_types(expr: &Expr, env: &TypeEnv<'_>, diags: &mut Vec<BriefError>)
                 check_expr_types(arg, env, diags);
             }
         }
+        Expr::Match { scrutinee, arms } => {
+            check_expr_types(scrutinee, env, diags);
+            for arm in arms {
+                check_expr_types(&arm.body, env, diags);
+            }
+        }
         Expr::Ident { .. } | Expr::Str { .. } | Expr::Int { .. } => {}
     }
 }

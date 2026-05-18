@@ -337,6 +337,13 @@ fn collect_expr_effects(expr: &crate::ast::Expr) -> Vec<String> {
         crate::ast::Expr::Call  { args, .. }           => {
             args.iter().flat_map(collect_expr_effects).collect()
         }
+        crate::ast::Expr::Match { scrutinee, arms }   => {
+            let mut out = collect_expr_effects(scrutinee);
+            for arm in arms {
+                out.extend(collect_expr_effects(&arm.body));
+            }
+            out
+        }
         _ => Vec::new(),
     }
 }

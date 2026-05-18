@@ -200,6 +200,7 @@ mod backend {
             Expr::Perform { .. } => "Perform",
             Expr::Await { .. }   => "Await",
             Expr::Call { .. }    => "Call",
+            Expr::Match { .. }   => "Match",
         }
     }
 

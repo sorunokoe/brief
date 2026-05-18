@@ -1,0 +1,28 @@
+import skill "DesignSystem"
+
+sealed type Platform = iOS | Android | Web
+
+task RenderForPlatform : TaskBrief uses [DesignSystem] {
+    goal   = "Render UI appropriate for the current platform"
+
+    step Detect {
+        let platform = perform DesignSystem.detectPlatform()?;
+    }
+
+    step Render {
+        let view = match platform {
+            iOS     => perform DesignSystem.renderMobile(platform)?
+            Android => perform DesignSystem.renderMobile(platform)?
+            _       => perform DesignSystem.renderWeb(platform)?
+        };
+    }
+}
+
+test "basic match" {
+    let p = iOS
+    let v = match p {
+        iOS => "mobile"
+        _   => "other"
+    }
+    assert v == "mobile"
+}
