@@ -9,7 +9,6 @@
 ///
 /// Launch with: `brief lsp` (communicates over stdin/stdout).
 /// Configure in VS Code or Zed with: `"languageServerCommand": ["brief", "lsp"]`.
-
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -20,16 +19,31 @@ use tower_lsp::{Client, LanguageServer, LspService, Server};
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+#[derive(Clone)]
+struct OpenDocument {
+    text: String,
+    line_starts: Vec<usize>,
+}
+
+impl OpenDocument {
+    fn new(text: String) -> Self {
+        Self {
+            line_starts: compute_line_starts(&text),
+            text,
+        }
+    }
+}
+
 /// State shared across LSP requests.
 struct BriefLspState {
     /// Source text of each open document, keyed by URI string.
-    documents: HashMap<String, String>,
+    documents: HashMap<String, OpenDocument>,
 }
 
 /// The Brief LSP server.
 pub struct BriefLsp {
     client: Client,
-    state:  Arc<Mutex<BriefLspState>>,
+    state: Arc<Mutex<BriefLspState>>,
 }
 
 impl BriefLsp {
@@ -55,13 +69,13 @@ impl LanguageServer for BriefLsp {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
                     TextDocumentSyncKind::FULL,
                 )),
-                hover_provider:      Some(HoverProviderCapability::Simple(true)),
+                hover_provider: Some(HoverProviderCapability::Simple(true)),
                 definition_provider: Some(OneOf::Left(true)),
                 references_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
-                name:    "brief-lsp".to_string(),
+                name: "brief-lsp".to_string(),
                 version: Some(env!("CARGO_PKG_VERSION").to_string()),
             }),
         })
@@ -80,15 +94,15 @@ impl LanguageServer for BriefLsp {
     // ── Document sync ────────────────────────────────────────────────────
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
-        let uri  = params.text_document.uri.to_string();
-        let text = params.text_document.text;
+        let uri = params.text_document.uri.to_string();
+        let document = OpenDocument::new(params.text_document.text);
 
         {
             let mut state = self.state.lock().await;
-            state.documents.insert(uri.clone(), text.clone());
+            state.documents.insert(uri.clone(), document.clone());
         }
 
-        self.publish_diagnostics(uri, text).await;
+        self.publish_diagnostics(uri, document).await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
@@ -101,21 +115,23 @@ impl LanguageServer for BriefLsp {
             .last()
             .map(|c| c.text)
             .unwrap_or_default();
+        let document = OpenDocument::new(text);
 
         {
             let mut state = self.state.lock().await;
-            state.documents.insert(uri.clone(), text.clone());
+            state.documents.insert(uri.clone(), document.clone());
         }
 
-        self.publish_diagnostics(uri, text).await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        self.publish_diagnostics(uri, document).await;
     }
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
         let uri = params.text_document.uri.to_string();
         let state = self.state.lock().await;
-        if let Some(text) = state.documents.get(&uri).cloned() {
+        if let Some(document) = state.documents.get(&uri).cloned() {
             drop(state);
-            self.publish_diagnostics(uri, text).await;
+            self.publish_diagnostics(uri, document).await;
         }
     }
 
@@ -126,28 +142,28 @@ impl LanguageServer for BriefLsp {
 
         // Clear diagnostics for closed file.
         self.client
-            .publish_diagnostics(
-                params.text_document.uri,
-                vec![],
-                None,
-            )
+            .publish_diagnostics(params.text_document.uri, vec![], None)
             .await;
     }
 
     // ── Hover ────────────────────────────────────────────────────────────
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
-        let uri = params.text_document_position_params.text_document.uri.to_string();
+        let uri = params
+            .text_document_position_params
+            .text_document
+            .uri
+            .to_string();
         let pos = params.text_document_position_params.position;
 
         let state = self.state.lock().await;
-        let text = match state.documents.get(&uri) {
-            Some(t) => t.clone(),
-            None    => return Ok(None),
+        let document = match state.documents.get(&uri) {
+            Some(document) => document.clone(),
+            None => return Ok(None),
         };
         drop(state);
 
-        Ok(hover_at(&text, pos))
+        Ok(hover_at(&document.text, pos, &document.line_starts))
     }
 
     // ── Go-to-definition ─────────────────────────────────────────────────
@@ -156,24 +172,30 @@ impl LanguageServer for BriefLsp {
         &self,
         params: GotoDefinitionParams,
     ) -> Result<Option<GotoDefinitionResponse>> {
-        let uri = params.text_document_position_params.text_document.uri.clone();
+        let uri = params
+            .text_document_position_params
+            .text_document
+            .uri
+            .clone();
         let pos = params.text_document_position_params.position;
 
         let state = self.state.lock().await;
-        let text = match state.documents.get(&uri.to_string()) {
-            Some(t) => t.clone(),
-            None    => return Ok(None),
+        let document = match state.documents.get(&uri.to_string()) {
+            Some(document) => document.clone(),
+            None => return Ok(None),
         };
         drop(state);
 
-        let word = word_at(&text, pos);
-        if word.is_empty() { return Ok(None); }
+        let word = word_at(&document.text, pos);
+        if word.is_empty() {
+            return Ok(None);
+        }
 
-        let index = build_symbol_index(&text);
+        let index = build_symbol_index(&document.text);
         if let Some(&span) = index.get(word.as_str()) {
-            let start = offset_to_position(&text, span.start);
-            let end   = offset_to_position(&text, span.end);
-            let loc   = Location {
+            let start = offset_to_position(span.start, &document.line_starts);
+            let end = offset_to_position(span.end, &document.line_starts);
+            let loc = Location {
                 uri,
                 range: Range { start, end },
             };
@@ -189,17 +211,21 @@ impl LanguageServer for BriefLsp {
         let pos = params.text_document_position.position;
 
         let state = self.state.lock().await;
-        let text = match state.documents.get(&uri.to_string()) {
-            Some(t) => t.clone(),
-            None    => return Ok(None),
+        let document = match state.documents.get(&uri.to_string()) {
+            Some(document) => document.clone(),
+            None => return Ok(None),
         };
         drop(state);
 
-        let word = word_at(&text, pos);
-        if word.is_empty() { return Ok(None); }
+        let word = word_at(&document.text, pos);
+        if word.is_empty() {
+            return Ok(None);
+        }
 
-        let locs = find_references(&text, &word, &uri);
-        if locs.is_empty() { return Ok(None); }
+        let locs = find_references(&document.text, &word, &uri, &document.line_starts);
+        if locs.is_empty() {
+            return Ok(None);
+        }
         Ok(Some(locs))
     }
 }
@@ -209,21 +235,19 @@ impl LanguageServer for BriefLsp {
 // ─────────────────────────────────────────────────────────────────────────────
 
 impl BriefLsp {
-    async fn publish_diagnostics(&self, uri_str: String, source: String) {
-        let diags = validate_source(&source);
+    async fn publish_diagnostics(&self, uri_str: String, document: OpenDocument) {
+        let diags = validate_source(&document.text);
         let lsp_diags: Vec<Diagnostic> = diags
             .iter()
-            .map(|e| brief_error_to_lsp(e, &source))
+            .map(|e| brief_error_to_lsp(e, &document.line_starts))
             .collect();
 
         let uri: tower_lsp::lsp_types::Url = match uri_str.parse() {
-            Ok(u)  => u,
+            Ok(u) => u,
             Err(_) => return,
         };
 
-        self.client
-            .publish_diagnostics(uri, lsp_diags, None)
-            .await;
+        self.client.publish_diagnostics(uri, lsp_diags, None).await;
     }
 }
 
@@ -239,10 +263,10 @@ fn validate_source(source: &str) -> Vec<crate::errors::BriefError> {
         return lex_errors
             .iter()
             .map(|(start, end)| crate::errors::BriefError {
-                code:    crate::errors::ErrorCode::ParseError,
+                code: crate::errors::ErrorCode::ParseError,
                 message: format!("unrecognised character at byte {}–{}", start, end),
-                span:    crate::ast::Span::new(*start, *end),
-                hint:    None,
+                span: crate::ast::Span::new(*start, *end),
+                hint: None,
             })
             .collect();
     }
@@ -250,19 +274,28 @@ fn validate_source(source: &str) -> Vec<crate::errors::BriefError> {
     let (program, parse_errors) = parse(&tokens, source);
 
     let file_dir = std::path::Path::new(".");
-    let cwd      = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let ctx      = CheckContext { file_dir, cwd: &cwd, manifest: None, brief_path: None, allow_missing_skills: false };
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let ctx = CheckContext {
+        file_dir,
+        cwd: &cwd,
+        manifest: None,
+        brief_path: None,
+        allow_missing_skills: false,
+    };
 
     let mut diags: Vec<crate::errors::BriefError> = parse_errors;
     diags.extend(checker::check(&program, &ctx));
-    diags.extend(typeck::type_check_with_skills(&program, std::collections::HashMap::new()));
+    diags.extend(typeck::type_check_with_skills(
+        &program,
+        std::collections::HashMap::new(),
+    ));
     diags
 }
 
 /// Convert a `BriefError` (byte-span) to an LSP `Diagnostic` (line/char positions).
-fn brief_error_to_lsp(err: &crate::errors::BriefError, source: &str) -> Diagnostic {
-    let start = offset_to_position(source, err.span.start);
-    let end   = offset_to_position(source, err.span.end);
+fn brief_error_to_lsp(err: &crate::errors::BriefError, line_starts: &[usize]) -> Diagnostic {
+    let start = offset_to_position(err.span.start, line_starts);
+    let end = offset_to_position(err.span.end, line_starts);
 
     let severity = if err.is_error() {
         DiagnosticSeverity::ERROR
@@ -309,9 +342,9 @@ pub fn build_symbol_index_owned(source: &str) -> HashMap<String, crate::ast::Spa
     use crate::lexer::lex;
     use crate::parser::parse;
 
-    let (tokens, _)  = lex(source);
+    let (tokens, _) = lex(source);
     let (program, _) = parse(&tokens, source);
-    let mut index    = HashMap::new();
+    let mut index = HashMap::new();
 
     for import in &program.imports {
         index.insert(import.name.clone(), import.span);
@@ -349,12 +382,12 @@ pub fn build_symbol_index_owned(source: &str) -> HashMap<String, crate::ast::Spa
 
 /// Find every occurrence of `word` (whole-word match) in `source`.
 /// Returns LSP `Location` for each match, scoped to the given document URI.
-fn find_references(source: &str, word: &str, uri: &Url) -> Vec<Location> {
+fn find_references(source: &str, word: &str, uri: &Url, line_starts: &[usize]) -> Vec<Location> {
     let mut locs = Vec::new();
     let wlen = word.len();
 
     // Scan for all offsets where `word` appears as a whole word.
-    let bytes  = source.as_bytes();
+    let bytes = source.as_bytes();
     let wbytes = word.as_bytes();
     let mut pos = 0usize;
 
@@ -362,13 +395,13 @@ fn find_references(source: &str, word: &str, uri: &Url) -> Vec<Location> {
         if bytes[pos..pos + wlen] == *wbytes {
             // Check word boundaries
             let before_ok = pos == 0 || !is_ident_char(bytes[pos - 1]);
-            let after_ok  = pos + wlen >= bytes.len() || !is_ident_char(bytes[pos + wlen]);
+            let after_ok = pos + wlen >= bytes.len() || !is_ident_char(bytes[pos + wlen]);
 
             if before_ok && after_ok {
-                let start = offset_to_position(source, pos);
-                let end   = offset_to_position(source, pos + wlen);
+                let start = offset_to_position(pos, line_starts);
+                let end = offset_to_position(pos + wlen, line_starts);
                 locs.push(Location {
-                    uri:   uri.clone(),
+                    uri: uri.clone(),
                     range: Range { start, end },
                 });
             }
@@ -389,12 +422,13 @@ fn is_ident_char(b: u8) -> bool {
 
 /// Return hover information for the word at `pos` in `source`.
 /// Currently surfaces `perform <Effect>.<fn>` call signatures.
-fn hover_at(source: &str, pos: Position) -> Option<Hover> {
+fn hover_at(source: &str, pos: Position, line_starts: &[usize]) -> Option<Hover> {
     let offset = position_to_offset(source, pos)?;
 
     // Find the word boundaries around the cursor.
     let bytes = source.as_bytes();
-    let start = (0..offset).rev()
+    let start = (0..offset)
+        .rev()
         .take_while(|&i| bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' || bytes[i] == b'.')
         .last()
         .unwrap_or(offset);
@@ -405,7 +439,9 @@ fn hover_at(source: &str, pos: Position) -> Option<Hover> {
         .unwrap_or(offset);
 
     let word = &source[start..end];
-    if word.is_empty() { return None; }
+    if word.is_empty() {
+        return None;
+    }
 
     // Check if we're hovering inside a perform call: `perform Effect.fn`
     // Look backwards for `perform ` before the word.
@@ -414,29 +450,29 @@ fn hover_at(source: &str, pos: Position) -> Option<Hover> {
         // Parse the program to get effect signatures.
         use crate::lexer::lex;
         use crate::parser::parse;
-        let (tokens, _)  = lex(source);
+        let (tokens, _) = lex(source);
         let (program, _) = parse(&tokens, source);
 
         if let Some((effect_name, fn_name)) = word.split_once('.') {
             for effect in &program.effects {
                 if effect.name == effect_name {
                     if let Some(sig) = effect.fns.iter().find(|f| f.name == fn_name) {
-                        let params = sig.params.iter()
+                        let params = sig
+                            .params
+                            .iter()
                             .map(|p| format!("{}: {}", p.name, p.ty.name))
                             .collect::<Vec<_>>()
                             .join(", ");
-                        let text = format!(
-                            "```brief\nfn {fn_name}({params}) -> {}\n```",
-                            sig.ret.name
-                        );
+                        let text =
+                            format!("```brief\nfn {fn_name}({params}) -> {}\n```", sig.ret.name);
                         return Some(Hover {
                             contents: HoverContents::Markup(MarkupContent {
-                                kind:  MarkupKind::Markdown,
+                                kind: MarkupKind::Markdown,
                                 value: text,
                             }),
                             range: Some(Range {
-                                start: offset_to_position(source, start),
-                                end:   offset_to_position(source, end),
+                                start: offset_to_position(start, line_starts),
+                                end: offset_to_position(end, line_starts),
                             }),
                         });
                     }
@@ -456,12 +492,13 @@ fn hover_at(source: &str, pos: Position) -> Option<Hover> {
 fn word_at(source: &str, pos: Position) -> String {
     let offset = match position_to_offset(source, pos) {
         Some(o) => o,
-        None    => return String::new(),
+        None => return String::new(),
     };
 
     let bytes = source.as_bytes();
     // Expand left
-    let start = (0..offset).rev()
+    let start = (0..offset)
+        .rev()
         .take_while(|&i| bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' || bytes[i] == b'.')
         .last()
         .unwrap_or(offset);
@@ -479,22 +516,32 @@ fn word_at(source: &str, pos: Position) -> String {
 // Position utilities
 // ─────────────────────────────────────────────────────────────────────────────
 
+fn compute_line_starts(text: &str) -> Vec<usize> {
+    let mut starts = vec![0usize];
+    for (i, ch) in text.char_indices() {
+        if ch == '\n' {
+            starts.push(i + 1);
+        }
+    }
+    starts
+}
+
 /// Convert a byte offset to an LSP `Position` (0-indexed line + character).
-pub fn offset_to_position(source: &str, offset: usize) -> Position {
-    let safe_offset = offset.min(source.len());
-    let before = &source[..safe_offset];
-    let line = before.chars().filter(|&c| c == '\n').count() as u32;
-    let character = before
-        .rfind('\n')
-        .map(|nl| safe_offset - nl - 1)
-        .unwrap_or(safe_offset) as u32;
-    Position { line, character }
+pub fn offset_to_position(offset: usize, line_starts: &[usize]) -> Position {
+    let line = line_starts
+        .partition_point(|&start| start <= offset)
+        .saturating_sub(1);
+    let character = offset - line_starts[line];
+    Position {
+        line: line as u32,
+        character: character as u32,
+    }
 }
 
 /// Convert an LSP `Position` to a byte offset.
 fn position_to_offset(source: &str, pos: Position) -> Option<usize> {
     let mut line = 0u32;
-    let mut col  = 0u32;
+    let mut col = 0u32;
     for (i, ch) in source.char_indices() {
         if line == pos.line && col == pos.character {
             return Some(i);
@@ -504,7 +551,7 @@ fn position_to_offset(source: &str, pos: Position) -> Option<usize> {
                 return Some(i); // cursor at end of line
             }
             line += 1;
-            col   = 0;
+            col = 0;
         } else {
             col += 1;
         }
@@ -521,7 +568,7 @@ fn position_to_offset(source: &str, pos: Position) -> Option<usize> {
 
 /// Start the Brief LSP server over stdin/stdout.
 pub async fn run_lsp_server() {
-    let stdin  = tokio::io::stdin();
+    let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
 
     let (service, socket) = LspService::new(BriefLsp::new);
@@ -537,28 +584,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_offset_to_position_first_line() {
-        let src = "hello world";
-        assert_eq!(offset_to_position(src, 0),  Position { line: 0, character: 0 });
-        assert_eq!(offset_to_position(src, 5),  Position { line: 0, character: 5 });
-        assert_eq!(offset_to_position(src, 11), Position { line: 0, character: 11 });
+    fn offset_to_position_first_line() {
+        let starts = compute_line_starts("hello\nworld\n");
+        let pos = offset_to_position(3, &starts);
+        assert_eq!(pos.line, 0);
+        assert_eq!(pos.character, 3);
     }
 
     #[test]
-    fn test_offset_to_position_multiline() {
-        let src = "line1\nline2\nline3";
-        assert_eq!(offset_to_position(src, 0),  Position { line: 0, character: 0 });
-        assert_eq!(offset_to_position(src, 6),  Position { line: 1, character: 0 });
-        assert_eq!(offset_to_position(src, 10), Position { line: 1, character: 4 });
-        assert_eq!(offset_to_position(src, 12), Position { line: 2, character: 0 });
+    fn offset_to_position_second_line() {
+        let starts = compute_line_starts("hello\nworld\n");
+        let pos = offset_to_position(9, &starts);
+        assert_eq!(pos.line, 1);
+        assert_eq!(pos.character, 3);
+    }
+
+    #[test]
+    fn offset_to_position_empty_line() {
+        let starts = compute_line_starts("a\n\nb\n");
+        let pos = offset_to_position(2, &starts);
+        assert_eq!(pos.line, 1);
+        assert_eq!(pos.character, 0);
+    }
+
+    #[test]
+    fn offset_to_position_no_trailing_newline() {
+        let starts = compute_line_starts("abc");
+        let pos = offset_to_position(2, &starts);
+        assert_eq!(pos.line, 0);
+        assert_eq!(pos.character, 2);
     }
 
     #[test]
     fn test_position_to_offset_roundtrip() {
         let src = "line1\nline2\nline3";
+        let starts = compute_line_starts(src);
         let offsets = [0, 3, 6, 9, 12];
         for &o in &offsets {
-            let pos = offset_to_position(src, o);
+            let pos = offset_to_position(o, &starts);
             let back = position_to_offset(src, pos).unwrap();
             assert_eq!(back, o, "offset {o} did not roundtrip");
         }
@@ -617,7 +680,8 @@ mod tests {
     fn test_find_references_word() {
         let src = "task Login : TaskBrief { goal = \"g\" }\n// Login is great\n";
         let uri: Url = "file:///tmp/test.brief".parse().unwrap();
-        let locs = find_references(src, "Login", &uri);
+        let starts = compute_line_starts(src);
+        let locs = find_references(src, "Login", &uri, &starts);
         // Should find at least 2: declaration + comment usage
         assert!(locs.len() >= 2, "expected >= 2 refs, got {}", locs.len());
     }
@@ -626,7 +690,8 @@ mod tests {
     fn test_find_references_whole_word_only() {
         let src = "task Login : TaskBrief { goal = \"g\" }\ntask LoginAdmin : TaskBrief { goal = \"h\" }\n";
         let uri: Url = "file:///tmp/test.brief".parse().unwrap();
-        let locs = find_references(src, "Login", &uri);
+        let starts = compute_line_starts(src);
+        let locs = find_references(src, "Login", &uri, &starts);
         // "LoginAdmin" contains "Login" but is not a whole-word match
         for loc in &locs {
             let start_off = loc.range.start.character as usize;
@@ -642,18 +707,23 @@ mod tests {
     fn test_word_at_ident() {
         let src = "task Hello : TaskBrief { }";
         //              ^5
-        let pos = Position { line: 0, character: 5 };
+        let pos = Position {
+            line: 0,
+            character: 5,
+        };
         assert_eq!(word_at(src, pos), "Hello");
     }
 
     #[test]
     fn test_word_at_empty() {
         let src = "task Hello : TaskBrief { }";
-        let pos = Position { line: 0, character: 4 }; // space
-        // space before H → empty or "Hello" depending on direction; either is ok
+        let pos = Position {
+            line: 0,
+            character: 4,
+        }; // space
+           // space before H → empty or "Hello" depending on direction; either is ok
         let w = word_at(src, pos);
         // should not crash
         let _ = w;
     }
 }
-
