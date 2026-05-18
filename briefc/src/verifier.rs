@@ -8,6 +8,7 @@
 /// Protocol: minimal MCP subset (initialize → tools/call).
 
 use std::io::{BufRead, BufReader, Write};
+use std::net::{IpAddr, ToSocketAddrs};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -70,15 +71,125 @@ pub fn dispatch(
 // ─────────────────────────────────────────────────────────────────────────────
 // Built-in: @url
 
+/// Returns true if `ip` belongs to a private/link-local/loopback/reserved range.
+fn is_private_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            // 10.0.0.0/8
+            o[0] == 10 ||
+            // 172.16.0.0/12
+            (o[0] == 172 && (16..=31).contains(&o[1])) ||
+            // 192.168.0.0/16
+            (o[0] == 192 && o[1] == 168) ||
+            // 127.0.0.0/8 loopback
+            o[0] == 127 ||
+            // 169.254.0.0/16 link-local (AWS metadata, APIPA)
+            (o[0] == 169 && o[1] == 254) ||
+            // 0.0.0.0/8
+            o[0] == 0 ||
+            // 100.64.0.0/10 carrier-grade NAT shared space
+            (o[0] == 100 && (64..=127).contains(&o[1])) ||
+            // 198.18.0.0/15 network benchmark
+            (o[0] == 198 && (o[1] == 18 || o[1] == 19))
+        }
+        IpAddr::V6(v6) => {
+            v6.is_loopback() ||
+            v6.is_unspecified() ||
+            // Link-local fe80::/10
+            (v6.segments()[0] & 0xffc0) == 0xfe80 ||
+            // Unique-local fc00::/7
+            (v6.segments()[0] & 0xfe00) == 0xfc00 ||
+            // IPv4-mapped ::ffff:x.x.x.x — check the mapped address
+            v6.to_ipv4_mapped().map_or(false, |v4| is_private_ip(IpAddr::V4(v4)))
+        }
+    }
+}
+
+/// Extract the hostname from an http:// or https:// URL.
+/// Returns `None` if the URL cannot be parsed or contains a userinfo component
+/// (e.g. `http://evil@127.0.0.1/`), which can be used to bypass host extraction.
+fn extract_host(url: &str) -> Option<(&str, u16)> {
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))?;
+    let is_https = url.starts_with("https://");
+
+    // Reject userinfo (anything with `@` before the first `/`).
+    let path_start = rest.find('/').unwrap_or(rest.len());
+    if rest[..path_start].contains('@') {
+        return None;
+    }
+
+    // Handle bracketed IPv6: `[::1]:8080`.
+    if rest.starts_with('[') {
+        let close = rest.find(']')?;
+        let host = &rest[1..close];
+        let after = &rest[close + 1..];
+        let port = if let Some(port_str) = after.strip_prefix(':') {
+            let port_end = port_str.find(['/', '?', '#']).unwrap_or(port_str.len());
+            port_str[..port_end].parse().ok()?
+        } else {
+            if is_https { 443 } else { 80 }
+        };
+        return Some((host, port));
+    }
+
+    // Regular host[:port].
+    let host_port = &rest[..path_start];
+    if let Some((h, p)) = host_port.split_once(':') {
+        Some((h, p.parse().ok()?))
+    } else {
+        Some((host_port, if is_https { 443 } else { 80 }))
+    }
+}
+
 fn builtin_url(url: &str) -> VerificationResult {
     if !url.starts_with("http://") && !url.starts_with("https://") {
         return VerificationResult::fail("only http/https URLs are supported");
     }
 
-    // Try HEAD first; fall back to GET if HEAD is not allowed.
+    // ── SSRF pre-flight ─────────────────────────────────────────────────────
+    // Resolve the hostname to IP(s) and block private/link-local addresses.
+    // Note: DNS rebinding can change the answer between this check and ureq's
+    // own resolution. Redirects are disabled below to eliminate redirect-based
+    // SSRF bypass vectors.
+    let (host, port) = match extract_host(url) {
+        Some(hp) => hp,
+        None => return VerificationResult::fail("invalid or unsafe URL (userinfo component)"),
+    };
+
+    let addr_str = if host.contains(':') {
+        // IPv6 literal — brackets already stripped by extract_host.
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    };
+
+    let resolved: Vec<_> = match addr_str.to_socket_addrs() {
+        Ok(it) => it.collect(),
+        Err(e)  => return VerificationResult::fail(&format!("DNS resolution failed: {e}")),
+    };
+
+    if resolved.is_empty() {
+        return VerificationResult::fail("hostname resolved to no addresses");
+    }
+
+    for addr in &resolved {
+        if is_private_ip(addr.ip()) {
+            return VerificationResult::fail(&format!(
+                "SSRF blocked: {host} resolves to private/reserved address {}",
+                addr.ip()
+            ));
+        }
+    }
+
+    // ── HTTP probe ──────────────────────────────────────────────────────────
+    // Redirects are disabled: a public URL that redirects to 169.254.x.x
+    // would otherwise bypass the pre-flight check above.
     let agent = ureq::builder()
         .timeout(Duration::from_secs(10))
-        .redirects(3)
+        .redirects(0)
         .build();
 
     let head_result = agent.head(url).call();
@@ -86,7 +197,7 @@ fn builtin_url(url: &str) -> VerificationResult {
     match head_result {
         Ok(r) if r.status() < 400 => VerificationResult::ok(),
         Err(ureq::Error::Status(405, _)) | Ok(_) => {
-            // Either 405 (HEAD not allowed) or a non-2xx HEAD — try GET.
+            // 405 (HEAD not allowed) or non-2xx HEAD — try GET.
             match agent.get(url).call() {
                 Ok(r) if r.status() < 400 => VerificationResult::ok(),
                 Ok(r)  => VerificationResult::fail(&format!("HTTP {}", r.status())),

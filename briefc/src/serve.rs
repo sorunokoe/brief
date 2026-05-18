@@ -67,7 +67,13 @@ pub fn run_serve(path: &Path) -> bool {
         return false;
     }
 
-    // ── 2. Validate .brief.lock ─────────────────────────────────────────────
+    // ── 2. Load manifest (needed for lock-age config) ───────────────────────
+    let file_dir = path.parent().unwrap_or(Path::new("."));
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mf = manifest::load_manifest(file_dir);
+    let max_lock_age = mf.as_ref().map_or(24, |m| m.verify.max_lock_age_hours);
+
+    // ── 3. Validate .brief.lock ─────────────────────────────────────────────
     let lock_path = lock::lock_path(path);
     match lock::read_lock(&lock_path) {
         None => {
@@ -76,10 +82,17 @@ pub fn run_serve(path: &Path) -> bool {
             return false;
         }
         Some(lock_file) => {
-            match lock::check_lock(&lock_file, source_bytes, 24) {
+            match lock::check_lock(&lock_file, source_bytes, max_lock_age) {
                 LockState::Fresh => {}
                 LockState::Stale => {
-                    eprintln!("{}", "✗ Contract expired (lock > 24h old).".red().bold());
+                    let age_display = if max_lock_age == 0 {
+                        "never expires — treating as fresh".to_string()
+                    } else {
+                        format!("lock > {}h old", max_lock_age)
+                    };
+                    // max_lock_age == 0 means "never expire"; check_lock returns Fresh for that.
+                    // This arm is only reached for genuinely stale locks.
+                    eprintln!("{}", format!("✗ Contract expired ({age_display}).").red().bold());
                     eprintln!("  Run {} to refresh.", "`brief verify`".cyan());
                     return false;
                 }
@@ -88,19 +101,11 @@ pub fn run_serve(path: &Path) -> bool {
                     eprintln!("  Run {} to re-seal.", "`brief verify`".cyan());
                     return false;
                 }
-                LockState::Missing => {
-                    eprintln!("{}", "✗ No lock file found.".red().bold());
-                    eprintln!("  Run {} first.", "`brief verify`".cyan());
-                    return false;
-                }
             }
         }
     }
 
-    // ── 3. Load manifest + interfaces ──────────────────────────────────────
-    let file_dir = path.parent().unwrap_or(Path::new("."));
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let mf = manifest::load_manifest(file_dir);
+    // ── 4. Load interfaces ──────────────────────────────────────────────────
 
     let ctx = CheckContext {
         file_dir,
@@ -122,11 +127,13 @@ pub fn run_serve(path: &Path) -> bool {
         }
     }
 
-    // Collect @once params: "SkillName.fnName:param_idx" → true
-    let once_fns = collect_once_fns(&ifaces);
+    // Collect @once functions from two sources:
+    // 1. .briefskill return type annotations (`-> @once ReturnType`)
+    // 2. @once let bindings in the parsed .brief program
+    let once_fns = collect_once_fns(&ifaces, &program);
     let mut consumed_handles: HashSet<String> = HashSet::new();
 
-    // ── 4. MCP server loop ──────────────────────────────────────────────────
+    // ── 5. MCP server loop ──────────────────────────────────────────────────
     eprintln!("{} Brief MCP server ready (contract sealed: {})",
         "●".green().bold(), path.display()
     );
@@ -200,27 +207,36 @@ pub fn run_serve(path: &Path) -> bool {
                     }
                     Some(sn) => {
                         let sn = sn.clone();
-                        // @once enforcement.
                         let fn_name = tool_name.split_once("__")
                             .map(|(_, f)| f)
                             .unwrap_or(tool_name);
 
-                        if let Some(violation) = check_once_violation(
-                            &sn, fn_name, &arguments, &once_fns, &consumed_handles
-                        ) {
-                            let err = json_error(id, -32600, &violation);
-                            send_line(&mut out, &err);
-                            continue;
-                        }
-
-                        // Record consumed handles.
-                        record_handles(&sn, fn_name, &arguments, &once_fns, &mut consumed_handles);
-
                         // Proxy call to skill MCP server.
                         let result = proxy_tool_call(&sn, fn_name, arguments, &ctx, mf.as_ref());
                         let resp = match result {
-                            Ok(content) => json_response(id, json!({ "content": content })),
-                            Err(msg)    => json_error(id, -32603, &msg),
+                            Ok(content) => {
+                                // @once enforcement: check the response content hash.
+                                // We hash the RESPONSE (not the call args) so that two
+                                // legitimate calls with the same args (producing different
+                                // handles/tokens) are both allowed, while a duplicate
+                                // handle being produced a second time is caught.
+                                if once_fns.contains(&format!("{sn}::{fn_name}")) {
+                                    let hash = lock::sha256_file_hash(
+                                        serde_json::to_string(&content)
+                                            .unwrap_or_default()
+                                            .as_bytes(),
+                                    );
+                                    if consumed_handles.contains(&hash) {
+                                        let err = json_error(id, -32600,
+                                            &format!("@once violation: {sn}.{fn_name} returned a handle that has already been consumed"));
+                                        send_line(&mut out, &err);
+                                        continue;
+                                    }
+                                    consumed_handles.insert(hash);
+                                }
+                                json_response(id, json!({ "content": content }))
+                            }
+                            Err(msg) => json_error(id, -32603, &msg),
                         };
                         send_line(&mut out, &resp);
                     }
@@ -265,51 +281,44 @@ fn build_tools_list(ifaces: &HashMap<String, SkillInterface>) -> Vec<Value> {
 // ─────────────────────────────────────────────────────────────────────────────
 // @once enforcement
 
-/// "@once" tracking is based on the @once let-binding annotation in the .brief AST.
-/// Functions whose return type includes "Handle" will have their call results tracked.
-/// A second invocation with the same arguments is blocked.
-fn collect_once_fns(ifaces: &HashMap<String, SkillInterface>) -> HashSet<String> {
+/// Collect the set of "SkillName::fnName" keys that have `@once` semantics.
+///
+/// Two sources are consulted:
+/// 1. `.briefskill` return type annotations — `fn charge() -> @once PaymentHandle`
+/// 2. `@once let handle = perform Skill.fn(...)` bindings in the parsed `.brief` program
+fn collect_once_fns(
+    ifaces:  &HashMap<String, SkillInterface>,
+    program: &Program,
+) -> HashSet<String> {
     let mut set = HashSet::new();
+
+    // Source 1: .briefskill return type — starts with "@once " prefix.
+    // Also keep the legacy "Handle" heuristic for briefskill files generated
+    // before explicit @once return-type support was added.
     for (skill_name, iface) in ifaces {
         for f in &iface.funcs {
-            // Track functions returning Handle types for @once enforcement.
-            if f.return_type.contains("Handle") || f.return_type.starts_with("Handle") {
+            let rt = f.return_type.trim();
+            if rt.starts_with("@once ") || rt.contains("Handle") {
                 set.insert(format!("{skill_name}::{}", f.name));
             }
         }
     }
+
+    // Source 2: `@once let handle = perform Skill.fn(...)` in task bodies.
+    use crate::ast::{Stmt, Expr};
+    for task in &program.tasks {
+        for step in &task.steps {
+            for stmt in &step.body {
+                if let Stmt::Let { attrs, value: Expr::Perform { skill, func, .. }, .. } = stmt {
+                    if attrs.iter().any(|a| a == "once") {
+                        set.insert(format!("{skill}::{func}"));
+                    }
+                }
+            }
+        }
+    }
+
     set
-}
-
-fn check_once_violation(
-    skill:       &str,
-    fn_name:     &str,
-    args:        &Value,
-    once_fns:    &HashSet<String>,
-    consumed:    &HashSet<String>,
-) -> Option<String> {
-    let fn_key = format!("{skill}::{fn_name}");
-    if !once_fns.contains(&fn_key) { return None; }
-    let args_key = format!("{fn_key}::{args}");
-    if consumed.contains(&args_key) {
-        return Some(format!(
-            "@once violation: {skill}.{fn_name} with these arguments has already been consumed"
-        ));
-    }
-    None
-}
-
-fn record_handles(
-    skill:    &str,
-    fn_name:  &str,
-    args:     &Value,
-    once_fns: &HashSet<String>,
-    consumed: &mut HashSet<String>,
-) {
-    let fn_key = format!("{skill}::{fn_name}");
-    if once_fns.contains(&fn_key) {
-        consumed.insert(format!("{fn_key}::{args}"));
-    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -496,6 +505,6 @@ fn send_line(out: &mut impl Write, msg: &Value) {
 }
 
 fn write_jsonrpc(w: &mut impl Write, msg: &Value) -> std::io::Result<()> {
-    let s = serde_json::to_string(msg).unwrap();
+    let s = serde_json::to_string(msg).unwrap_or_else(|_| "{}".to_string());
     writeln!(w, "{s}")
 }

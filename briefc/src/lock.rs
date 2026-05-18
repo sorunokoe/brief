@@ -156,8 +156,6 @@ pub fn write_lock(lock_path: &Path, lock: &LockFile) -> std::io::Result<()> {
 pub enum LockState {
     /// Lock is present, source hash matches, and is within `max_age_hours`.
     Fresh,
-    /// Lock file does not exist.
-    Missing,
     /// Lock exists but source SHA-256 doesn't match the current brief file.
     SourceChanged,
     /// Lock is older than `max_age_hours`.
@@ -166,8 +164,13 @@ pub enum LockState {
 
 /// Check the freshness of a lock file against the current brief source.
 ///
+/// Takes a parsed `&LockFile` — by the time this is called, the file exists and was
+/// parsed successfully. As a result, this function can only return `Fresh`, `Stale`,
+/// or `SourceChanged`. There is no `Missing` variant; call sites handle the
+/// "file not found" case before calling this function.
+///
 /// - `brief_source`: contents of the `.brief` file
-/// - `max_age_hours`: maximum allowed age (default 24h)
+/// - `max_age_hours`: maximum allowed age; `0` means "never expire"
 pub fn check_lock(lock: &LockFile, brief_source: &[u8], max_age_hours: u64) -> LockState {
     let expected = sha256_file_hash(brief_source);
     if lock.meta.brief_hash != expected {

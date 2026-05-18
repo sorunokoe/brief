@@ -100,10 +100,12 @@ pub fn run_file(path: &Path, mode: RunMode) -> bool {
     // ── 4c. Deduplicate diagnostics by (code, span) ───────────────────────
     // Multiple passes (checker + typeck) can produce identical diagnostics when
     // the same issue is caught by more than one analysis phase.
-    let mut seen: HashSet<(u32, u32, u32)> = HashSet::new();
+    // Use Display string as key — ErrorCode has no #[repr(u32)] so casting to
+    // u32 is implementation-defined and may collapse distinct variants.
+    let mut seen: HashSet<(String, u32, u32)> = HashSet::new();
     diags.retain(|d| {
         let key = (
-            d.code.clone() as u32,
+            d.code.to_string(),
             d.span.start as u32,
             d.span.end as u32,
         );
@@ -251,6 +253,9 @@ fn print_task_summary(task: &Task) {
     } else {
         let skills = task.uses.join(", ");
         println!("  {:<8} [{}]", "skills:".dimmed(), skills.cyan());
+    }
+    if !task.effects.is_empty() {
+        println!("  {:<8} [{}]", "effects:".dimmed(), task.effects.join(", ").cyan());
     }
 
     if let Some(extras) = &task.extras {

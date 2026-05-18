@@ -79,6 +79,7 @@ pub fn check(program: &Program, ctx: &CheckContext<'_>) -> Vec<BriefError> {
         check_type_alias(alias, &mut diags);
     }
 
+    let skill_ifaces = load_skill_interfaces(program, ctx);
     let type_env = TypeEnv::from_program(program);
 
     // 4. Validate each task (with group expansion and linear binding tracking).
@@ -88,6 +89,7 @@ pub fn check(program: &Program, ctx: &CheckContext<'_>) -> Vec<BriefError> {
             &imported,
             &groups,
             &inline_effects,
+            &skill_ifaces,
             &type_env,
             ctx,
             &mut diags,
@@ -95,7 +97,6 @@ pub fn check(program: &Program, ctx: &CheckContext<'_>) -> Vec<BriefError> {
     }
 
     // 5. Spec coverage: load skill interfaces, then check test block coverage.
-    let skill_ifaces = load_skill_interfaces(program, ctx);
     for test in &program.tests {
         check_test_spec_coverage(test, &skill_ifaces, &mut diags);
     }
@@ -164,6 +165,7 @@ fn check_task(
     imported: &HashSet<&str>,
     groups: &HashMap<&str, Vec<&str>>,
     inline_effects: &HashMap<(&str, &str), &[Attribute]>,
+    skill_ifaces: &HashMap<String, SkillInterface>,
     type_env: &TypeEnv<'_>,
     _ctx: &CheckContext<'_>,
     diags: &mut Vec<BriefError>,
@@ -212,15 +214,19 @@ fn check_task(
     //   step_linear = bindings declared @once in the current step.
     // This lets us detect cross-step E104/E105 violations.
     let uses_set: HashSet<&str> = expanded_uses.iter().copied().collect();
+    let task_effects: HashSet<&str> = task.effects.iter().map(String::as_str).collect();
     let base_locals = task_base_locals(task);
     let mut task_linear: HashMap<String, (Span, usize)> = HashMap::new();
 
     for step in &task.steps {
         check_step(
+            task,
             step,
             &uses_set,
+            &task_effects,
             imported,
             inline_effects,
+            skill_ifaces,
             type_env,
             &base_locals,
             &mut task_linear,
@@ -358,10 +364,13 @@ fn check_effect_decl(effect: &EffectDecl, diags: &mut Vec<BriefError>) {
 }
 
 fn check_step(
+    task: &Task,
     step: &Step,
     uses_set: &HashSet<&str>,
+    task_effects: &HashSet<&str>,
     imported: &HashSet<&str>,
     inline_effects: &HashMap<(&str, &str), &[Attribute]>,
+    skill_ifaces: &HashMap<String, SkillInterface>,
     env: &TypeEnv<'_>,
     base_locals: &LocalTypes,
     task_linear: &mut HashMap<String, (Span, usize)>,
@@ -376,7 +385,17 @@ fn check_step(
     // First pass: validate performs, match exhaustiveness, and collect step_linear bindings.
     for stmt in &step.body {
         let expr = stmt_value(stmt);
-        check_expr_semantics(expr, uses_set, imported, env, &locals, diags);
+        check_expr_semantics(
+            expr,
+            &task.name,
+            uses_set,
+            task_effects,
+            imported,
+            skill_ifaces,
+            env,
+            &locals,
+            diags,
+        );
 
         if let Stmt::Let {
             attrs,
@@ -551,15 +570,18 @@ fn count_ident_uses(expr: &Expr, linear: &mut HashMap<String, (Span, usize)>) {
 
 fn check_expr_semantics(
     expr: &Expr,
+    task_name: &str,
     uses_set: &HashSet<&str>,
+    task_effects: &HashSet<&str>,
     _imported: &HashSet<&str>,
+    skill_ifaces: &HashMap<String, SkillInterface>,
     env: &TypeEnv<'_>,
     locals: &LocalTypes,
     diags: &mut Vec<BriefError>,
 ) {
     match expr {
         Expr::Perform {
-            skill, span, args, ..
+            skill, func, span, args, ..
         } => {
             if !uses_set.contains(skill.as_str()) {
                 diags.push(BriefError {
@@ -572,20 +594,78 @@ fn check_expr_semantics(
                     hint: Some(format!("add '{skill}' to the task's `uses` clause")),
                 });
             }
+            if let Some(iface) = skill_ifaces.get(skill) {
+                for effect in &iface.effects {
+                    if !task_effects.contains(effect.as_str()) {
+                        diags.push(BriefError {
+                            code: ErrorCode::EffectContractViolation,
+                            message: format!(
+                                "task '{}' uses skill '{}.{}' which produces effect '{}', but '{}' is not declared in task effects",
+                                task_name, skill, func, effect, effect
+                            ),
+                            span: *span,
+                            hint: Some(format!(
+                                "add '{}' to task '{}' `effects [...]`",
+                                effect, task_name
+                            )),
+                        });
+                    }
+                }
+            }
             for arg in args {
-                check_expr_semantics(arg, uses_set, _imported, env, locals, diags);
+                check_expr_semantics(
+                    arg,
+                    task_name,
+                    uses_set,
+                    task_effects,
+                    _imported,
+                    skill_ifaces,
+                    env,
+                    locals,
+                    diags,
+                );
             }
         }
         Expr::Await { expr: inner, .. } => {
-            check_expr_semantics(inner, uses_set, _imported, env, locals, diags);
+            check_expr_semantics(
+                inner,
+                task_name,
+                uses_set,
+                task_effects,
+                _imported,
+                skill_ifaces,
+                env,
+                locals,
+                diags,
+            );
         }
         Expr::Call { args, .. } => {
             for arg in args {
-                check_expr_semantics(arg, uses_set, _imported, env, locals, diags);
+                check_expr_semantics(
+                    arg,
+                    task_name,
+                    uses_set,
+                    task_effects,
+                    _imported,
+                    skill_ifaces,
+                    env,
+                    locals,
+                    diags,
+                );
             }
         }
         Expr::Match { scrutinee, arms } => {
-            check_expr_semantics(scrutinee, uses_set, _imported, env, locals, diags);
+            check_expr_semantics(
+                scrutinee,
+                task_name,
+                uses_set,
+                task_effects,
+                _imported,
+                skill_ifaces,
+                env,
+                locals,
+                diags,
+            );
             let scrutinee_ty = infer_expr_type(scrutinee, env, locals);
             for arm in arms {
                 let mut arm_locals = locals.clone();
@@ -594,7 +674,17 @@ fn check_expr_semantics(
                 {
                     arm_locals.insert(binding, binding_ty);
                 }
-                check_expr_semantics(&arm.body, uses_set, _imported, env, &arm_locals, diags);
+                check_expr_semantics(
+                    &arm.body,
+                    task_name,
+                    uses_set,
+                    task_effects,
+                    _imported,
+                    skill_ifaces,
+                    env,
+                    &arm_locals,
+                    diags,
+                );
             }
             check_match_exhaustiveness(expr, scrutinee_ty.as_ref(), arms, env, diags);
         }
@@ -1033,7 +1123,6 @@ fn check_lock_gate(
 
     match check_lock(&lock, &source_bytes, max_age_hours) {
         LockState::Fresh => {}                // all good
-        LockState::Missing => unreachable!(), // handled above
         LockState::SourceChanged => {
             diags.push(BriefError {
                 code: ErrorCode::LockRequired,
@@ -1715,6 +1804,59 @@ mod tests {
                 .iter()
                 .all(|d| d.code != ErrorCode::BriefBuilderProvidesMissing),
             "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn effect_contract_allows_declared_skill_effects() {
+        let skill_content = r#"
+        effects [network]
+        interface NetworkService {
+            fn fetch(url: String) -> Response
+        }
+        "#;
+        let src = r#"
+import skill "NetworkService"
+task Fetch : TaskBrief uses [NetworkService] {
+    goal = "fetch"
+    effects [network]
+    step Run {
+        let result = perform NetworkService.fetch("https://api.example.com")?;
+    }
+}
+"#;
+        let diags = check_src_with_skills(src, &[("NetworkService", skill_content)]);
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.code != ErrorCode::EffectContractViolation),
+            "unexpected E209: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn effect_contract_rejects_undeclared_skill_effects() {
+        let skill_content = r#"
+        effects [network]
+        interface NetworkService {
+            fn fetch(url: String) -> Response
+        }
+        "#;
+        let src = r#"
+import skill "NetworkService"
+task Fetch : TaskBrief uses [NetworkService] {
+    goal = "fetch"
+    step Run {
+        let result = perform NetworkService.fetch("https://api.example.com")?;
+    }
+}
+"#;
+        let diags = check_src_with_skills(src, &[("NetworkService", skill_content)]);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == ErrorCode::EffectContractViolation),
+            "expected E209: {diags:?}"
         );
     }
 

@@ -245,8 +245,10 @@ fn collect_obligations(
         }
     }
 
-    // Deduplicate by (annotation, value).
-    out.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
+    // Deduplicate by (annotation, value) — dedup_by only removes consecutive
+    // duplicates and the vec is unsorted, so use a HashSet for correctness.
+    let mut seen_pairs: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+    out.retain(|(ann, val, _)| seen_pairs.insert((ann.clone(), val.clone())));
     out
 }
 
