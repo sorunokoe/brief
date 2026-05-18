@@ -83,7 +83,15 @@ pub fn check(program: &Program, ctx: &CheckContext<'_>) -> Vec<BriefError> {
 
     // 4. Validate each task (with group expansion and linear binding tracking).
     for task in &program.tasks {
-        check_task(task, &imported, &groups, &inline_effects, &type_env, ctx, &mut diags);
+        check_task(
+            task,
+            &imported,
+            &groups,
+            &inline_effects,
+            &type_env,
+            ctx,
+            &mut diags,
+        );
     }
 
     // 5. Spec coverage: load skill interfaces, then check test block coverage.
@@ -156,9 +164,9 @@ fn check_task(
     imported: &HashSet<&str>,
     groups: &HashMap<&str, Vec<&str>>,
     inline_effects: &HashMap<(&str, &str), &[Attribute]>,
-    type_env:       &TypeEnv<'_>,
-    _ctx:           &CheckContext<'_>,
-    diags:          &mut Vec<BriefError>,
+    type_env: &TypeEnv<'_>,
+    _ctx: &CheckContext<'_>,
+    diags: &mut Vec<BriefError>,
 ) {
     // E101: goal is required.
     if task.goal.is_none() {
@@ -235,24 +243,36 @@ fn check_task(
 fn type_ref_str(ty: &TypeRef) -> String {
     let mut s = ty.name.clone();
     if !ty.args.is_empty() {
-        let args = ty.args.iter().map(type_ref_str).collect::<Vec<_>>().join(", ");
+        let args = ty
+            .args
+            .iter()
+            .map(type_ref_str)
+            .collect::<Vec<_>>()
+            .join(", ");
         s.push_str(&format!("<{args}>"));
     }
-    if ty.optional { s.push('?'); }
+    if ty.optional {
+        s.push('?');
+    }
     s
 }
 
 fn check_task_extras(task: &Task, env: &TypeEnv<'_>, diags: &mut Vec<BriefError>) {
-    let Some(extras) = &task.extras else { return; };
+    let Some(extras) = &task.extras else {
+        return;
+    };
     let extras_span = task.extras_span.unwrap_or(task.span);
 
     match extras {
         ExtrasNode::StringMap(_) => {
             diags.push(BriefError {
-                code:    ErrorCode::DeprecatedStringExtras,
+                code: ErrorCode::DeprecatedStringExtras,
                 message: "string extras are deprecated — use typed extras { } instead".to_string(),
-                span:    extras_span,
-                hint:    Some("replace `extras = [\"key\": \"val\", ...]` with `extras { field: Type }`".to_string()),
+                span: extras_span,
+                hint: Some(
+                    "replace `extras = [\"key\": \"val\", ...]` with `extras { field: Type }`"
+                        .to_string(),
+                ),
             });
         }
         ExtrasNode::TypedRecord(fields) => {
@@ -279,10 +299,10 @@ fn check_brief_builder_provides(task: &Task, diags: &mut Vec<BriefError>) {
 
 fn check_extras_field_type(
     field_name: &str,
-    ty:         &TypeRef,
-    span:       Span,
-    env:        &TypeEnv<'_>,
-    diags:      &mut Vec<BriefError>,
+    ty: &TypeRef,
+    span: Span,
+    env: &TypeEnv<'_>,
+    diags: &mut Vec<BriefError>,
 ) {
     if !env.type_exists(&ty.name, &[]) {
         let ty_name = type_ref_str(ty);
@@ -462,8 +482,31 @@ fn count_ident_uses(expr: &Expr, linear: &mut HashMap<String, (Span, usize)>) {
         }
         Expr::Match { scrutinee, arms } => {
             count_ident_uses(scrutinee, linear);
+
+            let template: HashMap<String, (Span, usize)> = linear
+                .iter()
+                .map(|(name, (span, _))| (name.clone(), (*span, 0)))
+                .collect();
+            let mut max_arm_uses: HashMap<String, usize> =
+                linear.keys().cloned().map(|name| (name, 0)).collect();
+
             for arm in arms {
-                count_ident_uses(&arm.body, linear);
+                let mut arm_linear = template.clone();
+                if let Pattern::Variant1(_, binding) = &arm.pattern {
+                    arm_linear.remove(binding);
+                }
+                count_ident_uses(&arm.body, &mut arm_linear);
+                for (name, (_, count)) in arm_linear {
+                    if let Some(max_count) = max_arm_uses.get_mut(&name) {
+                        *max_count = (*max_count).max(count);
+                    }
+                }
+            }
+
+            for (name, count) in max_arm_uses {
+                if let Some((_, total)) = linear.get_mut(&name) {
+                    *total += count;
+                }
             }
         }
         Expr::Await { expr: inner, .. } => count_ident_uses(inner, linear),
@@ -1052,6 +1095,114 @@ mod tests {
     }
 
     #[test]
+    fn match_variant_bindings_are_scoped_to_their_arms() {
+        let diags = check_all_src(
+            r#"
+            import skill "Auth"
+            effect Auth {
+                fn load(user_id: String) -> Result<String, String>
+            }
+            task HandleResult : TaskBrief uses [Auth] {
+                goal = "handle"
+                step Handle {
+                    let result = perform Auth.load(user_id)?;
+                    let value = match result {
+                        Ok(user) => user
+                        Err(e) => e
+                    };
+                }
+            }
+        "#,
+        );
+        let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    }
+
+    #[test]
+    fn match_wildcard_arm_checks_successfully() {
+        let diags = check_all_src(
+            r#"
+            sealed type Platform = iOS | Android | Web
+            task Render : TaskBrief {
+                goal = "render"
+                extras { platform: Platform }
+                step Render {
+                    let view = match platform {
+                        iOS => "a"
+                        _ => "b"
+                    };
+                }
+            }
+        "#,
+        );
+        let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    }
+
+    #[test]
+    fn nested_perform_in_match_arm_checks_successfully() {
+        let diags = check_all_src(
+            r#"
+            import skill "Skill"
+            sealed type Platform = iOS | Android | Web
+            effect Skill {
+                fn mobile() -> String
+                fn web() -> String
+            }
+            task Render : TaskBrief uses [Skill] {
+                goal = "render"
+                extras { platform: Platform }
+                step Render {
+                    let view = match platform {
+                        iOS => perform Skill.mobile()?
+                        _ => perform Skill.web()?
+                    };
+                }
+            }
+        "#,
+        );
+        let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    }
+
+    #[test]
+    fn linear_binding_used_in_multiple_match_arms_is_not_reused() {
+        let diags = check_src(
+            r#"
+            import skill "Payment"
+            sealed type Platform = iOS | Android | Web
+            effect Payment {
+                fn charge(amount: String) -> @once Handle
+                fn confirm(handle: Handle) -> String
+            }
+            task Pay : TaskBrief uses [Payment] {
+                goal = "pay"
+                extras { platform: Platform }
+                step Decide {
+                    let handle = perform Payment.charge(amount)?;
+                    let receipt = match platform {
+                        iOS => perform Payment.confirm(handle)?
+                        Android => perform Payment.confirm(handle)?
+                        _ => "skip"
+                    };
+                }
+            }
+        "#,
+        );
+        let linear_errors: Vec<_> = diags
+            .iter()
+            .filter(|d| {
+                d.code == ErrorCode::LinearBindingDropped
+                    || d.code == ErrorCode::LinearBindingReused
+            })
+            .collect();
+        assert!(
+            linear_errors.is_empty(),
+            "unexpected linear errors: {linear_errors:?}"
+        );
+    }
+
+    #[test]
     fn error_on_missing_goal() {
         let diags = check_src("task T : TaskBrief {}");
         assert!(
@@ -1203,7 +1354,12 @@ mod tests {
             }
         "#;
         let diags = check_str(src);
-        assert!(diags.iter().all(|d| d.code != ErrorCode::UnknownExtrasField), "{diags:?}");
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.code != ErrorCode::UnknownExtrasField),
+            "{diags:?}"
+        );
     }
 
     #[test]
@@ -1215,7 +1371,12 @@ mod tests {
             }
         "#;
         let diags = check_str(src);
-        assert!(diags.iter().any(|d| d.code == ErrorCode::UnknownExtrasField), "{diags:?}");
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == ErrorCode::UnknownExtrasField),
+            "{diags:?}"
+        );
     }
 
     #[test]
@@ -1227,7 +1388,12 @@ mod tests {
             }
         "#;
         let diags = check_str(src);
-        assert!(diags.iter().any(|d| d.code == ErrorCode::DeprecatedStringExtras), "{diags:?}");
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == ErrorCode::DeprecatedStringExtras),
+            "{diags:?}"
+        );
     }
 
     #[test]
@@ -1241,7 +1407,9 @@ mod tests {
         "#;
         let diags = check_str(src);
         assert!(
-            diags.iter().all(|d| d.code != ErrorCode::UnknownExtrasField),
+            diags
+                .iter()
+                .all(|d| d.code != ErrorCode::UnknownExtrasField),
             "{diags:?}"
         );
     }

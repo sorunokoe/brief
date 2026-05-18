@@ -191,6 +191,25 @@ impl<'a> TypeEnv<'a> {
     pub fn effect(&self, name: &str) -> Option<&&'a EffectDecl> {
         self.effects.get(name)
     }
+
+    pub fn sealed_type(&self, name: &str) -> Option<&'a SealedTypeDecl> {
+        self.sealed_types.get(name).copied()
+    }
+
+    pub fn sealed_variant_field_type(
+        &self,
+        type_name: &str,
+        variant_name: &str,
+    ) -> Option<TypeRef> {
+        self.sealed_type(type_name)
+            .and_then(|sealed| {
+                sealed
+                    .variants
+                    .iter()
+                    .find(|variant| variant.name == variant_name)
+            })
+            .and_then(|variant| variant.fields.first().cloned())
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -332,23 +351,53 @@ fn check_fn_sig(
 // Task type checking
 // ─────────────────────────────────────────────────────────────────────────────
 
+type LocalTypes = HashMap<String, TypeRef>;
+
 fn check_task_types(task: &Task, env: &TypeEnv<'_>, diags: &mut Vec<BriefError>) {
+    let base_locals = task_base_locals(task);
     for step in &task.steps {
-        check_step_types(step, env, diags);
+        check_step_types(step, env, &base_locals, diags);
     }
 }
 
-fn check_step_types(step: &Step, env: &TypeEnv<'_>, diags: &mut Vec<BriefError>) {
+fn task_base_locals(task: &Task) -> LocalTypes {
+    let mut locals = HashMap::new();
+    if let Some(ExtrasNode::TypedRecord(fields)) = &task.extras {
+        for field in fields {
+            locals.insert(field.name.clone(), field.type_ref.clone());
+        }
+    }
+    locals
+}
+
+fn check_step_types(
+    step: &Step,
+    env: &TypeEnv<'_>,
+    base_locals: &LocalTypes,
+    diags: &mut Vec<BriefError>,
+) {
+    let mut locals = base_locals.clone();
     for stmt in &step.body {
         let expr = match stmt {
             Stmt::Let { value, .. } => value,
             Stmt::Expr { value, .. } => value,
         };
-        check_expr_types(expr, env, diags);
+        check_expr_types(expr, env, &locals, diags);
+
+        if let Stmt::Let { name, value, .. } = stmt {
+            if let Some(ty) = infer_expr_type(value, env, &locals) {
+                locals.insert(name.clone(), ty);
+            }
+        }
     }
 }
 
-fn check_expr_types(expr: &Expr, env: &TypeEnv<'_>, diags: &mut Vec<BriefError>) {
+fn check_expr_types(
+    expr: &Expr,
+    env: &TypeEnv<'_>,
+    locals: &LocalTypes,
+    diags: &mut Vec<BriefError>,
+) {
     match expr {
         Expr::Perform {
             skill,
@@ -390,22 +439,97 @@ fn check_expr_types(expr: &Expr, env: &TypeEnv<'_>, diags: &mut Vec<BriefError>)
             }
             // Recurse into args.
             for arg in args {
-                check_expr_types(arg, env, diags);
+                check_expr_types(arg, env, locals, diags);
             }
         }
-        Expr::Await { expr: inner, .. } => check_expr_types(inner, env, diags),
+        Expr::Await { expr: inner, .. } => check_expr_types(inner, env, locals, diags),
         Expr::Call { args, .. } => {
             for arg in args {
-                check_expr_types(arg, env, diags);
+                check_expr_types(arg, env, locals, diags);
             }
         }
         Expr::Match { scrutinee, arms } => {
-            check_expr_types(scrutinee, env, diags);
+            check_expr_types(scrutinee, env, locals, diags);
+            let scrutinee_ty = infer_expr_type(scrutinee, env, locals);
             for arm in arms {
-                check_expr_types(&arm.body, env, diags);
+                let mut arm_locals = locals.clone();
+                if let Some((binding, binding_ty)) =
+                    match_pattern_binding(&arm.pattern, scrutinee_ty.as_ref(), env, arm.span)
+                {
+                    arm_locals.insert(binding, binding_ty);
+                }
+                check_expr_types(&arm.body, env, &arm_locals, diags);
             }
         }
         Expr::Ident { .. } | Expr::Str { .. } | Expr::Int { .. } => {}
+    }
+}
+
+fn infer_expr_type(expr: &Expr, env: &TypeEnv<'_>, locals: &LocalTypes) -> Option<TypeRef> {
+    match expr {
+        Expr::Ident { name, .. } => locals.get(name).cloned(),
+        Expr::Str { span, .. } => Some(TypeRef {
+            name: "String".to_string(),
+            args: Vec::new(),
+            optional: false,
+            span: *span,
+        }),
+        Expr::Int { span, .. } => Some(TypeRef {
+            name: "Int".to_string(),
+            args: Vec::new(),
+            optional: false,
+            span: *span,
+        }),
+        Expr::Perform { skill, func, .. } => env.effect_fn(skill, func).map(|sig| sig.ret.clone()),
+        Expr::Await { expr: inner, .. } => infer_expr_type(inner, env, locals),
+        Expr::Call { .. } | Expr::Match { .. } => None,
+    }
+}
+
+fn match_pattern_binding(
+    pattern: &Pattern,
+    scrutinee_ty: Option<&TypeRef>,
+    env: &TypeEnv<'_>,
+    span: Span,
+) -> Option<(String, TypeRef)> {
+    match pattern {
+        Pattern::Variant1(variant, binding) => Some((
+            binding.clone(),
+            pattern_binding_type(variant, scrutinee_ty, env, span),
+        )),
+        Pattern::Variant(_) | Pattern::Wildcard => None,
+    }
+}
+
+fn pattern_binding_type(
+    variant_name: &str,
+    scrutinee_ty: Option<&TypeRef>,
+    env: &TypeEnv<'_>,
+    span: Span,
+) -> TypeRef {
+    scrutinee_ty
+        .and_then(|ty| builtin_variant_binding_type(ty, variant_name))
+        .or_else(|| {
+            scrutinee_ty.and_then(|ty| env.sealed_variant_field_type(&ty.name, variant_name))
+        })
+        .unwrap_or_else(|| default_binding_type(span))
+}
+
+fn builtin_variant_binding_type(scrutinee_ty: &TypeRef, variant_name: &str) -> Option<TypeRef> {
+    match (scrutinee_ty.name.as_str(), variant_name) {
+        ("Result", "Ok") if !scrutinee_ty.args.is_empty() => Some(scrutinee_ty.args[0].clone()),
+        ("Result", "Err") if scrutinee_ty.args.len() >= 2 => Some(scrutinee_ty.args[1].clone()),
+        ("Option", "Some") if !scrutinee_ty.args.is_empty() => Some(scrutinee_ty.args[0].clone()),
+        _ => None,
+    }
+}
+
+fn default_binding_type(span: Span) -> TypeRef {
+    TypeRef {
+        name: "String".to_string(),
+        args: Vec::new(),
+        optional: false,
+        span,
     }
 }
 
