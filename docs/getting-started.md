@@ -46,6 +46,25 @@ test "boundary coverage" {
 }
 ```
 
+### Typed Extras
+
+When a task needs structured metadata or runtime inputs, prefer typed extras over the deprecated string-map form:
+
+```brief
+sealed type Platform = iOS | Android | Web
+
+task ReviewPR : TaskBrief {
+    goal = "Fetch a pull request and write a review summary to a file"
+
+    extras {
+        platform: Platform
+        repository: String
+    }
+}
+```
+
+`extras { ... }` gives the compiler a schema it can validate. The old `extras = ["key": "value"]` form still parses, but it emits W103.
+
 ### Step 2 — Generate skill interfaces
 
 Brief needs typed `.briefskill` interfaces to type-check your `perform` calls. Put skill docs in `.claude/skills/<Name>/README.md` with an `## Interface` section, then:

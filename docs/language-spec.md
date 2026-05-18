@@ -345,7 +345,11 @@ decorator*
 
 task_body ::=
     ('goal' '=' STRING)?
-    ('extras' '=' '[' kv_pairs ']')?
+    (
+        'extras' '=' '[' kv_pairs ']'      // deprecated — emits W103
+      | 'extras' '{' typed_fields '}'
+    )?
+    ('provides' '{' typed_fields '}')?
     step_decl*
 ```
 
@@ -353,36 +357,75 @@ task_body ::=
 
 - `goal` — **required** in v0.1. A human-readable description of what this task accomplishes. This is the primary input the AI agent uses to understand the task scope.
 
-### 5.3 Optional Fields
+### 5.3 Extras
 
-- `extras` — a string key-value map for arbitrary metadata. Common keys:
-  - `"platform"` — `"iOS"`, `"Android"`, `"KMP"`, `"Web"`
-  - `"figmaURL"` — Figma node URL for UI tasks
-  - `"graphqlSchema"` — path or URL to GraphQL schema for domain tasks
+Brief supports two `extras` forms:
+
+- Legacy string-map syntax:
+
+  ```brief
+  extras = ["key": "value", "version": "1.0"]  // deprecated — emits W103
+  ```
+
+- Typed record syntax:
+
+  ```brief
+  extras {
+      platform: Platform
+      environment: Environment
+  }
+  ```
+
+Typed extras declare metadata or runtime inputs the compiler can check. Each field type must resolve to a declared type (typically a sealed type) or to one of the built-in scalars `String`, `Bool`, `Int`, or `Float`. If an extras field references an unknown type, Brief emits **E208**.
 
 ### 5.4 The `@BriefBuilder` Decorator
 
 `@BriefBuilder` marks a task as using the composable builder pattern. In v0.1, this is a marker that indicates the task may be composed with other tasks. Full composability semantics are defined in v0.2.
 
+Builder tasks should declare the typed outputs they produce:
+
+```brief
+@BriefBuilder
+task MyBuilder : TaskBrief {
+    provides {
+        artifact: Artifact
+        buildId: String
+    }
+    ...
+}
+```
+
+If an `@BriefBuilder` task omits `provides { ... }`, Brief emits **W104**.
+
 ### 5.5 Example
 
 ```brief
 import skill "DesignSystem"
-import skill "GraphQL"
+
+sealed type Platform = iOS | Android | Web
+sealed type Environment = Production | Staging | Development
 
 @BriefBuilder
-task ProfileScreen : TaskBrief uses [DesignSystem, GraphQL] {
-    goal   = "Display the user profile screen with avatar, name, and recent activity"
-    extras = ["platform": "iOS", "figmaURL": "https://figma.com/file/abc?node-id=1:2"]
+task DeploymentBrief : TaskBrief uses [DesignSystem] {
+    goal = "Deploy the app for a given platform and environment"
 
-    step FetchProfile {
-        let user = perform GraphQL.query(UserProfileQuery)?
+    extras {
+        platform: Platform
+        environment: Environment
     }
 
-    step RenderProfile {
-        let card  = perform DesignSystem.profileCard(user, theme: .default)?
-        let badge = perform DesignSystem.button("Edit Profile", style: .secondary)?
-        display(card, badge)
+    provides {
+        deploymentUrl: String
+        buildId: String
+    }
+
+    step Build {
+        let artifact = perform DesignSystem.buildArtifact(platform, environment)?
+    }
+
+    step Deploy {
+        let deploymentUrl = "https://staging.example.com"
+        let buildId = "build-42"
     }
 }
 ```
@@ -579,7 +622,11 @@ task_decl      ::= decorator* 'task' Ident ':' 'TaskBrief'
                    ( 'uses' '[' ident_list ']' )?
                    '{' task_body '}'
 task_body      ::= ('goal' '=' STRING)?
-                   ('extras' '=' '[' kv_pairs ']')?
+                   (
+                     'extras' '=' '[' kv_pairs ']'
+                   | 'extras' '{' typed_fields '}'
+                   )?
+                   ('provides' '{' typed_fields '}')?
                    step_decl*
 step_decl      ::= 'step' Ident '{' stmt* '}'
 
@@ -602,6 +649,8 @@ arg_list       ::= ( expr (',' expr)* )?
 decorator      ::= '@' Ident ( '(' arg_list ')' )?
 ident_list     ::= Ident (',' Ident)*
 kv_pairs       ::= STRING ':' STRING (',' STRING ':' STRING)*
+typed_fields   ::= typed_field*
+typed_field    ::= Ident ':' type_ref
 ```
 
 ---
