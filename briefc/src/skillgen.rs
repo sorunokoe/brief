@@ -137,7 +137,8 @@ pub fn skillgen_check(skill_path: &Path) -> bool {
 #[derive(Debug, Clone)]
 pub struct SkillInterface {
     #[allow(dead_code)]
-    pub name:  String,
+    pub name: String,
+    pub effects: Vec<String>,
     pub funcs: Vec<SkillFn>,
 }
 
@@ -182,6 +183,7 @@ pub struct SkillFn {
 /// Returns `None` if the file cannot be parsed at all.
 pub fn parse_briefskill(content: &str) -> Option<SkillInterface> {
     let mut name: Option<String> = None;
+    let mut effects = Vec::new();
     let mut funcs = Vec::new();
     let mut in_interface = false;
 
@@ -189,7 +191,16 @@ pub fn parse_briefskill(content: &str) -> Option<SkillInterface> {
         let t = line.trim();
 
         // Skip comment lines.
-        if t.starts_with("//") { continue; }
+        if t.starts_with("//") {
+            continue;
+        }
+
+        if !in_interface {
+            if let Some(parsed_effects) = parse_effects_decl(t) {
+                effects = parsed_effects;
+                continue;
+            }
+        }
 
         // `interface SkillName {`
         if t.starts_with("interface ") && t.ends_with('{') {
@@ -206,12 +217,14 @@ pub fn parse_briefskill(content: &str) -> Option<SkillInterface> {
 
         if in_interface {
             if let Some(sig) = parse_fn_sig(t) {
-                let params: Vec<SkillParam> = sig.params.iter()
+                let params: Vec<SkillParam> = sig
+                    .params
+                    .iter()
                     .map(|(pname, ptype)| parse_skill_param(pname, ptype))
                     .collect();
                 funcs.push(SkillFn {
-                    name:        sig.name,
-                    arg_count:   params.len(),
+                    name: sig.name,
+                    arg_count: params.len(),
                     params,
                     return_type: sig.return_type,
                 });
@@ -219,7 +232,24 @@ pub fn parse_briefskill(content: &str) -> Option<SkillInterface> {
         }
     }
 
-    name.map(|n| SkillInterface { name: n, funcs })
+    name.map(|n| SkillInterface {
+        name: n,
+        effects,
+        funcs,
+    })
+}
+
+fn parse_effects_decl(line: &str) -> Option<Vec<String>> {
+    let rest = line.strip_prefix("effects")?.trim();
+    let inner = rest.strip_prefix('[')?.strip_suffix(']')?;
+    Some(
+        inner
+            .split(',')
+            .map(str::trim)
+            .filter(|effect| !effect.is_empty())
+            .map(ToString::to_string)
+            .collect(),
+    )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -738,6 +768,7 @@ interface GraphQL {
 "#;
         let iface = parse_briefskill(content).expect("should parse");
         assert_eq!(iface.name, "GraphQL");
+        assert!(iface.effects.is_empty());
         assert_eq!(iface.funcs.len(), 2);
         assert_eq!(iface.funcs[0].name, "query");
         assert_eq!(iface.funcs[0].arg_count, 1);
@@ -750,6 +781,18 @@ interface GraphQL {
         let iface = parse_briefskill(content).expect("should parse");
         assert_eq!(iface.name, "Stub");
         assert_eq!(iface.funcs.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_briefskill_effects() {
+        let content = r#"
+        effects [network, cache-read]
+        interface NetworkService {
+            fn fetch(url: String) -> Response
+        }
+        "#;
+        let iface = parse_briefskill(content).expect("should parse");
+        assert_eq!(iface.effects, vec!["network", "cache-read"]);
     }
 
     #[test]

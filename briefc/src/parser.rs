@@ -753,6 +753,21 @@ impl<'a> Parser<'a> {
 
     // ── task declaration ─────────────────────────────────────────────────
 
+    fn parse_ident_list(&mut self) -> Option<Vec<String>> {
+        self.expect(&Token::LBracket)?;
+        let mut items = Vec::new();
+        while self.peek() != Some(&Token::RBracket) && !self.at_end() {
+            if let Some((name, _)) = self.expect_ident() {
+                items.push(name);
+            }
+            if self.peek() == Some(&Token::Comma) {
+                self.advance();
+            }
+        }
+        self.expect(&Token::RBracket)?;
+        Some(items)
+    }
+
     fn parse_task(&mut self) -> Option<Task> {
         let start = self.current_span().start;
 
@@ -791,18 +806,7 @@ impl<'a> Parser<'a> {
         // optional `uses [Skill1, Skill2]`
         let uses = if self.peek() == Some(&Token::Uses) {
             self.advance();
-            self.expect(&Token::LBracket)?;
-            let mut skills = Vec::new();
-            while self.peek() != Some(&Token::RBracket) && !self.at_end() {
-                if let Some((name, _)) = self.expect_ident() {
-                    skills.push(name);
-                }
-                if self.peek() == Some(&Token::Comma) {
-                    self.advance();
-                }
-            }
-            self.expect(&Token::RBracket)?;
-            skills
+            self.parse_ident_list()?
         } else {
             Vec::new()
         };
@@ -810,6 +814,7 @@ impl<'a> Parser<'a> {
         self.expect(&Token::LBrace)?;
 
         let mut goal = None;
+        let mut effects = Vec::new();
         let mut extras = None;
         let mut extras_span = None;
         let mut provides = None;
@@ -823,6 +828,12 @@ impl<'a> Parser<'a> {
                     self.expect(&Token::Eq)?;
                     if let Some((val, _)) = self.expect_str() {
                         goal = Some(val);
+                    }
+                }
+                Some(Token::Ident(ref s)) if s == "effects" => {
+                    self.advance();
+                    if let Some(declared_effects) = self.parse_ident_list() {
+                        effects = declared_effects;
                     }
                 }
                 Some(Token::Ident(ref s)) if s == "extras" => {
@@ -881,7 +892,7 @@ impl<'a> Parser<'a> {
                         code: ErrorCode::ParseError,
                         message: format!("unexpected token `{got:?}` inside task body"),
                         span,
-                        hint: Some("expected `goal`, `extras`, `provides`, or `step`".to_string()),
+                        hint: Some("expected `goal`, `effects`, `extras`, `provides`, or `step`".to_string()),
                     });
                     self.advance();
                 }
@@ -899,6 +910,7 @@ impl<'a> Parser<'a> {
             has_builder,
             name,
             uses,
+            effects,
             goal,
             extras,
             extras_span,
@@ -1392,6 +1404,19 @@ mod tests {
         assert!(errs.is_empty(), "{errs:?}");
         assert_eq!(prog.imports[0].name, "GraphQL");
         assert_eq!(prog.tasks[0].uses, vec!["GraphQL"]);
+    }
+
+    #[test]
+    fn parse_task_effects() {
+        let src = r#"
+            task T : TaskBrief {
+                goal = "x"
+                effects [network, cache-read]
+            }
+        "#;
+        let (prog, errs) = parse_src(src);
+        assert!(errs.is_empty(), "{errs:?}");
+        assert_eq!(prog.tasks[0].effects, vec!["network", "cache-read"]);
     }
 
     #[test]

@@ -131,6 +131,7 @@ mod tests {
     fn make_interface() -> SkillInterface {
         SkillInterface {
             name: "Mapper".into(),
+            effects: vec![],
             funcs: vec![
                 SkillFn {
                     name: "mapValue".into(),

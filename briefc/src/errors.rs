@@ -56,6 +56,8 @@ pub enum ErrorCode {
     BriefBuilderProvidesMissing,
     /// Typed `extras` field references an unknown type (E208)
     UnknownExtrasField,
+    /// Task performs a skill whose effects are not declared in `effects [...]` (E209)
+    EffectContractViolation,
 }
 
 impl fmt::Display for ErrorCode {
@@ -74,6 +76,7 @@ impl fmt::Display for ErrorCode {
             ErrorCode::ScopedGenericConflict => "E206",
             ErrorCode::NonExhaustiveMatch => "E207",
             ErrorCode::UnknownExtrasField => "E208",
+            ErrorCode::EffectContractViolation => "E209",
             ErrorCode::RangeBoundaryMissing => "E301",
             ErrorCode::EnumValueMissing => "E302",
             ErrorCode::LockRequired => "E303",
@@ -103,6 +106,7 @@ impl ErrorCode {
                 | ErrorCode::AttributeConstraint
                 | ErrorCode::ScopedGenericConflict
                 | ErrorCode::UnknownExtrasField
+                | ErrorCode::EffectContractViolation
                 | ErrorCode::RangeBoundaryMissing
                 | ErrorCode::EnumValueMissing
                 | ErrorCode::LockRequired

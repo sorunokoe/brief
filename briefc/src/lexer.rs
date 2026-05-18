@@ -65,7 +65,7 @@ pub enum Token {
 
     // ── Identifiers ───────────────────────────────────────────────────────
     /// Any word not matched by a keyword. Includes `TaskBrief`, `goal`, `extras`, etc.
-    #[regex(r"[a-zA-Z_][a-zA-Z0-9_]*", |lex| lex.slice().to_string())]
+    #[regex(r"[a-zA-Z_][a-zA-Z0-9_-]*", |lex| lex.slice().to_string())]
     Ident(String),
 
     // ── Operators & Punctuation ───────────────────────────────────────────

@@ -449,6 +449,9 @@ fn execute_tasks(program: &Program) {
         if !task.uses.is_empty() {
             println!("  {:<8} [{}]", "skills:".dimmed(), task.uses.join(", ").cyan());
         }
+        if !task.effects.is_empty() {
+            println!("  {:<8} [{}]", "effects:".dimmed(), task.effects.join(", ").cyan());
+        }
 
         for step in &task.steps {
             print!("  {} {}... ", "→".dimmed(), step.name);

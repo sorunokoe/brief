@@ -95,6 +95,7 @@ pub struct HirBinding {
 pub struct HirTask {
     pub name: String,
     pub skills: Vec<String>,
+    pub effects: Vec<String>,
     pub extras: Vec<HirField>,
     pub provides: Vec<HirField>,
     pub steps: Vec<HirStep>,
@@ -152,6 +153,7 @@ fn lower_task(task: &Task, env: &TypeEnv<'_>) -> HirTask {
     HirTask {
         name: task.name.clone(),
         skills: task.uses.clone(),
+        effects: task.effects.clone(),
         extras: lower_extras(task, env),
         provides: lower_provides(task, env),
         steps: task
@@ -580,6 +582,20 @@ mod tests {
             &hir.tasks[0].steps[0].bindings[0].value.kind,
             HirExprKind::Lit(HirLit::String(value)) if value == "Home"
         ));
+    }
+
+    #[test]
+    fn lowers_task_effects() {
+        let hir = lower_src(
+            r#"
+            task Fetch : TaskBrief {
+                goal = "hi"
+                effects [network, cache-read]
+            }
+        "#,
+        );
+
+        assert_eq!(hir.tasks[0].effects, vec!["network", "cache-read"]);
     }
 
     #[test]

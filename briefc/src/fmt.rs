@@ -339,6 +339,9 @@ impl Formatter {
             if let Some(goal) = &task.goal {
                 f.line(&format!("goal   = {goal:?}"));
             }
+            if !task.effects.is_empty() {
+                f.line(&format!("effects [{}]", task.effects.join(", ")));
+            }
 
             // Format extras if present
             if let Some(extras_node) = &task.extras {
@@ -372,7 +375,12 @@ impl Formatter {
             }
 
             for (i, step) in task.steps.iter().enumerate() {
-                if i > 0 || task.goal.is_some() || task.extras.is_some() || task.provides.is_some() {
+                if i > 0
+                    || task.goal.is_some()
+                    || !task.effects.is_empty()
+                    || task.extras.is_some()
+                    || task.provides.is_some()
+                {
                     f.blank();
                 }
                 f.fmt_step(step);
@@ -623,6 +631,18 @@ mod tests {
         assert!(out.contains("task T : TaskBrief uses [GraphQL] {"));
         assert!(out.contains("step Fetch {"));
         assert!(out.contains("let x = perform GraphQL.query(Q)?;"));
+    }
+
+    #[test]
+    fn fmt_task_effects() {
+        let src = r#"
+            task T : TaskBrief {
+                goal = "g"
+                effects [network, cache-read]
+            }
+        "#;
+        let out = roundtrip(src);
+        assert!(out.contains("effects [network, cache-read]"));
     }
 
     #[test]

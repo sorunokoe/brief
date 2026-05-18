@@ -328,6 +328,15 @@ fn render_task(task: &Task, out: &mut String) {
             .join(", ");
         writeln!(out, "**Uses:** {uses}  ").ok();
     }
+    if !task.effects.is_empty() {
+        let effects = task
+            .effects
+            .iter()
+            .map(|effect| format!("`{effect}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        writeln!(out, "**Effects:** {effects}  ").ok();
+    }
 
     // Extras
     if let Some(extras) = &task.extras {

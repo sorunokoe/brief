@@ -220,6 +220,7 @@ pub struct Task {
     pub has_builder: bool,
     pub name: String,
     pub uses: Vec<String>,
+    pub effects: Vec<String>,
     pub goal: Option<String>,
     pub extras: Option<ExtrasNode>,
     pub extras_span: Option<Span>,
