@@ -6,7 +6,6 @@
 ///   the bound variable as linear at every call site
 /// - Effect group aliases: `type AuthEffects = [Auth, Session]` expanded in `uses`
 /// - Type alias validation: `type Email = @matches("...") String` resolved in structs
-
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -15,19 +14,20 @@ use crate::errors::{BriefError, ErrorCode};
 use crate::lock::{check_lock, lock_path, read_lock, LockState};
 use crate::manifest::BriefManifest;
 use crate::skillgen::{parse_briefskill, SkillInterface, StaticConstraint};
+use crate::typeck::TypeEnv;
 
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub struct CheckContext<'a> {
     /// Directory of the `.brief` file being checked — used for skill lookups.
-    pub file_dir:             &'a Path,
+    pub file_dir: &'a Path,
     /// Current working directory — fallback for skill lookups.
-    pub cwd:                  &'a Path,
+    pub cwd: &'a Path,
     /// Optional parsed `brief.toml` — used for manifest-defined skill path overrides.
-    pub manifest:             Option<&'a BriefManifest>,
+    pub manifest: Option<&'a BriefManifest>,
     /// Path to the `.brief` source file — used for lock gate (E303).
     /// `None` in unit tests that don't need lock checking.
-    pub brief_path:           Option<&'a Path>,
+    pub brief_path: Option<&'a Path>,
     /// When `true`, missing `.briefskill` files produce a warning instead of E101.
     /// Set by `brief check --allow-missing-skills` or by unit tests that run without real skill dirs.
     pub allow_missing_skills: bool,
@@ -41,15 +41,27 @@ pub fn check(program: &Program, ctx: &CheckContext<'_>) -> Vec<BriefError> {
     let imported: HashSet<&str> = program.imports.iter().map(|i| i.name.as_str()).collect();
 
     // Build effect group map: group name → expanded member names.
-    let groups: HashMap<&str, Vec<&str>> = program.effect_groups
+    let groups: HashMap<&str, Vec<&str>> = program
+        .effect_groups
         .iter()
-        .map(|g| (g.name.as_str(), g.members.iter().map(|m| m.as_str()).collect()))
+        .map(|g| {
+            (
+                g.name.as_str(),
+                g.members.iter().map(|m| m.as_str()).collect(),
+            )
+        })
         .collect();
 
     // Build inline effect fn map: (effect_name, fn_name) → ret_attrs
     // Used to auto-detect @once return types without explicit annotation at call site.
-    let inline_effects: HashMap<(&str, &str), &[Attribute]> = program.effects.iter()
-        .flat_map(|e| e.fns.iter().map(move |f| ((e.name.as_str(), f.name.as_str()), f.ret_attrs.as_slice())))
+    let inline_effects: HashMap<(&str, &str), &[Attribute]> = program
+        .effects
+        .iter()
+        .flat_map(|e| {
+            e.fns
+                .iter()
+                .map(move |f| ((e.name.as_str(), f.name.as_str()), f.ret_attrs.as_slice()))
+        })
         .collect();
 
     // 1. Validate each skill import (warn if no .briefskill found).
@@ -67,9 +79,11 @@ pub fn check(program: &Program, ctx: &CheckContext<'_>) -> Vec<BriefError> {
         check_type_alias(alias, &mut diags);
     }
 
+    let type_env = TypeEnv::from_program(program);
+
     // 4. Validate each task (with group expansion and linear binding tracking).
     for task in &program.tasks {
-        check_task(task, &imported, &groups, &inline_effects, ctx, &mut diags);
+        check_task(task, &imported, &groups, &inline_effects, &type_env, ctx, &mut diags);
     }
 
     // 5. Spec coverage: load skill interfaces, then check test block coverage.
@@ -96,10 +110,10 @@ fn check_skill_import(import: &SkillImport, ctx: &CheckContext<'_>, diags: &mut 
         }
         let skill_path = skill_interface_path_display(&import.name);
         diags.push(BriefError {
-            code:    ErrorCode::MissingSkillInterface,
+            code: ErrorCode::MissingSkillInterface,
             message: format!("skill '{}' has no interface file", import.name),
-            span:    import.span,
-            hint:    Some(format!(
+            span: import.span,
+            hint: Some(format!(
                 "{skill_path} not found — run: brief skillgen .claude/skills/{}/",
                 import.name
             )),
@@ -111,10 +125,13 @@ fn check_type_alias(alias: &TypeAliasDecl, diags: &mut Vec<BriefError>) {
     // Basic validation: base must not be empty.
     if alias.base.name.is_empty() {
         diags.push(BriefError {
-            code:    ErrorCode::UnknownType,
+            code: ErrorCode::UnknownType,
             message: format!("type alias '{}' has no base type", alias.name),
-            span:    alias.span,
-            hint:    Some(format!(r#"example: type {} = @nonEmpty String"#, alias.name)),
+            span: alias.span,
+            hint: Some(format!(
+                r#"example: type {} = @nonEmpty String"#,
+                alias.name
+            )),
         });
     }
     // Known refinement attributes for type aliases.
@@ -122,32 +139,38 @@ fn check_type_alias(alias: &TypeAliasDecl, diags: &mut Vec<BriefError>) {
     for attr in &alias.attrs {
         if !KNOWN_ATTRS.contains(&attr.name.as_str()) {
             diags.push(BriefError {
-                code:    ErrorCode::AttributeConstraint,
-                message: format!("unknown attribute '@{}' in type alias '{}'", attr.name, alias.name),
-                span:    attr.span,
-                hint:    Some(format!("known attributes: {}", KNOWN_ATTRS.join(", "))),
+                code: ErrorCode::AttributeConstraint,
+                message: format!(
+                    "unknown attribute '@{}' in type alias '{}'",
+                    attr.name, alias.name
+                ),
+                span: attr.span,
+                hint: Some(format!("known attributes: {}", KNOWN_ATTRS.join(", "))),
             });
         }
     }
 }
 
 fn check_task(
-    task:           &Task,
-    imported:       &HashSet<&str>,
-    groups:         &HashMap<&str, Vec<&str>>,
+    task: &Task,
+    imported: &HashSet<&str>,
+    groups: &HashMap<&str, Vec<&str>>,
     inline_effects: &HashMap<(&str, &str), &[Attribute]>,
+    type_env:       &TypeEnv<'_>,
     _ctx:           &CheckContext<'_>,
     diags:          &mut Vec<BriefError>,
 ) {
     // E101: goal is required.
     if task.goal.is_none() {
         diags.push(BriefError {
-            code:    ErrorCode::MissingGoal,
+            code: ErrorCode::MissingGoal,
             message: format!("task '{}' is missing a `goal` field", task.name),
-            span:    task.span,
-            hint:    Some(r#"add: goal = "describe what this task accomplishes""#.to_string()),
+            span: task.span,
+            hint: Some(r#"add: goal = "describe what this task accomplishes""#.to_string()),
         });
     }
+
+    check_task_extras(task, type_env, diags);
 
     // Expand effect group aliases in `uses [...]`.
     let mut expanded_uses: Vec<&str> = Vec::new();
@@ -164,10 +187,12 @@ fn check_task(
     for skill in &expanded_uses {
         if !imported.contains(skill) {
             diags.push(BriefError {
-                code:    ErrorCode::UndeclaredSkillInUses,
+                code: ErrorCode::UndeclaredSkillInUses,
                 message: format!("skill '{skill}' is in `uses` but never imported"),
-                span:    task.span,
-                hint:    Some(format!(r#"add: import skill "{skill}" at the top of the file"#)),
+                span: task.span,
+                hint: Some(format!(
+                    r#"add: import skill "{skill}" at the top of the file"#
+                )),
             });
         }
     }
@@ -181,17 +206,84 @@ fn check_task(
     let mut task_linear: HashMap<String, (Span, usize)> = HashMap::new();
 
     for step in &task.steps {
-        check_step(step, &uses_set, imported, inline_effects, &mut task_linear, diags);
+        check_step(
+            step,
+            &uses_set,
+            imported,
+            inline_effects,
+            &mut task_linear,
+            diags,
+        );
     }
 
     // After all steps: any remaining task_linear binding was never consumed → E105.
     for (name, (span, _)) in &task_linear {
         diags.push(BriefError {
-            code:    ErrorCode::LinearBindingDropped,
-            message: format!("linear binding '{name}' is declared but never consumed across all task steps"),
-            span:    *span,
-            hint:    Some(format!("use '{name}' in a step, or remove the `@once` annotation")),
+            code: ErrorCode::LinearBindingDropped,
+            message: format!(
+                "linear binding '{name}' is declared but never consumed across all task steps"
+            ),
+            span: *span,
+            hint: Some(format!(
+                "use '{name}' in a step, or remove the `@once` annotation"
+            )),
         });
+    }
+}
+
+fn type_ref_str(ty: &TypeRef) -> String {
+    let mut s = ty.name.clone();
+    if !ty.args.is_empty() {
+        let args = ty.args.iter().map(type_ref_str).collect::<Vec<_>>().join(", ");
+        s.push_str(&format!("<{args}>"));
+    }
+    if ty.optional { s.push('?'); }
+    s
+}
+
+fn check_task_extras(task: &Task, env: &TypeEnv<'_>, diags: &mut Vec<BriefError>) {
+    let Some(extras) = &task.extras else { return; };
+    let extras_span = task.extras_span.unwrap_or(task.span);
+
+    match extras {
+        ExtrasNode::StringMap(_) => {
+            diags.push(BriefError {
+                code:    ErrorCode::DeprecatedStringExtras,
+                message: "string extras are deprecated — use typed extras { } instead".to_string(),
+                span:    extras_span,
+                hint:    Some("replace `extras = [\"key\": \"val\", ...]` with `extras { field: Type }`".to_string()),
+            });
+        }
+        ExtrasNode::TypedRecord(fields) => {
+            for field in fields {
+                check_extras_field_type(&field.name, &field.type_ref, field.span, env, diags);
+            }
+        }
+    }
+}
+
+fn check_extras_field_type(
+    field_name: &str,
+    ty:         &TypeRef,
+    span:       Span,
+    env:        &TypeEnv<'_>,
+    diags:      &mut Vec<BriefError>,
+) {
+    if !env.type_exists(&ty.name, &[]) {
+        let ty_name = type_ref_str(ty);
+        diags.push(BriefError {
+            code:    ErrorCode::UnknownExtrasField,
+            message: format!("extras field '{}' has unknown type '{}'", field_name, ty_name),
+            span,
+            hint:    Some(format!(
+                "declare `struct {}` or `sealed type {}` before using it in extras",
+                ty_name, ty_name
+            )),
+        });
+    }
+
+    for arg in &ty.args {
+        check_extras_field_type(field_name, arg, span, env, diags);
     }
 }
 
@@ -200,22 +292,25 @@ fn check_effect_decl(effect: &EffectDecl, diags: &mut Vec<BriefError>) {
     for f in &effect.fns {
         if !seen.insert(f.name.as_str()) {
             diags.push(BriefError {
-                code:    ErrorCode::ParseError,
-                message: format!("effect '{}' has duplicate function '{}'", effect.name, f.name),
-                span:    f.span,
-                hint:    Some("remove the duplicate declaration".to_string()),
+                code: ErrorCode::ParseError,
+                message: format!(
+                    "effect '{}' has duplicate function '{}'",
+                    effect.name, f.name
+                ),
+                span: f.span,
+                hint: Some("remove the duplicate declaration".to_string()),
             });
         }
     }
 }
 
 fn check_step(
-    step:           &Step,
-    uses_set:       &HashSet<&str>,
-    imported:       &HashSet<&str>,
+    step: &Step,
+    uses_set: &HashSet<&str>,
+    imported: &HashSet<&str>,
     inline_effects: &HashMap<(&str, &str), &[Attribute]>,
-    task_linear:    &mut HashMap<String, (Span, usize)>,
-    diags:          &mut Vec<BriefError>,
+    task_linear: &mut HashMap<String, (Span, usize)>,
+    diags: &mut Vec<BriefError>,
 ) {
     // step_linear: @once bindings introduced in this step.
     let mut step_linear: HashMap<String, (Span, usize)> = HashMap::new();
@@ -224,13 +319,24 @@ fn check_step(
     for stmt in &step.body {
         check_expr_for_perform(stmt_value(stmt), uses_set, imported, diags);
 
-        if let Stmt::Let { attrs, name, value, span } = stmt {
-            let is_once  = attrs.iter().any(|a| a == "once" || a == "affine");
+        if let Stmt::Let {
+            attrs,
+            name,
+            value,
+            span,
+        } = stmt
+        {
+            let is_once = attrs.iter().any(|a| a == "once" || a == "affine");
             let auto_once = match value {
                 Expr::Perform { skill, func, .. } => {
                     let key = (skill.as_str(), func.as_str());
-                    inline_effects.get(&key)
-                        .map(|ret_attrs| ret_attrs.iter().any(|a| a.name == "once" || a.name == "affine"))
+                    inline_effects
+                        .get(&key)
+                        .map(|ret_attrs| {
+                            ret_attrs
+                                .iter()
+                                .any(|a| a.name == "once" || a.name == "affine")
+                        })
                         .unwrap_or(false)
                 }
                 _ => false,
@@ -240,10 +346,12 @@ fn check_step(
                 // Shadowing: a new @once x while task_linear still holds an earlier x.
                 if let Some((old_span, _)) = task_linear.remove(name) {
                     diags.push(BriefError {
-                        code:    ErrorCode::LinearBindingDropped,
-                        message: format!("linear binding '{name}' is shadowed before being consumed"),
-                        span:    old_span,
-                        hint:    Some(format!("use '{name}' before re-binding it with `@once`")),
+                        code: ErrorCode::LinearBindingDropped,
+                        message: format!(
+                            "linear binding '{name}' is shadowed before being consumed"
+                        ),
+                        span: old_span,
+                        hint: Some(format!("use '{name}' before re-binding it with `@once`")),
                     });
                 }
                 step_linear.insert(name.clone(), (*span, 0));
@@ -263,7 +371,9 @@ fn check_step(
     //   used > 1   → E104
     for (name, (span, uses)) in step_linear {
         match uses {
-            0 => { task_linear.insert(name, (span, 0)); }
+            0 => {
+                task_linear.insert(name, (span, 0));
+            }
             1 => { /* consumed exactly once — done */ }
             n => {
                 diags.push(BriefError {
@@ -284,7 +394,9 @@ fn check_step(
     for (name, (span, uses)) in task_linear.iter() {
         match *uses {
             0 => { /* not used in this step — leave */ }
-            1 => { to_remove.push(name.clone()); }
+            1 => {
+                to_remove.push(name.clone());
+            }
             n => {
                 diags.push(BriefError {
                     code:    ErrorCode::LinearBindingReused,
@@ -296,14 +408,18 @@ fn check_step(
             }
         }
     }
-    for name in &to_remove { task_linear.remove(name); }
+    for name in &to_remove {
+        task_linear.remove(name);
+    }
     // Reset use-counts on remaining task_linear entries for the next step.
-    for (_, (_, uses)) in task_linear.iter_mut() { *uses = 0; }
+    for (_, (_, uses)) in task_linear.iter_mut() {
+        *uses = 0;
+    }
 }
 
 fn stmt_value(stmt: &Stmt) -> &Expr {
     match stmt {
-        Stmt::Let { value, .. }  => value,
+        Stmt::Let { value, .. } => value,
         Stmt::Expr { value, .. } => value,
     }
 }
@@ -317,25 +433,37 @@ fn count_ident_uses(expr: &Expr, linear: &mut HashMap<String, (Span, usize)>) {
             }
         }
         Expr::Perform { args, .. } => {
-            for a in args { count_ident_uses(a, linear); }
+            for a in args {
+                count_ident_uses(a, linear);
+            }
         }
         Expr::Call { args, .. } => {
-            for a in args { count_ident_uses(a, linear); }
+            for a in args {
+                count_ident_uses(a, linear);
+            }
         }
         Expr::Await { expr: inner, .. } => count_ident_uses(inner, linear),
         Expr::Str { .. } | Expr::Int { .. } => {}
     }
 }
 
-fn check_expr_for_perform(expr: &Expr, uses_set: &HashSet<&str>, _imported: &HashSet<&str>, diags: &mut Vec<BriefError>) {
+fn check_expr_for_perform(
+    expr: &Expr,
+    uses_set: &HashSet<&str>,
+    _imported: &HashSet<&str>,
+    diags: &mut Vec<BriefError>,
+) {
     match expr {
         Expr::Perform { skill, span, .. } => {
             if !uses_set.contains(skill.as_str()) {
                 diags.push(BriefError {
-                    code:    ErrorCode::PerformWithoutUses,
-                    message: format!("effect '{}' is performed but not declared in `uses [...]`", skill),
-                    span:    *span,
-                    hint:    Some(format!("add '{skill}' to the task's `uses` clause")),
+                    code: ErrorCode::PerformWithoutUses,
+                    message: format!(
+                        "effect '{}' is performed but not declared in `uses [...]`",
+                        skill
+                    ),
+                    span: *span,
+                    hint: Some(format!("add '{skill}' to the task's `uses` clause")),
                 });
             }
         }
@@ -371,10 +499,7 @@ pub fn find_skill_interface(name: &str, ctx: &CheckContext<'_>) -> Option<PathBu
     // 2 & 3. Default discovery: .claude/skills/<name>/<name>.briefskill
     let relative = format!(".claude/skills/{name}/{name}.briefskill");
 
-    let candidates = [
-        ctx.file_dir.join(&relative),
-        ctx.cwd.join(&relative),
-    ];
+    let candidates = [ctx.file_dir.join(&relative), ctx.cwd.join(&relative)];
 
     candidates.into_iter().find(|p| p.exists())
 }
@@ -388,7 +513,10 @@ fn skill_interface_path_display(name: &str) -> String {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Load parsed `SkillInterface` for every imported skill that has a `.briefskill` file.
-fn load_skill_interfaces(program: &Program, ctx: &CheckContext<'_>) -> HashMap<String, SkillInterface> {
+fn load_skill_interfaces(
+    program: &Program,
+    ctx: &CheckContext<'_>,
+) -> HashMap<String, SkillInterface> {
     let mut map = HashMap::new();
     for import in &program.imports {
         if let Some(path) = find_skill_interface(&import.name, ctx) {
@@ -406,9 +534,9 @@ fn load_skill_interfaces(program: &Program, ctx: &CheckContext<'_>) -> HashMap<S
 /// and every `@enum(vals)` param has all enum values covered, across all
 /// `perform Skill.fn(args)` calls in the test body.
 fn check_test_spec_coverage(
-    test:   &TestDecl,
+    test: &TestDecl,
     ifaces: &HashMap<String, SkillInterface>,
-    diags:  &mut Vec<BriefError>,
+    diags: &mut Vec<BriefError>,
 ) {
     // Collect all perform calls: (skill, fn_name, args_vec, call_span)
     let mut performs: Vec<(&str, &str, &[Expr], Span)> = Vec::new();
@@ -426,11 +554,11 @@ fn check_test_spec_coverage(
     for ((skill_name, fn_name), all_call_args) in &grouped {
         let iface = match ifaces.get(*skill_name) {
             Some(i) => i,
-            None    => continue, // no interface loaded — silently skip
+            None => continue, // no interface loaded — silently skip
         };
         let skill_fn = match iface.funcs.iter().find(|f| f.name == *fn_name) {
             Some(f) => f,
-            None    => continue, // fn not in interface — type checker handles this
+            None => continue, // fn not in interface — type checker handles this
         };
 
         for (param_idx, param) in skill_fn.params.iter().enumerate() {
@@ -438,14 +566,27 @@ fn check_test_spec_coverage(
                 match constraint {
                     StaticConstraint::Range(min, max) => {
                         check_range_coverage(
-                            skill_name, fn_name, param_idx, &param.name, *min, *max,
-                            all_call_args, test.span, diags,
+                            skill_name,
+                            fn_name,
+                            param_idx,
+                            &param.name,
+                            *min,
+                            *max,
+                            all_call_args,
+                            test.span,
+                            diags,
                         );
                     }
                     StaticConstraint::Enum(vals) => {
                         check_enum_coverage(
-                            skill_name, fn_name, param_idx, &param.name, vals,
-                            all_call_args, test.span, diags,
+                            skill_name,
+                            fn_name,
+                            param_idx,
+                            &param.name,
+                            vals,
+                            all_call_args,
+                            test.span,
+                            diags,
                         );
                     }
                     // @matches / @nonEmpty are not coverage obligations on test args.
@@ -458,13 +599,23 @@ fn check_test_spec_coverage(
 
 fn collect_performs<'a>(expr: &'a Expr, out: &mut Vec<(&'a str, &'a str, &'a [Expr], Span)>) {
     match expr {
-        Expr::Perform { skill, func, args, span, .. } => {
+        Expr::Perform {
+            skill,
+            func,
+            args,
+            span,
+            ..
+        } => {
             out.push((skill.as_str(), func.as_str(), args.as_slice(), *span));
-            for arg in args { collect_performs(arg, out); }
+            for arg in args {
+                collect_performs(arg, out);
+            }
         }
         Expr::Await { expr: inner, .. } => collect_performs(inner, out),
         Expr::Call { args, .. } => {
-            for arg in args { collect_performs(arg, out); }
+            for arg in args {
+                collect_performs(arg, out);
+            }
         }
         Expr::Ident { .. } | Expr::Str { .. } | Expr::Int { .. } => {}
     }
@@ -472,28 +623,32 @@ fn collect_performs<'a>(expr: &'a Expr, out: &mut Vec<(&'a str, &'a str, &'a [Ex
 
 /// Check that both `min` and `max` appear as literal int args at `param_idx`.
 fn check_range_coverage(
-    skill:    &str,
-    fn_name:  &str,
-    idx:      usize,
-    pname:    &str,
-    min:      i64,
-    max:      i64,
+    skill: &str,
+    fn_name: &str,
+    idx: usize,
+    pname: &str,
+    min: i64,
+    max: i64,
     all_args: &[&[Expr]],
-    span:     Span,
-    diags:    &mut Vec<BriefError>,
+    span: Span,
+    diags: &mut Vec<BriefError>,
 ) {
     let mut saw_min = false;
     let mut saw_max = false;
     for args in all_args {
         if let Some(Expr::Int { value, .. }) = args.get(idx) {
-            if *value == min { saw_min = true; }
-            if *value == max { saw_max = true; }
+            if *value == min {
+                saw_min = true;
+            }
+            if *value == max {
+                saw_max = true;
+            }
         }
     }
 
     if !saw_min {
         diags.push(BriefError {
-            code:    ErrorCode::RangeBoundaryMissing,
+            code: ErrorCode::RangeBoundaryMissing,
             message: format!(
                 "test block missing lower boundary for `{skill}.{fn_name}` param `{pname}`: \
                  @range({min}, {max}) requires a call with arg = {min}"
@@ -506,7 +661,7 @@ fn check_range_coverage(
     }
     if !saw_max {
         diags.push(BriefError {
-            code:    ErrorCode::RangeBoundaryMissing,
+            code: ErrorCode::RangeBoundaryMissing,
             message: format!(
                 "test block missing upper boundary for `{skill}.{fn_name}` param `{pname}`: \
                  @range({min}, {max}) requires a call with arg = {max}"
@@ -521,18 +676,25 @@ fn check_range_coverage(
 
 /// Check that each enum value appears as a literal string arg at `param_idx`.
 fn check_enum_coverage(
-    skill:    &str,
-    fn_name:  &str,
-    idx:      usize,
-    pname:    &str,
-    vals:     &[String],
+    skill: &str,
+    fn_name: &str,
+    idx: usize,
+    pname: &str,
+    vals: &[String],
     all_args: &[&[Expr]],
-    span:     Span,
-    diags:    &mut Vec<BriefError>,
+    span: Span,
+    diags: &mut Vec<BriefError>,
 ) {
-    let covered: HashSet<&str> = all_args.iter()
+    let covered: HashSet<&str> = all_args
+        .iter()
         .filter_map(|args| args.get(idx))
-        .filter_map(|expr| if let Expr::Str { value, .. } = expr { Some(value.as_str()) } else { None })
+        .filter_map(|expr| {
+            if let Expr::Str { value, .. } = expr {
+                Some(value.as_str())
+            } else {
+                None
+            }
+        })
         .collect();
 
     for val in vals {
@@ -561,10 +723,10 @@ fn check_enum_coverage(
 /// "Dynamic annotations" = any `@xyz` in `.briefskill` params that is not in
 /// the static list (`@range`, `@enum`, `@matches`, `@nonEmpty`).
 fn check_lock_gate(
-    program:  &Program,
-    ifaces:   &HashMap<String, SkillInterface>,
-    ctx:      &CheckContext<'_>,
-    diags:    &mut Vec<BriefError>,
+    program: &Program,
+    ifaces: &HashMap<String, SkillInterface>,
+    ctx: &CheckContext<'_>,
+    diags: &mut Vec<BriefError>,
 ) {
     // Only run the gate if `require_lock` is enabled (default: true).
     let (require_lock, max_age_hours) = if let Some(mf) = ctx.manifest {
@@ -573,35 +735,40 @@ fn check_lock_gate(
         (true, 24) // defaults when no brief.toml
     };
 
-    if !require_lock { return; }
+    if !require_lock {
+        return;
+    }
 
     // Check if there are any dynamic annotations across all loaded interfaces.
-    let has_dynamic = ifaces.values()
+    let has_dynamic = ifaces
+        .values()
         .flat_map(|iface| iface.funcs.iter())
         .flat_map(|f| f.params.iter())
         .any(|p| !p.dynamic_attrs.is_empty());
 
-    if !has_dynamic { return; }
+    if !has_dynamic {
+        return;
+    }
 
     // Dynamic annotations present — need a valid lock.
     let brief_path = match ctx.brief_path {
         Some(p) => p,
-        None    => return, // no path in context (unit tests) — skip
+        None => return, // no path in context (unit tests) — skip
     };
 
     let lp = lock_path(brief_path);
 
     let lock = match read_lock(&lp) {
         Some(l) => l,
-        None    => {
+        None => {
             diags.push(BriefError {
-                code:    ErrorCode::LockRequired,
+                code: ErrorCode::LockRequired,
                 message: format!(
                     "dynamic annotations require a verified lock file (expected: {})",
                     lp.display()
                 ),
-                span:    program.imports.first().map(|i| i.span).unwrap_or_default(),
-                hint:    Some("run: brief verify".to_string()),
+                span: program.imports.first().map(|i| i.span).unwrap_or_default(),
+                hint: Some("run: brief verify".to_string()),
             });
             return;
         }
@@ -609,33 +776,33 @@ fn check_lock_gate(
 
     // Read source bytes for hash comparison.
     let source_bytes = match std::fs::read(brief_path) {
-        Ok(b)  => b,
+        Ok(b) => b,
         Err(_) => return, // can't read — skip gate
     };
 
     match check_lock(&lock, &source_bytes, max_age_hours) {
-        LockState::Fresh => {} // all good
+        LockState::Fresh => {}                // all good
         LockState::Missing => unreachable!(), // handled above
         LockState::SourceChanged => {
             diags.push(BriefError {
-                code:    ErrorCode::LockRequired,
+                code: ErrorCode::LockRequired,
                 message: format!(
                     "lock file {} is stale — source has changed since last verify",
                     lp.display()
                 ),
-                span:    program.imports.first().map(|i| i.span).unwrap_or_default(),
-                hint:    Some("run: brief verify to re-seal the contract".to_string()),
+                span: program.imports.first().map(|i| i.span).unwrap_or_default(),
+                hint: Some("run: brief verify to re-seal the contract".to_string()),
             });
         }
         LockState::Stale => {
             diags.push(BriefError {
-                code:    ErrorCode::LockRequired,
+                code: ErrorCode::LockRequired,
                 message: format!(
                     "lock file {} is older than {max_age_hours}h — re-verification required",
                     lp.display()
                 ),
-                span:    program.imports.first().map(|i| i.span).unwrap_or_default(),
-                hint:    Some("run: brief verify to refresh the verification seal".to_string()),
+                span: program.imports.first().map(|i| i.span).unwrap_or_default(),
+                hint: Some("run: brief verify to refresh the verification seal".to_string()),
             });
         }
     }
@@ -647,12 +814,13 @@ fn check_lock_gate(
 /// handled statically (`@range`, `@enum`, `@matches`, `@nonEmpty`).
 /// If the manifest has no `[verifiers."@xyz"]` entry, emit E309.
 fn check_unconfigured_verifiers(
-    program:     &Program,
+    program: &Program,
     skill_ifaces: &HashMap<String, SkillInterface>,
-    ctx:          &CheckContext<'_>,
-    diags:        &mut Vec<BriefError>,
+    ctx: &CheckContext<'_>,
+    diags: &mut Vec<BriefError>,
 ) {
-    let verifiers = ctx.manifest
+    let verifiers = ctx
+        .manifest
         .map(|m| &m.verifiers)
         .cloned()
         .unwrap_or_default();
@@ -681,11 +849,19 @@ fn check_unconfigured_verifiers(
 
     let mut seen: HashSet<String> = HashSet::new();
     for (skill_name, fn_name, _args, span) in &perform_list {
-        let iface = match skill_ifaces.get(*skill_name) { Some(i) => i, None => continue };
-        let skill_fn = match iface.funcs.iter().find(|f| f.name == *fn_name) { Some(f) => f, None => continue };
+        let iface = match skill_ifaces.get(*skill_name) {
+            Some(i) => i,
+            None => continue,
+        };
+        let skill_fn = match iface.funcs.iter().find(|f| f.name == *fn_name) {
+            Some(f) => f,
+            None => continue,
+        };
         for param in &skill_fn.params {
             for dyn_attr in &param.dynamic_attrs {
-                if seen.contains(dyn_attr) { continue; }
+                if seen.contains(dyn_attr) {
+                    continue;
+                }
                 let key_with = dyn_attr.as_str();
                 let key_without = dyn_attr.strip_prefix('@').unwrap_or(dyn_attr);
                 if !verifiers.contains_key(key_with) && !verifiers.contains_key(key_without) {
@@ -709,24 +885,69 @@ fn check_unconfigured_verifiers(
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::lexer::lex;
     use crate::parser::parse;
+    use crate::typeck;
 
     fn check_src(src: &str) -> Vec<BriefError> {
         let (tokens, _) = lex(src);
         let (program, _) = parse(&tokens, src);
         let ctx = CheckContext {
-            file_dir:             Path::new("."),
-            cwd:                  Path::new("."),
-            manifest:             None,
-            brief_path:           None,
+            file_dir: Path::new("."),
+            cwd: Path::new("."),
+            manifest: None,
+            brief_path: None,
             allow_missing_skills: true,
         };
         check(&program, &ctx)
+    }
+
+    fn check_str(src: &str) -> Vec<BriefError> {
+        check_src(src)
+    }
+
+    fn check_all_src(src: &str) -> Vec<BriefError> {
+        let (tokens, _) = lex(src);
+        let (program, _) = parse(&tokens, src);
+        let ctx = CheckContext {
+            file_dir: Path::new("."),
+            cwd: Path::new("."),
+            manifest: None,
+            brief_path: None,
+            allow_missing_skills: true,
+        };
+        let mut diags = check(&program, &ctx);
+        diags.extend(typeck::type_check(&program));
+        diags
+    }
+
+    #[test]
+    fn scoped_generic_t_in_two_effects_does_not_conflict() {
+        let src = r#"
+            effect Foo { fn a<T>(x: T) -> T }
+            effect Bar { fn b<T>(x: T) -> T }
+            task X : TaskBrief { goal = "x" }
+        "#;
+        let diags = check_all_src(src);
+        assert!(diags.is_empty(), "unexpected diags: {diags:?}");
+    }
+
+    #[test]
+    fn generic_param_shadowing_builtin_is_e206() {
+        let src = r#"
+            effect Bad { fn foo<String>(x: String) -> String }
+            task X : TaskBrief { goal = "x" }
+        "#;
+        let diags = check_all_src(src);
+        assert!(
+            diags
+                .iter()
+                .any(|d| matches!(d.code, ErrorCode::ScopedGenericConflict)),
+            "unexpected diags: {diags:?}"
+        );
     }
 
     #[test]
@@ -738,13 +959,21 @@ mod tests {
     #[test]
     fn error_on_missing_goal() {
         let diags = check_src("task T : TaskBrief {}");
-        assert!(diags.iter().any(|d| d.code == ErrorCode::MissingGoal), "{diags:?}");
+        assert!(
+            diags.iter().any(|d| d.code == ErrorCode::MissingGoal),
+            "{diags:?}"
+        );
     }
 
     #[test]
     fn error_on_undeclared_uses() {
         let diags = check_src(r#"task T : TaskBrief uses [GraphQL] { goal = "x" }"#);
-        assert!(diags.iter().any(|d| d.code == ErrorCode::UndeclaredSkillInUses), "{diags:?}");
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == ErrorCode::UndeclaredSkillInUses),
+            "{diags:?}"
+        );
     }
 
     // ── Phase 3: linear bindings ────────────────────────────────────────────
@@ -752,7 +981,8 @@ mod tests {
     #[test]
     fn linear_binding_dropped() {
         // @once let x = ... but x is never used → E105
-        let diags = check_src(r#"
+        let diags = check_src(
+            r#"
             import skill "Payment"
             task Pay : TaskBrief uses [Payment] {
                 goal = "charge"
@@ -760,14 +990,21 @@ mod tests {
                     @once let handle = perform Payment.charge(amount)?;
                 }
             }
-        "#);
-        assert!(diags.iter().any(|d| d.code == ErrorCode::LinearBindingDropped), "{diags:?}");
+        "#,
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == ErrorCode::LinearBindingDropped),
+            "{diags:?}"
+        );
     }
 
     #[test]
     fn linear_binding_reused() {
         // @once let x = ... but x is used twice → E104
-        let diags = check_src(r#"
+        let diags = check_src(
+            r#"
             import skill "Payment"
             task Pay : TaskBrief uses [Payment] {
                 goal = "charge"
@@ -777,14 +1014,21 @@ mod tests {
                     let b = perform Payment.confirm(handle)?;
                 }
             }
-        "#);
-        assert!(diags.iter().any(|d| d.code == ErrorCode::LinearBindingReused), "{diags:?}");
+        "#,
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == ErrorCode::LinearBindingReused),
+            "{diags:?}"
+        );
     }
 
     #[test]
     fn linear_binding_used_once_is_ok() {
         // @once let x = ... and x used exactly once → no linear error
-        let diags = check_src(r#"
+        let diags = check_src(
+            r#"
             import skill "Payment"
             task Pay : TaskBrief uses [Payment] {
                 goal = "charge"
@@ -793,11 +1037,19 @@ mod tests {
                     let receipt = perform Payment.confirm(handle)?;
                 }
             }
-        "#);
-        let linear_errors: Vec<_> = diags.iter()
-            .filter(|d| d.code == ErrorCode::LinearBindingDropped || d.code == ErrorCode::LinearBindingReused)
+        "#,
+        );
+        let linear_errors: Vec<_> = diags
+            .iter()
+            .filter(|d| {
+                d.code == ErrorCode::LinearBindingDropped
+                    || d.code == ErrorCode::LinearBindingReused
+            })
             .collect();
-        assert!(linear_errors.is_empty(), "unexpected linear errors: {linear_errors:?}");
+        assert!(
+            linear_errors.is_empty(),
+            "unexpected linear errors: {linear_errors:?}"
+        );
     }
 
     // ── Phase 3: effect group aliases ────────────────────────────────────────
@@ -805,7 +1057,8 @@ mod tests {
     #[test]
     fn effect_group_expands_in_uses() {
         // `type AuthEffects = [Auth, Session]` — if Auth/Session imported, no E102
-        let diags = check_src(r#"
+        let diags = check_src(
+            r#"
             import skill "Auth"
             import skill "Session"
             type AuthEffects = [Auth, Session]
@@ -816,8 +1069,12 @@ mod tests {
                     let s   = perform Session.create(tok)?;
                 }
             }
-        "#);
-        let e102: Vec<_> = diags.iter().filter(|d| d.code == ErrorCode::UndeclaredSkillInUses).collect();
+        "#,
+        );
+        let e102: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code == ErrorCode::UndeclaredSkillInUses)
+            .collect();
         assert!(e102.is_empty(), "unexpected E102: {e102:?}");
     }
 
@@ -826,7 +1083,12 @@ mod tests {
     #[test]
     fn type_alias_unknown_attr_is_warned() {
         let diags = check_src(r#"type Email = @bogusAttr String"#);
-        assert!(diags.iter().any(|d| d.code == ErrorCode::AttributeConstraint), "{diags:?}");
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == ErrorCode::AttributeConstraint),
+            "{diags:?}"
+        );
     }
 
     #[test]
@@ -836,13 +1098,51 @@ mod tests {
         assert!(errors.is_empty(), "unexpected errors: {errors:?}");
     }
 
+    #[test]
+    fn typed_extras_with_known_type_is_ok() {
+        let src = r#"
+            sealed type Platform = iOS | Android | Web
+            task X : TaskBrief {
+                goal = "x"
+                extras { platform: Platform }
+            }
+        "#;
+        let diags = check_str(src);
+        assert!(diags.iter().all(|d| d.code != ErrorCode::UnknownExtrasField), "{diags:?}");
+    }
+
+    #[test]
+    fn typed_extras_with_unknown_type_is_e208() {
+        let src = r#"
+            task X : TaskBrief {
+                goal = "x"
+                extras { figmaURL: FigmaUrl }
+            }
+        "#;
+        let diags = check_str(src);
+        assert!(diags.iter().any(|d| d.code == ErrorCode::UnknownExtrasField), "{diags:?}");
+    }
+
+    #[test]
+    fn string_extras_emits_w103_deprecation() {
+        let src = r#"
+            task X : TaskBrief {
+                goal = "x"
+                extras = ["platform": "iOS"]
+            }
+        "#;
+        let diags = check_str(src);
+        assert!(diags.iter().any(|d| d.code == ErrorCode::DeprecatedStringExtras), "{diags:?}");
+    }
+
     // ── Effect fn @once return type auto-marks binding ───────────────────────
 
     #[test]
     fn inline_effect_once_return_auto_linear() {
         // Inline effect declares `fn charge() -> @once Handle`
         // → the bound variable is auto-linear without explicit `@once let`
-        let diags = check_src(r#"
+        let diags = check_src(
+            r#"
             import skill "Payment"
             effect Payment {
                 fn charge(amount: String) -> @once Handle
@@ -855,16 +1155,25 @@ mod tests {
                     let r = perform Payment.confirm(handle)?;
                 }
             }
-        "#);
-        let linear_errors: Vec<_> = diags.iter()
-            .filter(|d| d.code == ErrorCode::LinearBindingDropped || d.code == ErrorCode::LinearBindingReused)
+        "#,
+        );
+        let linear_errors: Vec<_> = diags
+            .iter()
+            .filter(|d| {
+                d.code == ErrorCode::LinearBindingDropped
+                    || d.code == ErrorCode::LinearBindingReused
+            })
             .collect();
-        assert!(linear_errors.is_empty(), "unexpected linear errors: {linear_errors:?}");
+        assert!(
+            linear_errors.is_empty(),
+            "unexpected linear errors: {linear_errors:?}"
+        );
     }
 
     #[test]
     fn inline_effect_once_return_dropped_is_error() {
-        let diags = check_src(r#"
+        let diags = check_src(
+            r#"
             import skill "Payment"
             effect Payment {
                 fn charge(amount: String) -> @once Handle
@@ -875,15 +1184,22 @@ mod tests {
                     let handle = perform Payment.charge(amount)?;
                 }
             }
-        "#);
-        assert!(diags.iter().any(|d| d.code == ErrorCode::LinearBindingDropped), "{diags:?}");
+        "#,
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == ErrorCode::LinearBindingDropped),
+            "{diags:?}"
+        );
     }
 
     // ── E103: effect performed but not in uses ───────────────────────────────
 
     #[test]
     fn e103_effect_performed_not_in_uses() {
-        let diags = check_src(r#"
+        let diags = check_src(
+            r#"
             import skill "GraphQL"
             import skill "Analytics"
             task T : TaskBrief uses [GraphQL] {
@@ -892,13 +1208,20 @@ mod tests {
                     let _ = perform Analytics.track(event)?;
                 }
             }
-        "#);
-        assert!(diags.iter().any(|d| d.code == ErrorCode::PerformWithoutUses), "{diags:?}");
+        "#,
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == ErrorCode::PerformWithoutUses),
+            "{diags:?}"
+        );
     }
 
     #[test]
     fn e103_not_fired_when_skill_in_uses() {
-        let diags = check_src(r#"
+        let diags = check_src(
+            r#"
             import skill "GraphQL"
             task T : TaskBrief uses [GraphQL] {
                 goal = "fetch"
@@ -906,8 +1229,12 @@ mod tests {
                     let user = perform GraphQL.query(UserQuery)?;
                 }
             }
-        "#);
-        let e103: Vec<_> = diags.iter().filter(|d| d.code == ErrorCode::PerformWithoutUses).collect();
+        "#,
+        );
+        let e103: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code == ErrorCode::PerformWithoutUses)
+            .collect();
         assert!(e103.is_empty(), "unexpected E103: {e103:?}");
     }
 
@@ -916,13 +1243,19 @@ mod tests {
     #[test]
     fn e101_fires_on_task_without_goal() {
         let diags = check_src(r#"task T : TaskBrief { step S {} }"#);
-        assert!(diags.iter().any(|d| d.code == ErrorCode::MissingGoal), "{diags:?}");
+        assert!(
+            diags.iter().any(|d| d.code == ErrorCode::MissingGoal),
+            "{diags:?}"
+        );
     }
 
     #[test]
     fn e101_not_fired_when_goal_present() {
         let diags = check_src(r#"task T : TaskBrief { goal = "do something" }"#);
-        let e101: Vec<_> = diags.iter().filter(|d| d.code == ErrorCode::MissingGoal).collect();
+        let e101: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code == ErrorCode::MissingGoal)
+            .collect();
         assert!(e101.is_empty(), "unexpected E101: {e101:?}");
     }
 
@@ -931,16 +1264,26 @@ mod tests {
     #[test]
     fn e102_fires_when_uses_without_import() {
         let diags = check_src(r#"task T : TaskBrief uses [GraphQL] { goal = "x" }"#);
-        assert!(diags.iter().any(|d| d.code == ErrorCode::UndeclaredSkillInUses), "{diags:?}");
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == ErrorCode::UndeclaredSkillInUses),
+            "{diags:?}"
+        );
     }
 
     #[test]
     fn e102_not_fired_when_imported() {
-        let diags = check_src(r#"
+        let diags = check_src(
+            r#"
             import skill "GraphQL"
             task T : TaskBrief uses [GraphQL] { goal = "x" }
-        "#);
-        let e102: Vec<_> = diags.iter().filter(|d| d.code == ErrorCode::UndeclaredSkillInUses).collect();
+        "#,
+        );
+        let e102: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code == ErrorCode::UndeclaredSkillInUses)
+            .collect();
         assert!(e102.is_empty(), "unexpected E102: {e102:?}");
     }
 
@@ -951,7 +1294,9 @@ mod tests {
         // No goal + skill in uses but not imported
         let diags = check_src(r#"task T : TaskBrief uses [Missing] {}"#);
         let has_e101 = diags.iter().any(|d| d.code == ErrorCode::MissingGoal);
-        let has_e102 = diags.iter().any(|d| d.code == ErrorCode::UndeclaredSkillInUses);
+        let has_e102 = diags
+            .iter()
+            .any(|d| d.code == ErrorCode::UndeclaredSkillInUses);
         assert!(has_e101, "expected E101: {diags:?}");
         assert!(has_e102, "expected E102: {diags:?}");
     }
@@ -961,7 +1306,8 @@ mod tests {
     #[test]
     fn test_blocks_do_not_generate_checker_errors() {
         // test { } blocks with mock/run/assert should be transparent to the checker
-        let diags = check_src(r#"
+        let diags = check_src(
+            r#"
             import skill "GraphQL"
             task FetchProfile : TaskBrief uses [GraphQL] {
                 goal = "Fetch a user profile"
@@ -977,17 +1323,22 @@ mod tests {
                 assert performed GraphQL.query
                 assert result is Ok
             }
-        "#);
+        "#,
+        );
         let hard_errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
         // check_src uses allow_missing_skills=true so E107 is suppressed; only structural errors fire
-        assert!(hard_errors.is_empty(), "unexpected hard errors: {hard_errors:?}");
+        assert!(
+            hard_errors.is_empty(),
+            "unexpected hard errors: {hard_errors:?}"
+        );
     }
 
     #[test]
     fn test_block_does_not_require_mock_skills_to_be_imported_twice() {
         // The test block references skills only via mock — it should not
         // cause E102/E103 even if the mock refers to a skill not declared in uses
-        let diags = check_src(r#"
+        let diags = check_src(
+            r#"
             import skill "GraphQL"
             task T : TaskBrief uses [GraphQL] { goal = "x" }
             test "uses unimported mock" {
@@ -995,10 +1346,14 @@ mod tests {
                 run T
                 assert result is Ok
             }
-        "#);
+        "#,
+        );
         // check_src uses allow_missing_skills=true so E107 is suppressed — only E102/E103 would appear
         let hard: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
-        assert!(hard.is_empty(), "unexpected errors from test block mock: {hard:?}");
+        assert!(
+            hard.is_empty(),
+            "unexpected errors from test block mock: {hard:?}"
+        );
     }
 
     // ── E107: skill has no interface file ─────────────────────────────────────
@@ -1010,40 +1365,58 @@ mod tests {
             import skill "GraphQL"
             task T : TaskBrief uses [GraphQL] { goal = "x" }
         "#);
-        let (program, _) = parse(&tokens, r#"
+        let (program, _) = parse(
+            &tokens,
+            r#"
             import skill "GraphQL"
             task T : TaskBrief uses [GraphQL] { goal = "x" }
-        "#);
+        "#,
+        );
         let ctx = CheckContext {
-            file_dir:             Path::new("."),
-            cwd:                  Path::new("."),
-            manifest:             None,
-            brief_path:           None,
+            file_dir: Path::new("."),
+            cwd: Path::new("."),
+            manifest: None,
+            brief_path: None,
             allow_missing_skills: false,
         };
         let diags = check(&program, &ctx);
-        assert!(diags.iter().any(|d| d.code == ErrorCode::MissingSkillInterface), "{diags:?}");
-        assert!(diags.iter().any(|d| d.is_error()), "E107 must be an error: {diags:?}");
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == ErrorCode::MissingSkillInterface),
+            "{diags:?}"
+        );
+        assert!(
+            diags.iter().any(|d| d.is_error()),
+            "E107 must be an error: {diags:?}"
+        );
     }
 
     #[test]
     fn e107_suppressed_by_allow_missing_skills() {
         // allow_missing_skills=true → no E107 emitted at all
-        let diags = check_src(r#"
+        let diags = check_src(
+            r#"
             import skill "GraphQL"
             task T : TaskBrief uses [GraphQL] { goal = "x" }
-        "#);
-        let e107: Vec<_> = diags.iter()
+        "#,
+        );
+        let e107: Vec<_> = diags
+            .iter()
             .filter(|d| d.code == ErrorCode::MissingSkillInterface)
             .collect();
-        assert!(e107.is_empty(), "E107 should be suppressed by allow_missing_skills: {e107:?}");
+        assert!(
+            e107.is_empty(),
+            "E107 should be suppressed by allow_missing_skills: {e107:?}"
+        );
     }
 
     // ── Effect group used in multiple tasks ───────────────────────────────────
 
     #[test]
     fn effect_group_works_across_multiple_tasks() {
-        let diags = check_src(r#"
+        let diags = check_src(
+            r#"
             import skill "Auth"
             import skill "Session"
             type AuthEffects = [Auth, Session]
@@ -1056,8 +1429,12 @@ mod tests {
                 goal = "logout"
                 step Do { let _ = perform Session.destroy(token)?; }
             }
-        "#);
-        let e102: Vec<_> = diags.iter().filter(|d| d.code == ErrorCode::UndeclaredSkillInUses).collect();
+        "#,
+        );
+        let e102: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code == ErrorCode::UndeclaredSkillInUses)
+            .collect();
         assert!(e102.is_empty(), "unexpected E102: {e102:?}");
     }
 
@@ -1067,7 +1444,10 @@ mod tests {
     fn mcp_attribute_on_type_alias_is_valid() {
         let diags = check_src(r#"type GitHubMCP = @mcp GitHub"#);
         let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
-        assert!(errors.is_empty(), "unexpected errors for @mcp alias: {errors:?}");
+        assert!(
+            errors.is_empty(),
+            "unexpected errors for @mcp alias: {errors:?}"
+        );
     }
 
     // ── Cross-step linear tracking (two-level task_linear) ────────────────────
@@ -1075,7 +1455,8 @@ mod tests {
     #[test]
     fn linear_binding_consumed_in_later_step_is_ok() {
         // @once let handle declared in step 1, consumed in step 2 — no error.
-        let diags = check_src(r#"
+        let diags = check_src(
+            r#"
             import skill "Payment"
             task Pay : TaskBrief uses [Payment] {
                 goal = "charge"
@@ -1086,17 +1467,26 @@ mod tests {
                     let r = perform Payment.confirm(handle)?;
                 }
             }
-        "#);
-        let linear_errors: Vec<_> = diags.iter()
-            .filter(|d| d.code == ErrorCode::LinearBindingDropped || d.code == ErrorCode::LinearBindingReused)
+        "#,
+        );
+        let linear_errors: Vec<_> = diags
+            .iter()
+            .filter(|d| {
+                d.code == ErrorCode::LinearBindingDropped
+                    || d.code == ErrorCode::LinearBindingReused
+            })
             .collect();
-        assert!(linear_errors.is_empty(), "unexpected linear errors: {linear_errors:?}");
+        assert!(
+            linear_errors.is_empty(),
+            "unexpected linear errors: {linear_errors:?}"
+        );
     }
 
     #[test]
     fn linear_binding_never_consumed_across_steps_is_e105() {
         // @once let handle declared in step 1, never used in any step → E105.
-        let diags = check_src(r#"
+        let diags = check_src(
+            r#"
             import skill "Payment"
             task Pay : TaskBrief uses [Payment] {
                 goal = "charge"
@@ -1107,15 +1497,22 @@ mod tests {
                     let x = perform Payment.finalize(amount)?;
                 }
             }
-        "#);
-        assert!(diags.iter().any(|d| d.code == ErrorCode::LinearBindingDropped), "{diags:?}");
+        "#,
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == ErrorCode::LinearBindingDropped),
+            "{diags:?}"
+        );
     }
 
     #[test]
     fn linear_binding_reused_across_steps_is_e104() {
         // @once handle promoted to task_linear (step 1 declares but doesn't use it).
         // Step 2 uses it twice in one step → E104.
-        let diags = check_src(r#"
+        let diags = check_src(
+            r#"
             import skill "Payment"
             task Pay : TaskBrief uses [Payment] {
                 goal = "charge"
@@ -1127,9 +1524,12 @@ mod tests {
                     let b = perform Payment.confirm(handle)?;
                 }
             }
-        "#);
+        "#,
+        );
         assert!(
-            diags.iter().any(|d| d.code == ErrorCode::LinearBindingReused),
+            diags
+                .iter()
+                .any(|d| d.code == ErrorCode::LinearBindingReused),
             "expected E104 for cross-step reuse: {diags:?}"
         );
     }
@@ -1137,7 +1537,8 @@ mod tests {
     #[test]
     fn linear_binding_shadowed_before_consumed_is_e105() {
         // @once x declared in step 1, then re-declared @once in step 2 → E105 for old x.
-        let diags = check_src(r#"
+        let diags = check_src(
+            r#"
             import skill "Payment"
             task Pay : TaskBrief uses [Payment] {
                 goal = "charge"
@@ -1149,9 +1550,12 @@ mod tests {
                     let _ = perform Payment.confirm(handle)?;
                 }
             }
-        "#);
+        "#,
+        );
         assert!(
-            diags.iter().any(|d| d.code == ErrorCode::LinearBindingDropped),
+            diags
+                .iter()
+                .any(|d| d.code == ErrorCode::LinearBindingDropped),
             "expected E105 for shadow-before-consume: {diags:?}"
         );
     }
@@ -1171,10 +1575,10 @@ mod tests {
         let (tokens, _) = lex(src);
         let (program, _) = parse(&tokens, src);
         let ctx = CheckContext {
-            file_dir:             dir.path(),
-            cwd:                  dir.path(),
-            manifest:             None,
-            brief_path:           None,
+            file_dir: dir.path(),
+            cwd: dir.path(),
+            manifest: None,
+            brief_path: None,
             allow_missing_skills: false,
         };
         check(&program, &ctx)
@@ -1193,12 +1597,21 @@ test "coverage" {
 }
 "#;
         let diags = check_src_with_skills(src, &[("Mapper", skill_content)]);
-        assert!(diags.iter().any(|d| d.code == ErrorCode::RangeBoundaryMissing), "{diags:?}");
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == ErrorCode::RangeBoundaryMissing),
+            "{diags:?}"
+        );
         // Ensure the lower boundary (0) is the one flagged
-        let e301: Vec<_> = diags.iter()
+        let e301: Vec<_> = diags
+            .iter()
             .filter(|d| d.code == ErrorCode::RangeBoundaryMissing)
             .collect();
-        assert!(e301.iter().any(|d| d.message.contains("arg = 0")), "{e301:?}");
+        assert!(
+            e301.iter().any(|d| d.message.contains("arg = 0")),
+            "{e301:?}"
+        );
     }
 
     #[test]
@@ -1213,11 +1626,18 @@ test "coverage" {
 }
 "#;
         let diags = check_src_with_skills(src, &[("Mapper", skill_content)]);
-        let e301: Vec<_> = diags.iter()
+        let e301: Vec<_> = diags
+            .iter()
             .filter(|d| d.code == ErrorCode::RangeBoundaryMissing)
             .collect();
-        assert!(!e301.is_empty(), "expected E301 for missing upper boundary: {diags:?}");
-        assert!(e301.iter().any(|d| d.message.contains("arg = 100")), "{e301:?}");
+        assert!(
+            !e301.is_empty(),
+            "expected E301 for missing upper boundary: {diags:?}"
+        );
+        assert!(
+            e301.iter().any(|d| d.message.contains("arg = 100")),
+            "{e301:?}"
+        );
     }
 
     #[test]
@@ -1233,7 +1653,8 @@ test "coverage" {
 }
 "#;
         let diags = check_src_with_skills(src, &[("Mapper", skill_content)]);
-        let e301: Vec<_> = diags.iter()
+        let e301: Vec<_> = diags
+            .iter()
             .filter(|d| d.code == ErrorCode::RangeBoundaryMissing)
             .collect();
         assert!(e301.is_empty(), "unexpected E301: {e301:?}");
@@ -1253,11 +1674,18 @@ test "coverage" {
 "#;
         // "err" is missing
         let diags = check_src_with_skills(src, &[("Classifier", skill_content)]);
-        let e302: Vec<_> = diags.iter()
+        let e302: Vec<_> = diags
+            .iter()
             .filter(|d| d.code == ErrorCode::EnumValueMissing)
             .collect();
-        assert!(!e302.is_empty(), "expected E302 for missing \"err\": {diags:?}");
-        assert!(e302.iter().any(|d| d.message.contains("\"err\"")), "{e302:?}");
+        assert!(
+            !e302.is_empty(),
+            "expected E302 for missing \"err\": {diags:?}"
+        );
+        assert!(
+            e302.iter().any(|d| d.message.contains("\"err\"")),
+            "{e302:?}"
+        );
     }
 
     #[test]
@@ -1274,7 +1702,8 @@ test "coverage" {
 }
 "#;
         let diags = check_src_with_skills(src, &[("Classifier", skill_content)]);
-        let e302: Vec<_> = diags.iter()
+        let e302: Vec<_> = diags
+            .iter()
             .filter(|d| d.code == ErrorCode::EnumValueMissing)
             .collect();
         assert!(e302.is_empty(), "unexpected E302: {e302:?}");
@@ -1283,7 +1712,7 @@ test "coverage" {
     // ── Lock gate (E303) ────────────────────────────────────────────────────
 
     fn check_src_with_skills_and_path(
-        src:    &str,
+        src: &str,
         skills: &[(&str, &str)],
         brief_path: Option<&Path>,
     ) -> Vec<BriefError> {
@@ -1298,9 +1727,9 @@ test "coverage" {
         let (tokens, _) = lex(src);
         let (program, _) = parse(&tokens, src);
         let ctx = CheckContext {
-            file_dir:             dir.path(),
-            cwd:                  dir.path(),
-            manifest:             None,
+            file_dir: dir.path(),
+            cwd: dir.path(),
+            manifest: None,
             brief_path,
             allow_missing_skills: false,
         };
@@ -1318,7 +1747,8 @@ task Pay : TaskBrief uses [Payment] { goal = "charge" }
 "#;
         // brief_path points to a nonexistent file → lock also nonexistent
         let brief_path = Path::new("/tmp/nonexistent_for_test.brief");
-        let diags = check_src_with_skills_and_path(src, &[("Payment", skill_content)], Some(brief_path));
+        let diags =
+            check_src_with_skills_and_path(src, &[("Payment", skill_content)], Some(brief_path));
         assert!(
             diags.iter().any(|d| d.code == ErrorCode::LockRequired),
             "expected E303 for missing lock: {diags:?}"
@@ -1336,7 +1766,8 @@ task T : TaskBrief uses [Mapper] { goal = "map" }
 "#;
         // No dynamic annotations → lock gate should NOT fire
         let diags = check_src_with_skills(src, &[("Mapper", skill_content)]);
-        let e303: Vec<_> = diags.iter()
+        let e303: Vec<_> = diags
+            .iter()
             .filter(|d| d.code == ErrorCode::LockRequired)
             .collect();
         assert!(e303.is_empty(), "unexpected E303: {e303:?}");
@@ -1353,9 +1784,13 @@ task Pay : TaskBrief uses [Payment] { goal = "charge" }
 "#;
         // brief_path = None → lock gate skips gracefully
         let diags = check_src_with_skills_and_path(src, &[("Payment", skill_content)], None);
-        let e303: Vec<_> = diags.iter()
+        let e303: Vec<_> = diags
+            .iter()
             .filter(|d| d.code == ErrorCode::LockRequired)
             .collect();
-        assert!(e303.is_empty(), "unexpected E303 when brief_path=None: {e303:?}");
+        assert!(
+            e303.is_empty(),
+            "unexpected E303 when brief_path=None: {e303:?}"
+        );
     }
 }

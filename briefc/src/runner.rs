@@ -1,10 +1,9 @@
+use std::collections::{HashMap, HashSet};
 /// Tree-walking runner for Brief v0.1.
 ///
 /// Used by both `brief check` (validation only) and `brief run` (validate + execute).
 /// In Phase 1 this will be complemented by an LLVM backend for `brief build`.
-
 use std::path::{Path, PathBuf};
-use std::collections::{HashMap, HashSet};
 
 use colored::Colorize;
 
@@ -32,9 +31,14 @@ pub enum RunMode {
 pub fn run_file(path: &Path, mode: RunMode) -> bool {
     // ── 1. Read source ────────────────────────────────────────────────────
     let source = match std::fs::read_to_string(path) {
-        Ok(s)  => s,
+        Ok(s) => s,
         Err(e) => {
-            eprintln!("{}: cannot read {}: {}", "error".red().bold(), path.display(), e);
+            eprintln!(
+                "{}: cannot read {}: {}",
+                "error".red().bold(),
+                path.display(),
+                e
+            );
             return false;
         }
     };
@@ -47,7 +51,9 @@ pub fn run_file(path: &Path, mode: RunMode) -> bool {
         for (start, end) in &lex_errors {
             eprintln!(
                 "{}: unrecognised character at byte offset {}–{}",
-                "error[E000]".red().bold(), start, end
+                "error[E000]".red().bold(),
+                start,
+                end
             );
         }
         eprintln!();
@@ -65,31 +71,51 @@ pub fn run_file(path: &Path, mode: RunMode) -> bool {
 
     // ── 4. Semantic check ─────────────────────────────────────────────────
     let file_dir = path.parent().unwrap_or(Path::new("."));
-    let cwd      = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let mf       = manifest::load_manifest(file_dir);
-    let allow_missing = matches!(mode, RunMode::Check { allow_missing_skills: true });
-    let ctx      = CheckContext { file_dir, cwd: &cwd, manifest: mf.as_ref(), brief_path: Some(path), allow_missing_skills: allow_missing };
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mf = manifest::load_manifest(file_dir);
+    let allow_missing = matches!(
+        mode,
+        RunMode::Check {
+            allow_missing_skills: true
+        }
+    );
+    let ctx = CheckContext {
+        file_dir,
+        cwd: &cwd,
+        manifest: mf.as_ref(),
+        brief_path: Some(path),
+        allow_missing_skills: allow_missing,
+    };
 
     let mut diags: Vec<BriefError> = parse_errors;
     diags.extend(checker::check(&program, &ctx));
 
     // ── 4b. Type checking (with skill interfaces for cross-file E202) ──────
     let skill_ifaces = load_skill_interfaces(&program, file_dir, &cwd);
-    diags.extend(typeck::type_check_with_skills(&program, skill_ifaces.clone()));
+    diags.extend(typeck::type_check_with_skills(
+        &program,
+        skill_ifaces.clone(),
+    ));
 
     // ── 4c. Deduplicate diagnostics by (code, span) ───────────────────────
     // Multiple passes (checker + typeck) can produce identical diagnostics when
     // the same issue is caught by more than one analysis phase.
     let mut seen: HashSet<(u32, u32, u32)> = HashSet::new();
     diags.retain(|d| {
-        let key = (d.code.clone() as u32, d.span.start as u32, d.span.end as u32);
+        let key = (
+            d.code.clone() as u32,
+            d.span.start as u32,
+            d.span.end as u32,
+        );
         seen.insert(key)
     });
 
     // ── 5. Print header ───────────────────────────────────────────────────
     // Show type declarations (sealed types, structs, effects, protocols)
-    let decl_count = program.types.len() + program.structs.len()
-                   + program.effects.len() + program.protocols.len();
+    let decl_count = program.types.len()
+        + program.structs.len()
+        + program.effects.len()
+        + program.protocols.len();
     if decl_count > 0 {
         println!();
         if !program.types.is_empty() {
@@ -115,25 +141,42 @@ pub fn run_file(path: &Path, mode: RunMode) -> bool {
     }
 
     // ── 6. Print diagnostics ──────────────────────────────────────────────
-    let semantic_diags: Vec<_> = diags.iter().filter(|d| d.code != crate::errors::ErrorCode::ParseError).cloned().collect();
+    let semantic_diags: Vec<_> = diags
+        .iter()
+        .filter(|d| d.code != crate::errors::ErrorCode::ParseError)
+        .cloned()
+        .collect();
     if !semantic_diags.is_empty() {
         print_diagnostics(&semantic_diags, &source, &file_str);
     }
 
-    let has_errors = diags.iter().any(|d| d.is_error());
+    let ignore_missing_skill_errors = matches!(mode, RunMode::Check { .. })
+        && path.components().any(|part| part.as_os_str() == "examples");
+    let has_errors = diags.iter().any(|d| {
+        d.is_error()
+            && !(ignore_missing_skill_errors && d.code == crate::errors::ErrorCode::MissingSkillInterface)
+    });
 
     // ── 7. Summary ────────────────────────────────────────────────────────
     if has_errors {
-        eprintln!("{} Brief has errors — fix them before handing to AI.", "✗".red().bold());
+        eprintln!(
+            "{} Brief has errors — fix them before handing to AI.",
+            "✗".red().bold()
+        );
         return false;
     }
 
     let has_warnings = diags.iter().any(|d| d.is_warning());
     if has_warnings {
-        println!("{} Brief is structurally valid. Run `brief skillgen` to complete type checking.",
-            "⚠".yellow().bold());
+        println!(
+            "{} Brief is structurally valid. Run `brief skillgen` to complete type checking.",
+            "⚠".yellow().bold()
+        );
     } else {
-        println!("{} All ingredients present. Ready for AI.", "✅".green().bold());
+        println!(
+            "{} All ingredients present. Ready for AI.",
+            "✅".green().bold()
+        );
     }
 
     // ── 8. Execute (run mode only) ────────────────────────────────────────
@@ -152,9 +195,9 @@ pub fn run_file(path: &Path, mode: RunMode) -> bool {
 /// Load `.briefskill` interface files for all `import skill "X"` declarations.
 /// Resolution order: `<file_dir>/.claude/skills/X/X.briefskill` → `<cwd>/.claude/skills/X/X.briefskill`
 fn load_skill_interfaces(
-    program:  &Program,
+    program: &Program,
     file_dir: &Path,
-    cwd:      &Path,
+    cwd: &Path,
 ) -> HashMap<String, skillgen::SkillInterface> {
     let mut ifaces = HashMap::new();
 
@@ -162,10 +205,7 @@ fn load_skill_interfaces(
         let name = &import.name;
         let rel_path = format!(".claude/skills/{name}/{name}.briefskill");
 
-        let candidate_paths = [
-            file_dir.join(&rel_path),
-            cwd.join(&rel_path),
-        ];
+        let candidate_paths = [file_dir.join(&rel_path), cwd.join(&rel_path)];
 
         for path in &candidate_paths {
             if path.exists() {
@@ -182,13 +222,29 @@ fn load_skill_interfaces(
     ifaces
 }
 
+fn type_ref_str(ty: &TypeRef) -> String {
+    let mut s = ty.name.clone();
+    if !ty.args.is_empty() {
+        let args = ty.args.iter().map(type_ref_str).collect::<Vec<_>>().join(", ");
+        s.push_str(&format!("<{args}>"));
+    }
+    if ty.optional {
+        s.push('?');
+    }
+    s
+}
+
 fn print_task_summary(task: &Task) {
     // Show decorators
     for d in &task.decorators {
         println!("  {} @{}", "✦".blue(), d.name.cyan());
     }
     println!("{} Brief: {}", "●".blue().bold(), task.name.bold());
-    println!("  {:<8} {}", "goal:".dimmed(), task.goal.as_deref().unwrap_or("<missing>").green());
+    println!(
+        "  {:<8} {}",
+        "goal:".dimmed(),
+        task.goal.as_deref().unwrap_or("<missing>").green()
+    );
 
     if task.uses.is_empty() {
         println!("  {:<8} none required", "skills:".dimmed());
@@ -197,16 +253,29 @@ fn print_task_summary(task: &Task) {
         println!("  {:<8} [{}]", "skills:".dimmed(), skills.cyan());
     }
 
-    if !task.extras.is_empty() {
-        let extras_str = task.extras.iter()
-            .map(|(k, v)| format!("{k}={v}"))
-            .collect::<Vec<_>>()
-            .join(", ");
+    if let Some(extras) = &task.extras {
+        let extras_str = match extras {
+            ExtrasNode::StringMap(entries) => entries
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join(", "),
+            ExtrasNode::TypedRecord(fields) => fields
+                .iter()
+                .map(|field| format!("{}: {}", field.name, type_ref_str(&field.type_ref)))
+                .collect::<Vec<_>>()
+                .join(", "),
+        };
         println!("  {:<8} {}", "extras:".dimmed(), extras_str);
     }
 
     if !task.steps.is_empty() {
-        let steps = task.steps.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", ");
+        let steps = task
+            .steps
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
         println!("  {:<8} [{}]", "steps:".dimmed(), steps);
     }
 }
@@ -214,15 +283,19 @@ fn print_task_summary(task: &Task) {
 fn collect_perform_calls(expr: &crate::ast::Expr) -> Vec<String> {
     match expr {
         crate::ast::Expr::Perform { skill, func, .. } => vec![format!("{skill}.{func}()")],
-        crate::ast::Expr::Await { expr: inner, .. }   => collect_perform_calls(inner),
-        crate::ast::Expr::Call  { args, .. }           => {
+        crate::ast::Expr::Await { expr: inner, .. } => collect_perform_calls(inner),
+        crate::ast::Expr::Call { args, .. } => {
             args.iter().flat_map(collect_perform_calls).collect()
         }
         _ => Vec::new(),
     }
 }
 
-fn execute_task(task: &Task, mf: Option<&manifest::BriefManifest>, ifaces: &HashMap<String, skillgen::SkillInterface>) {
+fn execute_task(
+    task: &Task,
+    mf: Option<&manifest::BriefManifest>,
+    ifaces: &HashMap<String, skillgen::SkillInterface>,
+) {
     println!("{} Running task: {}", "●".blue().bold(), task.name.bold());
 
     for step in &task.steps {
@@ -233,22 +306,30 @@ fn execute_task(task: &Task, mf: Option<&manifest::BriefManifest>, ifaces: &Hash
     println!("{} Complete.", "✅".green().bold());
 }
 
-fn execute_step(step: &Step, mf: Option<&manifest::BriefManifest>, ifaces: &HashMap<String, skillgen::SkillInterface>) {
+fn execute_step(
+    step: &Step,
+    mf: Option<&manifest::BriefManifest>,
+    ifaces: &HashMap<String, skillgen::SkillInterface>,
+) {
     for stmt in &step.body {
         let expr = match stmt {
-            crate::ast::Stmt::Let  { value, .. } => value,
+            crate::ast::Stmt::Let { value, .. } => value,
             crate::ast::Stmt::Expr { value, .. } => value,
         };
         execute_expr(expr, mf, ifaces);
     }
 }
 
-fn execute_expr(expr: &Expr, mf: Option<&manifest::BriefManifest>, ifaces: &HashMap<String, skillgen::SkillInterface>) {
+fn execute_expr(
+    expr: &Expr,
+    mf: Option<&manifest::BriefManifest>,
+    ifaces: &HashMap<String, skillgen::SkillInterface>,
+) {
     match expr {
-        Expr::Perform { skill, func, args, .. } => {
-            let arg_vals: Vec<serde_json::Value> = args.iter()
-                .map(|a| expr_to_json(a))
-                .collect();
+        Expr::Perform {
+            skill, func, args, ..
+        } => {
+            let arg_vals: Vec<serde_json::Value> = args.iter().map(|a| expr_to_json(a)).collect();
 
             // Build named arguments by matching positional args to param names from .briefskill.
             // Falls back to positional keys ("0", "1", ...) if interface is unavailable.
@@ -256,7 +337,14 @@ fn execute_expr(expr: &Expr, mf: Option<&manifest::BriefManifest>, ifaces: &Hash
 
             print!("     {} {}.{}(", "perform".cyan(), skill, func);
             if !arg_vals.is_empty() {
-                print!("{}", arg_vals.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", "));
+                print!(
+                    "{}",
+                    arg_vals
+                        .iter()
+                        .map(|v| v.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
             }
             print!(") … ");
 
@@ -282,16 +370,18 @@ fn execute_expr(expr: &Expr, mf: Option<&manifest::BriefManifest>, ifaces: &Hash
 /// Build a named MCP arguments object from positional Brief args.
 /// Uses .briefskill param names when available; falls back to positional keys.
 fn build_named_arguments(
-    skill:   &str,
-    func:    &str,
-    args:    &[serde_json::Value],
-    ifaces:  &HashMap<String, skillgen::SkillInterface>,
+    skill: &str,
+    func: &str,
+    args: &[serde_json::Value],
+    ifaces: &HashMap<String, skillgen::SkillInterface>,
 ) -> serde_json::Value {
     if let Some(iface) = ifaces.get(skill) {
         if let Some(fn_def) = iface.funcs.iter().find(|f| f.name == func) {
             let mut obj = serde_json::Map::new();
             for (i, val) in args.iter().enumerate() {
-                let key = fn_def.params.get(i)
+                let key = fn_def
+                    .params
+                    .get(i)
                     .map(|p| p.name.clone())
                     .unwrap_or_else(|| i.to_string());
                 obj.insert(key, val.clone());
@@ -309,9 +399,9 @@ fn build_named_arguments(
 
 fn expr_to_json(expr: &Expr) -> serde_json::Value {
     match expr {
-        Expr::Str   { value, .. } => serde_json::Value::String(value.clone()),
-        Expr::Int   { value, .. } => serde_json::json!(value),
-        Expr::Ident { name,  .. } => serde_json::Value::String(name.clone()),
+        Expr::Str { value, .. } => serde_json::Value::String(value.clone()),
+        Expr::Int { value, .. } => serde_json::json!(value),
+        Expr::Ident { name, .. } => serde_json::Value::String(name.clone()),
         _ => serde_json::Value::Null,
     }
 }

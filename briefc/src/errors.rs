@@ -6,7 +6,6 @@
 /// - E2xx: Type errors
 /// - E3xx: Spec/constraint/lock errors
 /// - W1xx: Warnings (stale skill interfaces)
-
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +31,8 @@ pub enum ErrorCode {
     WrongArgCount,
     /// Struct field attribute value fails constraint (e.g. @url on non-URL)
     AttributeConstraint,
+    /// Generic type parameter shadows a real declared type (builtin or user-defined)
+    ScopedGenericConflict,
     // ── Spec / constraint coverage errors (Phase 1) ───────────────────────
     /// `@range(min, max)` boundary literal missing in test block (E301)
     RangeBoundaryMissing,
@@ -47,27 +48,34 @@ pub enum ErrorCode {
     MissingSkillInterface,
     #[allow(dead_code)]
     StaleSkillInterface,
+    /// Old `extras = ["k": "v"]` syntax is deprecated — use `extras { ... }` (W103)
+    DeprecatedStringExtras,
+    /// Typed `extras` field references an unknown type (E208)
+    UnknownExtrasField,
 }
 
 impl fmt::Display for ErrorCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let code = match self {
-            ErrorCode::ParseError            => "E001",
-            ErrorCode::MissingGoal           => "E101",
+            ErrorCode::ParseError => "E001",
+            ErrorCode::MissingGoal => "E101",
             ErrorCode::UndeclaredSkillInUses => "E102",
-            ErrorCode::PerformWithoutUses    => "E103",
-            ErrorCode::LinearBindingReused   => "E104",
-            ErrorCode::LinearBindingDropped  => "E105",
-            ErrorCode::UnknownEffectGroup    => "E106",
-            ErrorCode::UnknownType           => "E201",
-            ErrorCode::WrongArgCount         => "E202",
-            ErrorCode::AttributeConstraint   => "E203",
-            ErrorCode::RangeBoundaryMissing  => "E301",
-            ErrorCode::EnumValueMissing      => "E302",
-            ErrorCode::LockRequired          => "E303",
-            ErrorCode::UnconfiguredVerifier  => "E309",
-            ErrorCode::MissingSkillInterface => "E107",
-            ErrorCode::StaleSkillInterface   => "W102",
+            ErrorCode::PerformWithoutUses => "E103",
+            ErrorCode::LinearBindingReused => "E104",
+            ErrorCode::LinearBindingDropped => "E105",
+            ErrorCode::UnknownEffectGroup => "E106",
+            ErrorCode::UnknownType            => "E201",
+            ErrorCode::WrongArgCount          => "E202",
+            ErrorCode::AttributeConstraint    => "E203",
+            ErrorCode::ScopedGenericConflict  => "E206",
+            ErrorCode::UnknownExtrasField     => "E208",
+            ErrorCode::RangeBoundaryMissing   => "E301",
+            ErrorCode::EnumValueMissing       => "E302",
+            ErrorCode::LockRequired           => "E303",
+            ErrorCode::UnconfiguredVerifier   => "E309",
+            ErrorCode::MissingSkillInterface  => "E107",
+            ErrorCode::StaleSkillInterface    => "W102",
+            ErrorCode::DeprecatedStringExtras => "W103",
         };
         write!(f, "{code}")
     }
@@ -75,22 +83,25 @@ impl fmt::Display for ErrorCode {
 
 impl ErrorCode {
     pub fn is_error(&self) -> bool {
-        matches!(self,
+        matches!(
+            self,
             ErrorCode::ParseError
-            | ErrorCode::MissingGoal
-            | ErrorCode::UndeclaredSkillInUses
-            | ErrorCode::PerformWithoutUses
-            | ErrorCode::LinearBindingReused
-            | ErrorCode::LinearBindingDropped
-            | ErrorCode::UnknownEffectGroup
-            | ErrorCode::UnknownType
-            | ErrorCode::WrongArgCount
-            | ErrorCode::AttributeConstraint
-            | ErrorCode::RangeBoundaryMissing
-            | ErrorCode::EnumValueMissing
-            | ErrorCode::LockRequired
-            | ErrorCode::UnconfiguredVerifier
-            | ErrorCode::MissingSkillInterface
+                | ErrorCode::MissingGoal
+                | ErrorCode::UndeclaredSkillInUses
+                | ErrorCode::PerformWithoutUses
+                | ErrorCode::LinearBindingReused
+                | ErrorCode::LinearBindingDropped
+                | ErrorCode::UnknownEffectGroup
+                | ErrorCode::UnknownType
+                | ErrorCode::WrongArgCount
+                | ErrorCode::AttributeConstraint
+                | ErrorCode::ScopedGenericConflict
+                | ErrorCode::UnknownExtrasField
+                | ErrorCode::RangeBoundaryMissing
+                | ErrorCode::EnumValueMissing
+                | ErrorCode::LockRequired
+                | ErrorCode::UnconfiguredVerifier
+                | ErrorCode::MissingSkillInterface
         )
     }
 }
@@ -101,15 +112,19 @@ use crate::ast::Span;
 
 #[derive(Debug, Clone)]
 pub struct BriefError {
-    pub code:    ErrorCode,
+    pub code: ErrorCode,
     pub message: String,
-    pub span:    Span,
-    pub hint:    Option<String>,
+    pub span: Span,
+    pub hint: Option<String>,
 }
 
 impl BriefError {
-    pub fn is_error(&self)   -> bool { self.code.is_error() }
-    pub fn is_warning(&self) -> bool { !self.is_error() }
+    pub fn is_error(&self) -> bool {
+        self.code.is_error()
+    }
+    pub fn is_warning(&self) -> bool {
+        !self.is_error()
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -156,10 +171,17 @@ fn print_diagnostic(d: &BriefError, source: &str, file: &str) {
 
 fn offset_to_line_col(source: &str, offset: usize) -> (usize, usize) {
     let mut line = 1usize;
-    let mut col  = 1usize;
+    let mut col = 1usize;
     for (i, ch) in source.char_indices() {
-        if i == offset { break; }
-        if ch == '\n' { line += 1; col = 1; } else { col += 1; }
+        if i == offset {
+            break;
+        }
+        if ch == '\n' {
+            line += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
     }
     (line, col)
 }

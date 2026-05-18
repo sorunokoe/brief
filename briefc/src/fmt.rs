@@ -1,3 +1,4 @@
+use colored::Colorize;
 /// `brief fmt` — canonical source formatter for Brief files.
 ///
 /// Reads a `.brief` file, parses it, then regenerates the source from the AST
@@ -14,9 +15,7 @@
 /// - `extras` entries: sorted alphabetically by key
 /// - Trailing newline, no trailing whitespace
 /// - Comments are NOT preserved (parse → regenerate)
-
 use std::path::Path;
-use colored::Colorize;
 
 use crate::ast::*;
 use crate::lexer::lex;
@@ -27,12 +26,17 @@ use crate::parser::parse;
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub struct Formatter {
-    out:    String,
+    out: String,
     indent: usize,
 }
 
 impl Formatter {
-    fn new() -> Self { Formatter { out: String::new(), indent: 0 } }
+    fn new() -> Self {
+        Formatter {
+            out: String::new(),
+            indent: 0,
+        }
+    }
 
     fn line(&mut self, s: &str) {
         if s.is_empty() {
@@ -45,7 +49,9 @@ impl Formatter {
         }
     }
 
-    fn blank(&mut self) { self.out.push('\n'); }
+    fn blank(&mut self) {
+        self.out.push('\n');
+    }
 
     fn indented<F: FnOnce(&mut Self)>(&mut self, f: F) {
         self.indent += 1;
@@ -59,19 +65,29 @@ impl Formatter {
         let name = if ty.args.is_empty() {
             ty.name.clone()
         } else {
-            let args = ty.args.iter().map(Self::fmt_type_ref).collect::<Vec<_>>().join(", ");
+            let args = ty
+                .args
+                .iter()
+                .map(Self::fmt_type_ref)
+                .collect::<Vec<_>>()
+                .join(", ");
             format!("{}<{}>", ty.name, args)
         };
-        if ty.optional { format!("{name}?") } else { name }
+        if ty.optional {
+            format!("{name}?")
+        } else {
+            name
+        }
     }
 
     // ── Attributes ────────────────────────────────────────────────────────
 
     fn fmt_attrs(attrs: &[Attribute]) -> String {
-        attrs.iter()
+        attrs
+            .iter()
             .map(|a| match &a.arg {
                 Some(arg) => format!("@{}({:?})", a.name, arg),
-                None      => format!("@{}", a.name),
+                None => format!("@{}", a.name),
             })
             .collect::<Vec<_>>()
             .join(" ")
@@ -81,24 +97,47 @@ impl Formatter {
 
     fn fmt_expr(expr: &Expr) -> String {
         match expr {
-            Expr::Perform { skill, func, args, propagate, .. } => {
-                let arg_str = args.iter().map(Self::fmt_expr).collect::<Vec<_>>().join(", ");
-                let call    = format!("perform {skill}.{func}({arg_str})");
-                if *propagate { format!("{call}?") } else { call }
+            Expr::Perform {
+                skill,
+                func,
+                args,
+                propagate,
+                ..
+            } => {
+                let arg_str = args
+                    .iter()
+                    .map(Self::fmt_expr)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let call = format!("perform {skill}.{func}({arg_str})");
+                if *propagate {
+                    format!("{call}?")
+                } else {
+                    call
+                }
             }
             Expr::Await { expr: inner, .. } => {
                 format!("await {}", Self::fmt_expr(inner))
             }
-            Expr::Call { receiver, func, args, .. } => {
-                let arg_str = args.iter().map(Self::fmt_expr).collect::<Vec<_>>().join(", ");
+            Expr::Call {
+                receiver,
+                func,
+                args,
+                ..
+            } => {
+                let arg_str = args
+                    .iter()
+                    .map(Self::fmt_expr)
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 match receiver {
                     Some(r) => format!("{r}.{func}({arg_str})"),
-                    None    => format!("{func}({arg_str})"),
+                    None => format!("{func}({arg_str})"),
                 }
             }
             Expr::Ident { name, .. } => name.clone(),
-            Expr::Str   { value, .. } => format!("{value:?}"),
-            Expr::Int   { value, .. } => value.to_string(),
+            Expr::Str { value, .. } => format!("{value:?}"),
+            Expr::Int { value, .. } => value.to_string(),
         }
     }
 
@@ -106,11 +145,20 @@ impl Formatter {
 
     fn fmt_stmt(&mut self, stmt: &Stmt) {
         match stmt {
-            Stmt::Let { name, value, attrs, .. } => {
+            Stmt::Let {
+                name, value, attrs, ..
+            } => {
                 let prefix = if attrs.is_empty() {
                     String::new()
                 } else {
-                    format!("{} ", attrs.iter().map(|a| format!("@{a}")).collect::<Vec<_>>().join(" "))
+                    format!(
+                        "{} ",
+                        attrs
+                            .iter()
+                            .map(|a| format!("@{a}"))
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    )
                 };
                 self.line(&format!("{prefix}let {name} = {};", Self::fmt_expr(value)));
             }
@@ -140,15 +188,27 @@ impl Formatter {
         } else {
             format!("<{}>", sig.type_params.join(", "))
         };
-        let params = sig.params.iter().map(|p| {
-            let attrs = Self::fmt_attrs(&p.attrs);
-            let ty    = Self::fmt_type_ref(&p.ty);
-            if attrs.is_empty() { format!("{}: {ty}", p.name) }
-            else                { format!("{}: {attrs} {ty}", p.name) }
-        }).collect::<Vec<_>>().join(", ");
+        let params = sig
+            .params
+            .iter()
+            .map(|p| {
+                let attrs = Self::fmt_attrs(&p.attrs);
+                let ty = Self::fmt_type_ref(&p.ty);
+                if attrs.is_empty() {
+                    format!("{}: {ty}", p.name)
+                } else {
+                    format!("{}: {attrs} {ty}", p.name)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
         let ret_attrs = Self::fmt_attrs(&sig.ret_attrs);
-        let ret_ty    = Self::fmt_type_ref(&sig.ret);
-        let ret = if ret_attrs.is_empty() { ret_ty } else { format!("{ret_attrs} {ret_ty}") };
+        let ret_ty = Self::fmt_type_ref(&sig.ret);
+        let ret = if ret_attrs.is_empty() {
+            ret_ty
+        } else {
+            format!("{ret_attrs} {ret_ty}")
+        };
         format!("fn {}{tp}({params}) -> {ret}", sig.name)
     }
 
@@ -161,14 +221,24 @@ impl Formatter {
         } else {
             format!("<{}>", ty.params.join(", "))
         };
-        let variants = ty.variants.iter().map(|v| {
-            if v.fields.is_empty() {
-                v.name.clone()
-            } else {
-                let fs = v.fields.iter().map(Self::fmt_type_ref).collect::<Vec<_>>().join(", ");
-                format!("{}({})", v.name, fs)
-            }
-        }).collect::<Vec<_>>().join(" | ");
+        let variants = ty
+            .variants
+            .iter()
+            .map(|v| {
+                if v.fields.is_empty() {
+                    v.name.clone()
+                } else {
+                    let fs = v
+                        .fields
+                        .iter()
+                        .map(Self::fmt_type_ref)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("{}({})", v.name, fs)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" | ");
         self.line(&format!("sealed type {name}{params} = {variants}"));
     }
 
@@ -176,7 +246,7 @@ impl Formatter {
 
     fn fmt_type_alias(&mut self, a: &TypeAliasDecl) {
         let attrs = Self::fmt_attrs(&a.attrs);
-        let base  = Self::fmt_type_ref(&a.base);
+        let base = Self::fmt_type_ref(&a.base);
         if attrs.is_empty() {
             self.line(&format!("type {} = {base}", a.name));
         } else {
@@ -203,7 +273,7 @@ impl Formatter {
         self.indented(|f| {
             for field in &s.fields {
                 let attrs = Self::fmt_attrs(&field.attrs);
-                let ty    = Self::fmt_type_ref(&field.ty);
+                let ty = Self::fmt_type_ref(&field.ty);
                 if attrs.is_empty() {
                     f.line(&format!("{}: {ty}", field.name));
                 } else {
@@ -256,7 +326,7 @@ impl Formatter {
         for d in &task.decorators {
             match &d.arg {
                 Some(a) => self.line(&format!("@{}({:?})", d.name, a)),
-                None    => self.line(&format!("@{}", d.name)),
+                None => self.line(&format!("@{}", d.name)),
             }
         }
 
@@ -272,28 +342,45 @@ impl Formatter {
                 f.line(&format!("goal   = {goal:?}"));
             }
 
-            // Sort extras by key
-            let mut extras = task.extras.clone();
-            extras.sort_by(|a, b| a.0.cmp(&b.0));
-            if !extras.is_empty() {
-                if extras.len() == 1 {
-                    f.line(&format!("extras = [{}]", extras.iter()
-                        .map(|(k,v)| format!("{k:?}: {v:?}"))
-                        .collect::<Vec<_>>().join(", ")));
-                } else {
-                    f.line("extras = [");
-                    f.indented(|g| {
-                        for (i, (k, v)) in extras.iter().enumerate() {
-                            let comma = if i + 1 < extras.len() { "," } else { "" };
-                            g.line(&format!("{k:?}: {v:?}{comma}"));
+            if let Some(extras) = &task.extras {
+                match extras {
+                    ExtrasNode::StringMap(entries) => {
+                        let mut extras = entries.clone();
+                        extras.sort_by(|a, b| a.0.cmp(&b.0));
+                        if extras.len() == 1 {
+                            f.line(&format!(
+                                "extras = [{}]",
+                                extras
+                                    .iter()
+                                    .map(|(k, v)| format!("{k:?}: {v:?}"))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ));
+                        } else {
+                            f.line("extras = [");
+                            f.indented(|g| {
+                                for (i, (k, v)) in extras.iter().enumerate() {
+                                    let comma = if i + 1 < extras.len() { "," } else { "" };
+                                    g.line(&format!("{k:?}: {v:?}{comma}"));
+                                }
+                            });
+                            f.line("]");
                         }
-                    });
-                    f.line("]");
+                    }
+                    ExtrasNode::TypedRecord(fields) => {
+                        f.line("extras {");
+                        f.indented(|g| {
+                            for field in fields {
+                                g.line(&format!("{}: {}", field.name, Self::fmt_type_ref(&field.type_ref)));
+                            }
+                        });
+                        f.line("}");
+                    }
                 }
             }
 
             for (i, step) in task.steps.iter().enumerate() {
-                if i > 0 || task.goal.is_some() || !task.extras.is_empty() {
+                if i > 0 || task.goal.is_some() || task.extras.is_some() {
                     f.blank();
                 }
                 f.fmt_step(step);
@@ -322,7 +409,9 @@ impl Formatter {
         let mut first = true;
 
         let sep = |f: &mut Formatter, first: &mut bool| {
-            if !*first { f.blank(); }
+            if !*first {
+                f.blank();
+            }
             *first = false;
         };
 
@@ -381,7 +470,9 @@ impl Formatter {
         }
 
         // Ensure trailing newline
-        if !f.out.ends_with('\n') { f.out.push('\n'); }
+        if !f.out.ends_with('\n') {
+            f.out.push('\n');
+        }
         f.out
     }
 }
@@ -396,14 +487,18 @@ impl Formatter {
 /// - `check`: if true, exits non-zero if the file is not already formatted (CI mode).
 pub fn fmt_file(path: &Path, write: bool, check: bool) -> bool {
     let source = match std::fs::read_to_string(path) {
-        Ok(s)  => s,
+        Ok(s) => s,
         Err(e) => {
-            eprintln!("{}: cannot read {}: {e}", "error".red().bold(), path.display());
+            eprintln!(
+                "{}: cannot read {}: {e}",
+                "error".red().bold(),
+                path.display()
+            );
             return false;
         }
     };
 
-    let (tokens, _)  = lex(&source);
+    let (tokens, _) = lex(&source);
     let (program, _) = parse(&tokens, &source);
 
     let formatted = Formatter::format_program(&program);
@@ -413,8 +508,12 @@ pub fn fmt_file(path: &Path, write: bool, check: bool) -> bool {
             println!("{} {} is already formatted.", "✅".green(), path.display());
             return true;
         } else {
-            println!("{} {} is not formatted — run `brief fmt {}`",
-                "❌".red(), path.display(), path.display());
+            println!(
+                "{} {} is not formatted — run `brief fmt {}`",
+                "❌".red(),
+                path.display(),
+                path.display()
+            );
             return false;
         }
     }
@@ -425,9 +524,13 @@ pub fn fmt_file(path: &Path, write: bool, check: bool) -> bool {
             return true;
         }
         match std::fs::write(path, &formatted) {
-            Ok(_)  => println!("{} {}", "✅ formatted:".green(), path.display()),
+            Ok(_) => println!("{} {}", "✅ formatted:".green(), path.display()),
             Err(e) => {
-                eprintln!("{}: cannot write {}: {e}", "error".red().bold(), path.display());
+                eprintln!(
+                    "{}: cannot write {}: {e}",
+                    "error".red().bold(),
+                    path.display()
+                );
                 return false;
             }
         }
@@ -450,7 +553,7 @@ mod tests {
 
     fn roundtrip(src: &str) -> String {
         let (tokens, _) = lex(src);
-        let (prog, _)   = parse(&tokens, src);
+        let (prog, _) = parse(&tokens, src);
         Formatter::format_program(&prog)
     }
 
@@ -525,6 +628,19 @@ mod tests {
     }
 
     #[test]
+    fn fmt_typed_extras() {
+        let src = r#"
+            task T : TaskBrief {
+                goal = "g"
+                extras { platform: Platform }
+            }
+        "#;
+        let out = roundtrip(src);
+        assert!(out.contains("extras {"), "{out}");
+        assert!(out.contains("platform: Platform"), "{out}");
+    }
+
+    #[test]
     fn fmt_idempotent() {
         let src = r#"
             import skill "GraphQL"
@@ -534,7 +650,7 @@ mod tests {
                 step Do { let x = perform GraphQL.query(Q)?; }
             }
         "#;
-        let first  = roundtrip(src);
+        let first = roundtrip(src);
         let second = roundtrip(&first);
         assert_eq!(first, second, "formatter should be idempotent");
     }

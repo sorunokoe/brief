@@ -8,12 +8,19 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Span {
     pub start: usize,
-    pub end:   usize,
+    pub end: usize,
 }
 
 impl Span {
-    pub fn new(start: usize, end: usize) -> Self { Self { start, end } }
-    pub fn merge(self, other: Span) -> Self { Self { start: self.start.min(other.start), end: self.end.max(other.end) } }
+    pub fn new(start: usize, end: usize) -> Self {
+        Self { start, end }
+    }
+    pub fn merge(self, other: Span) -> Self {
+        Self {
+            start: self.start.min(other.start),
+            end: self.end.max(other.end),
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -23,15 +30,15 @@ impl Span {
 /// A complete `.brief` source file.
 #[derive(Debug, Clone)]
 pub struct Program {
-    pub imports:       Vec<SkillImport>,
-    pub types:         Vec<SealedTypeDecl>,
-    pub type_aliases:  Vec<TypeAliasDecl>,
+    pub imports: Vec<SkillImport>,
+    pub types: Vec<SealedTypeDecl>,
+    pub type_aliases: Vec<TypeAliasDecl>,
     pub effect_groups: Vec<EffectGroupDecl>,
-    pub structs:       Vec<StructDecl>,
-    pub protocols:     Vec<ProtocolDecl>,
-    pub effects:       Vec<EffectDecl>,
-    pub tasks:         Vec<Task>,
-    pub tests:         Vec<TestDecl>,
+    pub structs: Vec<StructDecl>,
+    pub protocols: Vec<ProtocolDecl>,
+    pub effects: Vec<EffectDecl>,
+    pub tasks: Vec<Task>,
+    pub tests: Vec<TestDecl>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -53,7 +60,7 @@ pub struct SkillImport {
 #[derive(Debug, Clone)]
 pub struct TypeRef {
     pub name: String,
-    pub args: Vec<TypeRef>,   // generic arguments
+    pub args: Vec<TypeRef>, // generic arguments
     /// `T?` is sugar for `Option<T>`
     pub optional: bool,
     pub span: Span,
@@ -63,7 +70,7 @@ pub struct TypeRef {
 #[derive(Debug, Clone)]
 pub struct Attribute {
     pub name: String,
-    pub arg:  Option<String>,
+    pub arg: Option<String>,
     pub span: Span,
 }
 
@@ -71,37 +78,36 @@ pub struct Attribute {
 /// User-defined refinement type alias — expands at check-time.
 #[derive(Debug, Clone)]
 pub struct TypeAliasDecl {
-    pub name:  String,
+    pub name: String,
     pub attrs: Vec<Attribute>,
-    pub base:  TypeRef,
-    pub span:  Span,
+    pub base: TypeRef,
+    pub span: Span,
 }
 
 /// `type AuthEffects = [Auth, Session]`
 /// Named group of effects that can be used in `uses [AuthEffects]`.
 #[derive(Debug, Clone)]
 pub struct EffectGroupDecl {
-    pub name:    String,
+    pub name: String,
     pub members: Vec<String>,
-    pub span:    Span,
+    pub span: Span,
 }
-
 
 /// `sealed type Platform = iOS | Android | Web`
 #[derive(Debug, Clone)]
 pub struct SealedTypeDecl {
-    pub name:     String,
-    pub params:   Vec<String>,
+    pub name: String,
+    pub params: Vec<String>,
     pub variants: Vec<TypeVariant>,
-    pub span:     Span,
+    pub span: Span,
 }
 
 /// A single variant of a sealed type: `Done(String)` or just `iOS`
 #[derive(Debug, Clone)]
 pub struct TypeVariant {
-    pub name:   String,
+    pub name: String,
     pub fields: Vec<TypeRef>,
-    pub span:   Span,
+    pub span: Span,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -111,18 +117,18 @@ pub struct TypeVariant {
 /// `struct FigmaURL { url: @url String }`
 #[derive(Debug, Clone)]
 pub struct StructDecl {
-    pub name:   String,
+    pub name: String,
     pub params: Vec<String>,
     pub fields: Vec<StructField>,
-    pub span:   Span,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
 pub struct StructField {
-    pub name:  String,
+    pub name: String,
     pub attrs: Vec<Attribute>,
-    pub ty:    TypeRef,
-    pub span:  Span,
+    pub ty: TypeRef,
+    pub span: Span,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -132,40 +138,40 @@ pub struct StructField {
 /// `protocol Renderable { fn render() -> Component }`
 #[derive(Debug, Clone)]
 pub struct ProtocolDecl {
-    pub name:    String,
-    pub params:  Vec<String>,
+    pub name: String,
+    pub params: Vec<String>,
     pub methods: Vec<FnSignature>,
-    pub span:    Span,
+    pub span: Span,
 }
 
 /// `effect GraphQL { fn query<T>(op: Operation) -> Result<T, QueryError> }`
 #[derive(Debug, Clone)]
 pub struct EffectDecl {
-    pub name:   String,
+    pub name: String,
     pub params: Vec<String>,
-    pub fns:    Vec<FnSignature>,
-    pub span:   Span,
+    pub fns: Vec<FnSignature>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
 pub struct FnSignature {
-    pub name:        String,
+    pub name: String,
     pub type_params: Vec<String>,
-    pub params:      Vec<Param>,
+    pub params: Vec<Param>,
     /// Return-type attributes, e.g. `@once` in `-> @once PaymentHandle`.
-    pub ret_attrs:   Vec<Attribute>,
-    pub ret:         TypeRef,
+    pub ret_attrs: Vec<Attribute>,
+    pub ret: TypeRef,
     #[allow(dead_code)]
-    pub doc:         Option<String>,
-    pub span:        Span,
+    pub doc: Option<String>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
 pub struct Param {
-    pub name:  String,
+    pub name: String,
     pub attrs: Vec<Attribute>,
-    pub ty:    TypeRef,
-    pub span:  Span,
+    pub ty: TypeRef,
+    pub span: Span,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -176,7 +182,7 @@ pub struct Param {
 #[derive(Debug, Clone)]
 pub struct Decorator {
     pub name: String,
-    pub arg:  Option<String>,
+    pub arg: Option<String>,
     pub span: Span,
 }
 
@@ -186,21 +192,39 @@ pub struct Decorator {
 /// @BriefBuilder
 /// task ProfileScreen : TaskBrief uses [DesignSystem, GraphQL] {
 ///     goal   = "..."
-///     extras = ["platform": "iOS"]
+///     extras {
+///         platform: Platform
+///     }
 ///     step FetchData { ... }
 /// }
 /// ```
+#[derive(Debug, Clone)]
+pub enum ExtrasNode {
+    /// Old syntax: `extras = ["key": "value", ...]` — deprecated.
+    StringMap(Vec<(String, String)>),
+    /// New syntax: `extras { field: TypeRef, ... }`
+    TypedRecord(Vec<ExtrasField>),
+}
+
+#[derive(Debug, Clone)]
+pub struct ExtrasField {
+    pub name: String,
+    pub type_ref: TypeRef,
+    pub span: Span,
+}
+
 #[derive(Debug, Clone)]
 pub struct Task {
     pub decorators: Vec<Decorator>,
     /// Convenience: true when any decorator is named `BriefBuilder`.
     pub has_builder: bool,
-    pub name:        String,
-    pub uses:        Vec<String>,
-    pub goal:        Option<String>,
-    pub extras:      Vec<(String, String)>,
-    pub steps:       Vec<Step>,
-    pub span:        Span,
+    pub name: String,
+    pub uses: Vec<String>,
+    pub goal: Option<String>,
+    pub extras: Option<ExtrasNode>,
+    pub extras_span: Option<Span>,
+    pub steps: Vec<Step>,
+    pub span: Span,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -210,9 +234,9 @@ pub struct Task {
 /// `step FetchData { ... }`
 #[derive(Debug, Clone)]
 pub struct Step {
-    pub name:  String,
-    pub body:  Vec<Stmt>,
-    pub span:  Span,
+    pub name: String,
+    pub body: Vec<Stmt>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -221,9 +245,9 @@ pub enum Stmt {
     Let {
         /// Binding-level attributes, e.g. `["once"]` from `@once let`.
         attrs: Vec<String>,
-        name:  String,
+        name: String,
         value: Expr,
-        span:  Span,
+        span: Span,
     },
     /// `expr;`
     Expr { value: Expr, span: Span },
@@ -238,23 +262,20 @@ pub enum Expr {
     /// `perform GraphQL.query(UserProfileQuery)?`
     Perform {
         skill: String,
-        func:  String,
-        args:  Vec<Expr>,
+        func: String,
+        args: Vec<Expr>,
         /// Whether the `?` error-propagation operator is present.
         propagate: bool,
         span: Span,
     },
     /// `await expr`
-    Await {
-        expr: Box<Expr>,
-        span: Span,
-    },
+    Await { expr: Box<Expr>, span: Span },
     /// `foo.bar(args)` or `foo(args)`
     Call {
         receiver: Option<String>,
-        func:     String,
-        args:     Vec<Expr>,
-        span:     Span,
+        func: String,
+        args: Vec<Expr>,
+        span: Span,
     },
     /// Bare identifier (variable reference).
     Ident { name: String, span: Span },
@@ -268,11 +289,11 @@ impl Expr {
     pub fn span(&self) -> Span {
         match self {
             Expr::Perform { span, .. } => *span,
-            Expr::Await   { span, .. } => *span,
-            Expr::Call    { span, .. } => *span,
-            Expr::Ident   { span, .. } => *span,
-            Expr::Str     { span, .. } => *span,
-            Expr::Int     { span, .. } => *span,
+            Expr::Await { span, .. } => *span,
+            Expr::Call { span, .. } => *span,
+            Expr::Ident { span, .. } => *span,
+            Expr::Str { span, .. } => *span,
+            Expr::Int { span, .. } => *span,
         }
     }
 }
