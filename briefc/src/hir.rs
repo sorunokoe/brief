@@ -81,6 +81,14 @@ pub struct HirStep {
     pub span: Span,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HirStepGroup {
+    Sequential(String),
+    Parallel(Vec<String>),
+    Retry { count: u32, step: String },
+    Fallback(Vec<String>),
+}
+
 #[derive(Debug, Clone)]
 pub struct HirBinding {
     pub name: String,
@@ -98,6 +106,7 @@ pub struct HirTask {
     pub effects: Vec<String>,
     pub extras: Vec<HirField>,
     pub provides: Vec<HirField>,
+    pub step_groups: Vec<HirStepGroup>,
     pub steps: Vec<HirStep>,
     pub span: Span,
 }
@@ -156,12 +165,32 @@ fn lower_task(task: &Task, env: &TypeEnv<'_>) -> HirTask {
         effects: task.effects.clone(),
         extras: lower_extras(task, env),
         provides: lower_provides(task, env),
+        step_groups: if task.step_groups.is_empty() {
+            task.steps
+                .iter()
+                .map(|step| HirStepGroup::Sequential(step.name.clone()))
+                .collect()
+        } else {
+            task.step_groups.iter().map(lower_step_group).collect()
+        },
         steps: task
             .steps
             .iter()
             .map(|step| lower_step(step, env, &base_locals))
             .collect(),
         span: task.span,
+    }
+}
+
+fn lower_step_group(group: &ast::StepGroup) -> HirStepGroup {
+    match group {
+        ast::StepGroup::Sequential(step) => HirStepGroup::Sequential(step.name.clone()),
+        ast::StepGroup::Parallel(steps) => HirStepGroup::Parallel(steps.clone()),
+        ast::StepGroup::Retry { count, step } => HirStepGroup::Retry {
+            count: *count,
+            step: step.clone(),
+        },
+        ast::StepGroup::Fallback(steps) => HirStepGroup::Fallback(steps.clone()),
     }
 }
 
@@ -596,6 +625,43 @@ mod tests {
         );
 
         assert_eq!(hir.tasks[0].effects, vec!["network", "cache-read"]);
+    }
+
+    #[test]
+    fn lowers_workflow_combinators() {
+        let hir = lower_src(
+            r#"
+            task Sync : TaskBrief {
+                goal = "sync"
+                parallel { LoadUsers, LoadProducts }
+                retry(3) { SyncBackend }
+                fallback { SyncPrimary, SyncFallback }
+
+                step LoadUsers {}
+                step LoadProducts {}
+                step SyncBackend {}
+                step SyncPrimary {}
+                step SyncFallback {}
+            }
+        "#,
+        );
+
+        assert_eq!(
+            hir.tasks[0].step_groups,
+            vec![
+                HirStepGroup::Parallel(vec!["LoadUsers".to_string(), "LoadProducts".to_string()]),
+                HirStepGroup::Retry {
+                    count: 3,
+                    step: "SyncBackend".to_string(),
+                },
+                HirStepGroup::Fallback(vec!["SyncPrimary".to_string(), "SyncFallback".to_string()]),
+                HirStepGroup::Sequential("LoadUsers".to_string()),
+                HirStepGroup::Sequential("LoadProducts".to_string()),
+                HirStepGroup::Sequential("SyncBackend".to_string()),
+                HirStepGroup::Sequential("SyncPrimary".to_string()),
+                HirStepGroup::Sequential("SyncFallback".to_string()),
+            ]
+        );
     }
 
     #[test]

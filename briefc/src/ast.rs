@@ -225,6 +225,7 @@ pub struct Task {
     pub extras: Option<ExtrasNode>,
     pub extras_span: Option<Span>,
     pub provides: Option<Vec<ExtrasField>>,
+    pub step_groups: Vec<StepGroup>,
     pub steps: Vec<Step>,
     pub span: Span,
 }
@@ -232,6 +233,14 @@ pub struct Task {
 // ─────────────────────────────────────────────────────────────────────────────
 // Steps & Statements
 // ─────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub enum StepGroup {
+    Sequential(Step),
+    Parallel(Vec<String>),
+    Retry { count: u32, step: String },
+    Fallback(Vec<String>),
+}
 
 /// `step FetchData { ... }`
 #[derive(Debug, Clone)]

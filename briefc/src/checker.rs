@@ -182,6 +182,7 @@ fn check_task(
 
     check_task_extras(task, type_env, diags);
     check_brief_builder_provides(task, diags);
+    check_task_step_groups(task, diags);
 
     // Expand effect group aliases in `uses [...]`.
     let mut expanded_uses: Vec<&str> = Vec::new();
@@ -302,6 +303,49 @@ fn check_brief_builder_provides(task: &Task, diags: &mut Vec<BriefError>) {
             ),
             span: task.span,
             hint: Some("add: provides { field: Type }".to_string()),
+        });
+    }
+}
+
+fn check_task_step_groups(task: &Task, diags: &mut Vec<BriefError>) {
+    let declared_steps: HashSet<&str> = task.steps.iter().map(|step| step.name.as_str()).collect();
+
+    for group in &task.step_groups {
+        match group {
+            StepGroup::Sequential(_) => {}
+            StepGroup::Parallel(steps) => {
+                check_combinator_step_refs(task, "parallel", steps.iter().map(String::as_str), &declared_steps, diags);
+            }
+            StepGroup::Retry { step, .. } => {
+                check_combinator_step_refs(task, "retry", std::iter::once(step.as_str()), &declared_steps, diags);
+            }
+            StepGroup::Fallback(steps) => {
+                check_combinator_step_refs(task, "fallback", steps.iter().map(String::as_str), &declared_steps, diags);
+            }
+        }
+    }
+}
+
+fn check_combinator_step_refs<'a>(
+    task: &Task,
+    combinator: &str,
+    step_names: impl IntoIterator<Item = &'a str>,
+    declared_steps: &HashSet<&str>,
+    diags: &mut Vec<BriefError>,
+) {
+    for step_name in step_names {
+        if declared_steps.contains(step_name) {
+            continue;
+        }
+
+        diags.push(BriefError {
+            code: ErrorCode::UndeclaredStepInCombinator,
+            message: format!(
+                "{combinator} block references undeclared step '{}' in task '{}'",
+                step_name, task.name
+            ),
+            span: task.span,
+            hint: Some(format!("declare `step {step_name} {{ ... }}` in task '{}'", task.name)),
         });
     }
 }
@@ -1294,6 +1338,30 @@ mod tests {
     fn no_errors_on_minimal_task() {
         let diags = check_src(r#"task Hello : TaskBrief { goal = "hi" }"#);
         assert!(diags.iter().all(|d| !d.is_error()), "{diags:?}");
+    }
+
+    #[test]
+    fn combinator_referencing_undeclared_step_is_e210() {
+        let diags = check_src(
+            r#"
+            task SyncData : TaskBrief {
+                goal = "sync"
+                parallel { NonExistent }
+
+                step Declared {
+                    let ok = "yes";
+                }
+            }
+        "#,
+        );
+        assert!(
+            diags.iter().any(|d| {
+                d.code == ErrorCode::UndeclaredStepInCombinator
+                    && d.message
+                        == "parallel block references undeclared step 'NonExistent' in task 'SyncData'"
+            }),
+            "unexpected diags: {diags:?}"
+        );
     }
 
     #[test]

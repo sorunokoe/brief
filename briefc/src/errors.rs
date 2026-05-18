@@ -58,6 +58,8 @@ pub enum ErrorCode {
     UnknownExtrasField,
     /// Task performs a skill whose effects are not declared in `effects [...]` (E209)
     EffectContractViolation,
+    /// Workflow combinator references a step that is not declared in the task (E210)
+    UndeclaredStepInCombinator,
 }
 
 impl fmt::Display for ErrorCode {
@@ -77,6 +79,7 @@ impl fmt::Display for ErrorCode {
             ErrorCode::NonExhaustiveMatch => "E207",
             ErrorCode::UnknownExtrasField => "E208",
             ErrorCode::EffectContractViolation => "E209",
+            ErrorCode::UndeclaredStepInCombinator => "E210",
             ErrorCode::RangeBoundaryMissing => "E301",
             ErrorCode::EnumValueMissing => "E302",
             ErrorCode::LockRequired => "E303",
@@ -107,6 +110,7 @@ impl ErrorCode {
                 | ErrorCode::ScopedGenericConflict
                 | ErrorCode::UnknownExtrasField
                 | ErrorCode::EffectContractViolation
+                | ErrorCode::UndeclaredStepInCombinator
                 | ErrorCode::RangeBoundaryMissing
                 | ErrorCode::EnumValueMissing
                 | ErrorCode::LockRequired

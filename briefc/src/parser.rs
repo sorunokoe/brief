@@ -768,6 +768,63 @@ impl<'a> Parser<'a> {
         Some(items)
     }
 
+    fn parse_step_ref(&mut self) -> Option<String> {
+        if self.peek() == Some(&Token::Step) {
+            self.advance();
+        }
+        let (name, _) = self.expect_ident()?;
+        Some(name)
+    }
+
+    fn parse_step_ref_block(&mut self) -> Option<Vec<String>> {
+        self.expect(&Token::LBrace)?;
+        let mut steps = Vec::new();
+        while self.peek() != Some(&Token::RBrace) && !self.at_end() {
+            steps.push(self.parse_step_ref()?);
+            if self.peek() == Some(&Token::Comma) {
+                self.advance();
+            }
+        }
+        self.expect(&Token::RBrace)?;
+        Some(steps)
+    }
+
+    fn parse_parallel_group(&mut self) -> Option<StepGroup> {
+        self.advance();
+        Some(StepGroup::Parallel(self.parse_step_ref_block()?))
+    }
+
+    fn parse_retry_group(&mut self) -> Option<StepGroup> {
+        self.advance();
+        self.expect(&Token::LParen)?;
+        let count = match self.peek().cloned() {
+            Some(Token::Int(n)) if n >= 0 => {
+                self.advance();
+                u32::try_from(n).ok()
+            }
+            got => {
+                let span = self.current_span();
+                self.errors.push(BriefError {
+                    code: ErrorCode::ParseError,
+                    message: format!("expected non-negative integer retry count, got `{got:?}`"),
+                    span,
+                    hint: Some("example: retry(3) { SyncStep }".to_string()),
+                });
+                None
+            }
+        }?;
+        self.expect(&Token::RParen)?;
+        self.expect(&Token::LBrace)?;
+        let step = self.parse_step_ref()?;
+        self.expect(&Token::RBrace)?;
+        Some(StepGroup::Retry { count, step })
+    }
+
+    fn parse_fallback_group(&mut self) -> Option<StepGroup> {
+        self.advance();
+        Some(StepGroup::Fallback(self.parse_step_ref_block()?))
+    }
+
     fn parse_task(&mut self) -> Option<Task> {
         let start = self.current_span().start;
 
@@ -818,6 +875,7 @@ impl<'a> Parser<'a> {
         let mut extras = None;
         let mut extras_span = None;
         let mut provides = None;
+        let mut step_groups = Vec::new();
         let mut steps = Vec::new();
 
         while self.peek() != Some(&Token::RBrace) && !self.at_end() {
@@ -881,8 +939,24 @@ impl<'a> Parser<'a> {
                         }
                     }
                 }
+                Some(Token::Ident(ref s)) if s == "parallel" => {
+                    if let Some(group) = self.parse_parallel_group() {
+                        step_groups.push(group);
+                    }
+                }
+                Some(Token::Ident(ref s)) if s == "retry" => {
+                    if let Some(group) = self.parse_retry_group() {
+                        step_groups.push(group);
+                    }
+                }
+                Some(Token::Ident(ref s)) if s == "fallback" => {
+                    if let Some(group) = self.parse_fallback_group() {
+                        step_groups.push(group);
+                    }
+                }
                 Some(Token::Step) => {
                     if let Some(step) = self.parse_step() {
+                        step_groups.push(StepGroup::Sequential(step.clone()));
                         steps.push(step);
                     }
                 }
@@ -892,7 +966,7 @@ impl<'a> Parser<'a> {
                         code: ErrorCode::ParseError,
                         message: format!("unexpected token `{got:?}` inside task body"),
                         span,
-                        hint: Some("expected `goal`, `effects`, `extras`, `provides`, or `step`".to_string()),
+                        hint: Some("expected `goal`, `effects`, `extras`, `provides`, `parallel`, `retry`, `fallback`, or `step`".to_string()),
                     });
                     self.advance();
                 }
@@ -915,6 +989,7 @@ impl<'a> Parser<'a> {
             extras,
             extras_span,
             provides,
+            step_groups,
             steps,
             span: Span::new(start, end),
         })
@@ -1492,6 +1567,38 @@ mod tests {
         assert_eq!(provides[0].type_ref.name, "String");
         assert_eq!(provides[1].name, "buildId");
         assert_eq!(provides[1].type_ref.name, "String");
+    }
+
+    #[test]
+    fn parse_parallel_group() {
+        let src = r#"
+            task T : TaskBrief {
+                goal = "x"
+                parallel { StepA, StepB }
+            }
+        "#;
+        let (prog, errs) = parse_src(src);
+        assert!(errs.is_empty(), "{errs:?}");
+        assert!(matches!(
+            &prog.tasks[0].step_groups[0],
+            StepGroup::Parallel(steps) if steps == &vec!["StepA".to_string(), "StepB".to_string()]
+        ));
+    }
+
+    #[test]
+    fn parse_retry_group() {
+        let src = r#"
+            task T : TaskBrief {
+                goal = "x"
+                retry(3) { SyncStep }
+            }
+        "#;
+        let (prog, errs) = parse_src(src);
+        assert!(errs.is_empty(), "{errs:?}");
+        assert!(matches!(
+            &prog.tasks[0].step_groups[0],
+            StepGroup::Retry { count, step } if *count == 3 && step == "SyncStep"
+        ));
     }
 
     #[test]

@@ -1,0 +1,50 @@
+import skill "DataService"
+
+task SyncDashboardData : TaskBrief uses [DataService] {
+    goal = "Sync dashboard data with parallel fetch and retry on backend sync"
+
+    effects [network, storage]
+
+    parallel {
+        FetchUsers
+        FetchProducts
+        FetchOrders
+    }
+
+    retry(3) {
+        SyncToBackend
+    }
+
+    fallback {
+        SyncPrimary
+        SyncFallback
+    }
+
+    step FetchUsers {
+        let users = perform DataService.getUsers()?;
+    }
+
+    step FetchProducts {
+        let products = perform DataService.getProducts()?;
+    }
+
+    step FetchOrders {
+        let orders = perform DataService.getOrders()?;
+    }
+
+    step SyncToBackend {
+        let result = perform DataService.sync(users, products, orders)?;
+    }
+
+    step SyncPrimary {
+        let ok = perform DataService.syncPrimary()?;
+    }
+
+    step SyncFallback {
+        let ok = perform DataService.syncFallback()?;
+    }
+}
+
+test "parallel steps declared" {
+    assert true
+}

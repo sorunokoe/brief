@@ -200,6 +200,35 @@ impl Formatter {
         self.line("}");
     }
 
+    fn fmt_step_group(&mut self, _task: &Task, group: &StepGroup) {
+        match group {
+            StepGroup::Sequential(step) => self.fmt_step(step),
+            StepGroup::Parallel(steps) => {
+                self.line("parallel {");
+                self.indented(|f| {
+                    for step in steps {
+                        f.line(step);
+                    }
+                });
+                self.line("}");
+            }
+            StepGroup::Retry { count, step } => {
+                self.line(&format!("retry({count}) {{"));
+                self.indented(|f| f.line(step));
+                self.line("}");
+            }
+            StepGroup::Fallback(steps) => {
+                self.line("fallback {");
+                self.indented(|f| {
+                    for step in steps {
+                        f.line(step);
+                    }
+                });
+                self.line("}");
+            }
+        }
+    }
+
     // ── FnSignature ───────────────────────────────────────────────────────
 
     fn fmt_fn_sig(sig: &FnSignature) -> String {
@@ -374,16 +403,25 @@ impl Formatter {
                 Self::fmt_typed_fields(f, "provides", provides);
             }
 
-            for (i, step) in task.steps.iter().enumerate() {
-                if i > 0
-                    || task.goal.is_some()
-                    || !task.effects.is_empty()
-                    || task.extras.is_some()
-                    || task.provides.is_some()
-                {
-                    f.blank();
+            let has_header_fields = task.goal.is_some()
+                || !task.effects.is_empty()
+                || task.extras.is_some()
+                || task.provides.is_some();
+
+            if task.step_groups.is_empty() {
+                for (i, step) in task.steps.iter().enumerate() {
+                    if i > 0 || has_header_fields {
+                        f.blank();
+                    }
+                    f.fmt_step(step);
                 }
-                f.fmt_step(step);
+            } else {
+                for (i, group) in task.step_groups.iter().enumerate() {
+                    if i > 0 || has_header_fields {
+                        f.blank();
+                    }
+                    f.fmt_step_group(task, group);
+                }
             }
         });
 
