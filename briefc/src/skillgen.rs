@@ -133,7 +133,7 @@ pub fn skillgen_check(skill_path: &Path) -> bool {
 // .briefskill parsing (for cross-file type checking)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// A parsed skill interface: name + list of (fn_name, arg_count).
+/// A parsed skill interface: name + list of typed functions.
 #[derive(Debug, Clone)]
 pub struct SkillInterface {
     #[allow(dead_code)]
@@ -141,11 +141,41 @@ pub struct SkillInterface {
     pub funcs: Vec<SkillFn>,
 }
 
+/// A static constraint on a skill function parameter.
+/// These are enforced by `brief check` without any network calls.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StaticConstraint {
+    /// `@range(min, max)` — integer must be in [min, max].
+    Range(i64, i64),
+    /// `@enum("v1", "v2", ...)` — must be one of the listed values.
+    Enum(Vec<String>),
+    /// `@matches("regex")` — string must match the regex pattern.
+    Matches(String),
+    /// `@nonEmpty` — string/collection must not be empty.
+    NonEmpty,
+}
+
+/// A single parsed parameter from a `.briefskill` function signature.
+#[derive(Debug, Clone)]
+pub struct SkillParam {
+    pub name:               String,
+    /// The base type name (e.g. "Int", "String", "UserProfile").
+    pub base_type:          String,
+    /// Static constraints extracted from `@range`, `@enum`, `@matches`, `@nonEmpty` annotations.
+    pub static_constraints: Vec<StaticConstraint>,
+    /// Any other `@xyz` annotations — require a verifier configured in `brief.toml`.
+    pub dynamic_attrs:      Vec<String>,
+}
+
 /// A single function entry from a `.briefskill` file.
 #[derive(Debug, Clone)]
 pub struct SkillFn {
-    pub name:      String,
-    pub arg_count: usize,
+    pub name:        String,
+    /// Kept for backward compatibility with the type-checker.
+    pub arg_count:   usize,
+    /// Full parameter information with constraint annotations.
+    pub params:      Vec<SkillParam>,
+    pub return_type: String,
 }
 
 /// Parse a `.briefskill` file into a `SkillInterface`.
@@ -176,12 +206,137 @@ pub fn parse_briefskill(content: &str) -> Option<SkillInterface> {
 
         if in_interface {
             if let Some(sig) = parse_fn_sig(t) {
-                funcs.push(SkillFn { name: sig.name, arg_count: sig.params.len() });
+                let params: Vec<SkillParam> = sig.params.iter()
+                    .map(|(pname, ptype)| parse_skill_param(pname, ptype))
+                    .collect();
+                funcs.push(SkillFn {
+                    name:        sig.name,
+                    arg_count:   params.len(),
+                    params,
+                    return_type: sig.return_type,
+                });
             }
         }
     }
 
     name.map(|n| SkillInterface { name: n, funcs })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Parameter constraint parsing
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Parse a `.briefskill` parameter like `"input"` + `"@range(0, 100) Int"`
+/// into a `SkillParam` with static constraints and dynamic attrs separated.
+fn parse_skill_param(name: &str, type_str: &str) -> SkillParam {
+    let mut static_constraints = Vec::new();
+    let mut dynamic_attrs = Vec::new();
+    let mut rest = type_str.trim();
+
+    // Peel off leading annotations one at a time until the base type is reached.
+    while rest.starts_with('@') {
+        let ann;
+        if let Some(paren_pos) = rest.find('(') {
+            // Check that the paren is part of THIS annotation (before any space).
+            let space_before_paren = rest[1..paren_pos].contains(' ');
+            if !space_before_paren {
+                // Annotation with args: scan for matching closing paren.
+                let mut depth = 0usize;
+                let mut end = None;
+                for (i, ch) in rest.char_indices() {
+                    match ch {
+                        '(' => { depth += 1; }
+                        ')' => {
+                            depth -= 1;
+                            if depth == 0 { end = Some(i + 1); break; }
+                        }
+                        _ => {}
+                    }
+                }
+                match end {
+                    Some(e) => {
+                        ann = &rest[..e];
+                        rest = rest[e..].trim_start();
+                    }
+                    None => {
+                        // Unclosed paren — malformed annotation; treat remainder as base type.
+                        break;
+                    }
+                }
+            } else {
+                // Space before paren → this annotation has no args; paren belongs to next token.
+                let sp = rest.find(' ').unwrap_or(rest.len());
+                ann = &rest[..sp];
+                rest = rest[sp..].trim_start();
+            }
+        } else {
+            // No paren: annotation ends at next space or end of string.
+            let sp = rest.find(' ').unwrap_or(rest.len());
+            ann = &rest[..sp];
+            rest = rest[sp..].trim_start();
+        }
+
+        let name_end = ann.find('(').unwrap_or(ann.len());
+        let ann_name = &ann[..name_end];
+
+        match ann_name {
+            "@range" => {
+                if let Some(r) = parse_range_args(&ann[name_end..]) {
+                    static_constraints.push(StaticConstraint::Range(r.0, r.1));
+                }
+            }
+            "@enum" => {
+                let vals = parse_enum_args(&ann[name_end..]);
+                if !vals.is_empty() {
+                    static_constraints.push(StaticConstraint::Enum(vals));
+                }
+            }
+            "@matches" => {
+                if let Some(pat) = parse_string_arg(&ann[name_end..]) {
+                    static_constraints.push(StaticConstraint::Matches(pat));
+                }
+            }
+            "@nonEmpty" => {
+                static_constraints.push(StaticConstraint::NonEmpty);
+            }
+            _ => {
+                dynamic_attrs.push(ann.to_string());
+            }
+        }
+    }
+
+    SkillParam {
+        name: name.to_string(),
+        base_type: rest.to_string(),
+        static_constraints,
+        dynamic_attrs,
+    }
+}
+
+fn parse_range_args(args: &str) -> Option<(i64, i64)> {
+    let inner = args.strip_prefix('(')?.strip_suffix(')')?;
+    let mut parts = inner.splitn(2, ',');
+    let min = parts.next()?.trim().parse::<i64>().ok()?;
+    let max = parts.next()?.trim().parse::<i64>().ok()?;
+    Some((min, max))
+}
+
+fn parse_enum_args(args: &str) -> Vec<String> {
+    let inner = match args.strip_prefix('(').and_then(|s| s.strip_suffix(')')) {
+        Some(s) => s,
+        None    => return vec![],
+    };
+    inner.split(',')
+        .filter_map(|s| {
+            let s = s.trim().trim_matches('"').trim_matches('\'');
+            if s.is_empty() { None } else { Some(s.to_string()) }
+        })
+        .collect()
+}
+
+fn parse_string_arg(args: &str) -> Option<String> {
+    let inner = args.strip_prefix('(')?.strip_suffix(')')?;
+    Some(inner.trim().trim_matches('"').trim_matches('\'').to_string())
 }
 
 /// Extract the sha256 value embedded in a `.briefskill` header comment.
@@ -262,27 +417,77 @@ fn parse_fn_sig(sig: &str) -> Option<FnSig> {
         } else { rest }
     } else { rest };
 
-    let (name, rest) = rest.split_once('(')?;
-    let name = name.trim().to_string();
-    let (params_str, rest) = rest.split_once(')')?;
+    // Find the opening `(` that starts the param list.
+    let open = rest.find('(')?;
+    let name = rest[..open].trim().to_string();
 
-    let return_type = rest.trim()
+    // Find the matching closing `)` using paren depth.
+    // This handles nested parens in annotations like @enum("a","b") and @range(0,100).
+    let after_open = &rest[open + 1..];
+    let mut depth = 1usize;
+    let mut close = None;
+    for (i, ch) in after_open.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 { close = Some(i); break; }
+            }
+            _ => {}
+        }
+    }
+    let close = close?;
+    let params_str = &after_open[..close];
+    let after_close = &after_open[close + 1..];
+
+    let return_type = after_close.trim()
         .strip_prefix("->").unwrap_or("Unit")
         .trim()
         .to_string();
 
-    let mut params = Vec::new();
-    for param in params_str.split(',') {
-        let param = param.trim();
-        if param.is_empty() { continue; }
-        if let Some((pname, ptype)) = param.split_once(':') {
-            params.push((pname.trim().to_string(), ptype.trim().to_string()));
-        } else {
-            params.push((param.to_string(), "Any".to_string()));
-        }
-    }
+    // Split params by `,` at depth-0 only (respects nested annotation parens).
+    let params = split_params(params_str);
 
     Some(FnSig { name, params, return_type, doc: None })
+}
+
+/// Split a parameter list string by top-level commas (paren-depth aware).
+/// `"x: @range(0, 100) Int, y: String"` → `[("x","@range(0, 100) Int"), ("y","String")]`
+fn split_params(params_str: &str) -> Vec<(String, String)> {
+    let mut result = Vec::new();
+    let mut depth = 0usize;
+    let mut seg_start = 0usize;
+
+    for (i, ch) in params_str.char_indices() {
+        match ch {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => { if depth > 0 { depth -= 1; } }
+            ',' if depth == 0 => {
+                push_param(&mut result, params_str[seg_start..i].trim());
+                seg_start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    // last segment
+    let last = params_str[seg_start..].trim();
+    if !last.is_empty() {
+        push_param(&mut result, last);
+    }
+    result
+}
+
+fn push_param(out: &mut Vec<(String, String)>, param: &str) {
+    if param.is_empty() { return; }
+    // Split on first `:` that isn't inside angle brackets (e.g. `Result<T, E>`)
+    // Simple approach: split at first `:` (colons inside `<>` are less common in param names).
+    if let Some(colon) = param.find(':') {
+        let pname = param[..colon].trim().to_string();
+        let ptype = param[colon + 1..].trim().to_string();
+        out.push((pname, ptype));
+    } else {
+        out.push((param.to_string(), "Any".to_string()));
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -298,8 +503,13 @@ const MAX_LLM_RESPONSE_BYTES: usize = 64 * 1024;
 /// Returns `None` if no key is configured or the call fails.
 fn try_llm_extraction(readme: &str, skill_name: &str) -> Option<Vec<FnSig>> {
     let api_key = std::env::var("BRIEF_LLM_API_KEY").ok()?;
+    // Auto-detect provider from URL or BRIEF_LLM_PROVIDER env var.
+    let provider = std::env::var("BRIEF_LLM_PROVIDER").unwrap_or_else(|_| "anthropic".into());
     let api_url = std::env::var("BRIEF_LLM_URL")
-        .unwrap_or_else(|_| "https://api.anthropic.com/v1/messages".to_string());
+        .unwrap_or_else(|_| match provider.as_str() {
+            "openai" => "https://api.openai.com/v1/chat/completions".into(),
+            _        => "https://api.anthropic.com/v1/messages".into(),
+        });
 
     // Cap README size before embedding in the prompt.
     let readme_capped = if readme.len() > MAX_README_LLM_BYTES {
@@ -314,31 +524,52 @@ fn try_llm_extraction(readme: &str, skill_name: &str) -> Option<Vec<FnSig>> {
 
     let prompt = format!(
         "You are a type extractor for the Brief programming language.\n\
-         Given this skill README, extract all callable functions as Brief interface declarations.\n\
-         Output ONLY a JSON array of function signatures, like:\n\
-         [{{\"name\":\"query\",\"params\":[\"op: Operation\"],\"return\":\"Result<T, QueryError>\"}}]\n\
-         No markdown, no explanation — raw JSON only.\n\n\
+         Given this skill README, extract all callable functions as Brief interface declarations.\n\n\
+         Brief param annotations (include when the README documents constraints):\n\
+         - @range(min, max) for numeric ranges: `amount: @range(1, 1000000) Int`\n\
+         - @enum(\"v1\",\"v2\") for allowed string values: `status: @enum(\"active\",\"inactive\") String`\n\
+         - @matches(\"regex\") for format constraints: `email: @matches(\"[^@]+@[^@]+\") String`\n\
+         - @nonEmpty for required non-empty strings: `query: @nonEmpty String`\n\
+         - @custom-annotation for domain-specific verification: `webhook: @stripe-hook String`\n\n\
+         Output ONLY a JSON array, no markdown, no explanation:\n\
+         [{{\"name\":\"query\",\"params\":[\"op: Operation\",\"limit: @range(1,100) Int\"],\"return\":\"Result<T, QueryError>\"}}]\n\n\
          Skill name: {skill_name}\n\n\
          README:\n{readme_capped}"
     );
 
-    println!("  {} calling LLM for interface extraction...", "✦".cyan().bold());
+    println!("  {} calling {} for interface extraction...", "✦".cyan().bold(), provider);
 
-    let body = serde_json::json!({
-        "model": "claude-3-5-haiku-20241022",
-        "max_tokens": 1024,
-        "messages": [{"role": "user", "content": prompt}]
-    });
+    let (body, req) = if provider == "openai" {
+        let model = std::env::var("BRIEF_LLM_MODEL")
+            .unwrap_or_else(|_| "gpt-4o-mini".into());
+        let b = serde_json::json!({
+            "model": model,
+            "max_tokens": 1024,
+            "messages": [{"role": "user", "content": prompt}]
+        });
+        let r = ureq::post(&api_url)
+            .set("Authorization", &format!("Bearer {api_key}"))
+            .set("Content-Type", "application/json");
+        (b, r)
+    } else {
+        let model = std::env::var("BRIEF_LLM_MODEL")
+            .unwrap_or_else(|_| "claude-3-5-haiku-20241022".into());
+        let b = serde_json::json!({
+            "model": model,
+            "max_tokens": 1024,
+            "messages": [{"role": "user", "content": prompt}]
+        });
+        let r = ureq::post(&api_url)
+            .set("x-api-key", &api_key)
+            .set("anthropic-version", "2023-06-01")
+            .set("content-type", "application/json");
+        (b, r)
+    };
 
-    let response = ureq::post(&api_url)
-        .set("x-api-key", &api_key)
-        .set("anthropic-version", "2023-06-01")
-        .set("content-type", "application/json")
-        .send_json(&body);
+    let response = req.send_json(&body);
 
     match response {
         Ok(resp) => {
-            // Read response body with a hard size cap.
             use std::io::Read;
             let mut body_str = String::new();
             if resp.into_reader().take(MAX_LLM_RESPONSE_BYTES as u64)
@@ -347,7 +578,9 @@ fn try_llm_extraction(readme: &str, skill_name: &str) -> Option<Vec<FnSig>> {
                 return None;
             }
             let json: serde_json::Value = serde_json::from_str(&body_str).ok()?;
-            let text = json["content"][0]["text"].as_str()?;
+            // Anthropic: json["content"][0]["text"], OpenAI: json["choices"][0]["message"]["content"]
+            let text = json["content"][0]["text"].as_str()
+                .or_else(|| json["choices"][0]["message"]["content"].as_str())?;
             parse_llm_json(text)
         }
         Err(e) => {
@@ -359,8 +592,16 @@ fn try_llm_extraction(readme: &str, skill_name: &str) -> Option<Vec<FnSig>> {
 }
 
 /// Parse the JSON array returned by the LLM into FnSig structs.
+/// Handles annotated type strings like `"@range(1,100) Int"` — annotations
+/// are preserved in the type string so they flow through `parse_fn_sig`.
 fn parse_llm_json(text: &str) -> Option<Vec<FnSig>> {
-    let arr: serde_json::Value = serde_json::from_str(text.trim()).ok()?;
+    // Strip markdown code fences if present.
+    let text = text.trim();
+    let text = text.strip_prefix("```json").unwrap_or(text);
+    let text = text.strip_prefix("```").unwrap_or(text);
+    let text = text.strip_suffix("```").unwrap_or(text).trim();
+
+    let arr: serde_json::Value = serde_json::from_str(text).ok()?;
     let arr = arr.as_array()?;
 
     let mut fns = Vec::new();
@@ -537,5 +778,94 @@ interface GraphQL {
         let rendered = render_briefskill("TestSkill", &fns, &sha, path, false);
         assert!(rendered.contains(&format!("sha256: {sha}")));
         assert!(rendered.contains("interface TestSkill {"));
+    }
+
+    #[test]
+    fn test_parse_briefskill_with_constraints() {
+        let content = r#"
+interface MapperService {
+    fn mapValue(input: @range(0, 100) Int) -> Code
+    fn classify(cat: @enum("ok", "warn", "err") String) -> Status
+    fn createPayment(amount: @range(100, 1000000) Int, webhook: @stripe-hook String) -> Result
+    fn query(op: UserProfile) -> Result<T, QueryError>
+}
+"#;
+        let iface = parse_briefskill(content).expect("should parse");
+        assert_eq!(iface.name, "MapperService");
+        assert_eq!(iface.funcs.len(), 4);
+
+        // mapValue: @range(0, 100) Int
+        let f0 = &iface.funcs[0];
+        assert_eq!(f0.name, "mapValue");
+        assert_eq!(f0.arg_count, 1);
+        let p0 = &f0.params[0];
+        assert_eq!(p0.base_type, "Int");
+        assert_eq!(p0.static_constraints, vec![StaticConstraint::Range(0, 100)]);
+        assert!(p0.dynamic_attrs.is_empty());
+
+        // classify: @enum("ok", "warn", "err") String
+        let f1 = &iface.funcs[1];
+        let p1 = &f1.params[0];
+        assert_eq!(p1.base_type, "String");
+        assert_eq!(p1.static_constraints, vec![StaticConstraint::Enum(vec![
+            "ok".into(), "warn".into(), "err".into(),
+        ])]);
+
+        // createPayment: @range on first param, @stripe-hook dynamic on second
+        let f2 = &iface.funcs[2];
+        assert_eq!(f2.arg_count, 2);
+        let p2a = &f2.params[0];
+        assert_eq!(p2a.base_type, "Int");
+        assert_eq!(p2a.static_constraints, vec![StaticConstraint::Range(100, 1000000)]);
+        let p2b = &f2.params[1];
+        assert_eq!(p2b.base_type, "String");
+        assert!(p2b.static_constraints.is_empty());
+        assert_eq!(p2b.dynamic_attrs, vec!["@stripe-hook"]);
+
+        // query: no constraints, plain type
+        let f3 = &iface.funcs[3];
+        let p3 = &f3.params[0];
+        assert_eq!(p3.base_type, "UserProfile");
+        assert!(p3.static_constraints.is_empty());
+        assert!(p3.dynamic_attrs.is_empty());
+    }
+
+    #[test]
+    fn test_parse_skill_param_range() {
+        let p = parse_skill_param("input", "@range(0, 100) Int");
+        assert_eq!(p.base_type, "Int");
+        assert_eq!(p.static_constraints, vec![StaticConstraint::Range(0, 100)]);
+        assert!(p.dynamic_attrs.is_empty());
+    }
+
+    #[test]
+    fn test_parse_skill_param_enum() {
+        let p = parse_skill_param("level", "@enum(\"low\", \"med\", \"high\") String");
+        assert_eq!(p.base_type, "String");
+        assert_eq!(p.static_constraints,
+            vec![StaticConstraint::Enum(vec!["low".into(), "med".into(), "high".into()])]);
+    }
+
+    #[test]
+    fn test_parse_skill_param_matches() {
+        let p = parse_skill_param("email", "@matches(\"[^@]+@[^@]+\") String");
+        assert_eq!(p.base_type, "String");
+        assert_eq!(p.static_constraints, vec![StaticConstraint::Matches("[^@]+@[^@]+".into())]);
+    }
+
+    #[test]
+    fn test_parse_skill_param_dynamic() {
+        let p = parse_skill_param("hook", "@stripe-hook String");
+        assert_eq!(p.base_type, "String");
+        assert!(p.static_constraints.is_empty());
+        assert_eq!(p.dynamic_attrs, vec!["@stripe-hook"]);
+    }
+
+    #[test]
+    fn test_parse_skill_param_no_annotation() {
+        let p = parse_skill_param("user", "UserProfile");
+        assert_eq!(p.base_type, "UserProfile");
+        assert!(p.static_constraints.is_empty());
+        assert!(p.dynamic_attrs.is_empty());
     }
 }

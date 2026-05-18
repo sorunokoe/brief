@@ -117,7 +117,7 @@ fn run_check(path: &Path) -> Vec<(Vec<BriefError>, String, String)> {
     };
     let cwd = std::env::current_dir().unwrap_or_else(|_| ctx_dir.to_path_buf());
     let mf = manifest::load_manifest(ctx_dir);
-    let ctx = checker::CheckContext { file_dir: ctx_dir, cwd: &cwd, manifest: mf.as_ref() };
+    let ctx = checker::CheckContext { file_dir: ctx_dir, cwd: &cwd, manifest: mf.as_ref(), brief_path: None, allow_missing_skills: false };
 
     let mut results = Vec::new();
 

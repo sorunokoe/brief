@@ -38,7 +38,9 @@ use crate::ast::*;
 use crate::checker::{self, CheckContext};
 use crate::errors::{print_diagnostics, BriefError};
 use crate::lexer::lex;
+use crate::manifest;
 use crate::parser::parse;
+use crate::serve;
 use crate::skillgen;
 use crate::typeck;
 
@@ -88,6 +90,12 @@ struct TestRuntime {
     mocks: HashMap<(String, String), String>,
     /// Last result of a perform call.
     last_result: Option<String>,
+    /// Whether to make real MCP calls instead of using mocks.
+    live: bool,
+    /// Manifest for live mode routing.
+    manifest: Option<manifest::BriefManifest>,
+    /// Skill interfaces for named-argument building in live mode.
+    ifaces: HashMap<String, skillgen::SkillInterface>,
 }
 
 impl TestRuntime {
@@ -99,19 +107,64 @@ impl TestRuntime {
         }
     }
 
-    fn perform(&mut self, skill: &str, func: &str) -> String {
+    fn perform(&mut self, skill: &str, func: &str, args: &[Expr]) -> String {
         self.performed.push((skill.to_string(), func.to_string()));
         let key = (skill.to_string(), func.to_string());
-        let result = self.mocks.get(&key)
-            .cloned()
-            .unwrap_or_else(|| format!("Ok(<mock {skill}.{func}>)"));
-        self.last_result = Some(result.clone());
-        result
+
+        if self.live {
+            let arg_vals: Vec<serde_json::Value> = args.iter()
+                .map(expr_to_json_val)
+                .collect();
+            let arguments = build_named_args_from_ifaces(skill, func, &arg_vals, &self.ifaces);
+            match serve::call_skill_tool(skill, func, arguments, self.manifest.as_ref()) {
+                Ok(v)  => {
+                    let s = if v.is_null() { "Ok(null)".to_string() } else { format!("Ok({v})") };
+                    self.last_result = Some(s.clone());
+                    s
+                }
+                Err(e) => {
+                    let s = format!("Err({e})");
+                    self.last_result = Some(s.clone());
+                    s
+                }
+            }
+        } else {
+            let result = self.mocks.get(&key)
+                .cloned()
+                .unwrap_or_else(|| format!("Ok(<mock {skill}.{func}>)"));
+            self.last_result = Some(result.clone());
+            result
+        }
     }
 
     fn was_performed(&self, skill: &str, func: &str) -> bool {
         self.performed.iter().any(|(s, f)| s == skill && f == func)
     }
+}
+
+/// Build named MCP arguments using .briefskill param names; falls back to positional keys.
+fn build_named_args_from_ifaces(
+    skill:   &str,
+    func:    &str,
+    args:    &[serde_json::Value],
+    ifaces:  &HashMap<String, skillgen::SkillInterface>,
+) -> serde_json::Value {
+    let mut obj = serde_json::Map::new();
+    if let Some(iface) = ifaces.get(skill) {
+        if let Some(fn_def) = iface.funcs.iter().find(|f| f.name == func) {
+            for (i, val) in args.iter().enumerate() {
+                let key = fn_def.params.get(i)
+                    .map(|p| p.name.clone())
+                    .unwrap_or_else(|| i.to_string());
+                obj.insert(key, val.clone());
+            }
+            return serde_json::Value::Object(obj);
+        }
+    }
+    for (i, val) in args.iter().enumerate() {
+        obj.insert(i.to_string(), val.clone());
+    }
+    serde_json::Value::Object(obj)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -228,8 +281,14 @@ fn extract_tests(source: &str) -> Vec<TestBlock> {
 // Test execution
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn run_test(test: &TestBlock, program: &Program) -> (bool, Vec<String>) {
-    let mut rt  = TestRuntime::default();
+fn run_test(
+    test:     &TestBlock,
+    program:  &Program,
+    live:     bool,
+    mf:       Option<manifest::BriefManifest>,
+    ifaces:   HashMap<String, skillgen::SkillInterface>,
+) -> (bool, Vec<String>) {
+    let mut rt  = TestRuntime { live, manifest: mf, ifaces, ..TestRuntime::default() };
     rt.install_mocks(&test.mocks);
     let mut failures = Vec::new();
 
@@ -299,9 +358,18 @@ fn run_step(step: &Step, rt: &mut TestRuntime) {
 
 fn run_expr(expr: &Expr, rt: &mut TestRuntime) {
     match expr {
-        Expr::Perform { skill, func, .. } => { rt.perform(skill, func); }
+        Expr::Perform { skill, func, args, .. } => { rt.perform(skill, func, args); }
         Expr::Await   { expr: inner, .. } => run_expr(inner, rt),
         _ => {}
+    }
+}
+
+fn expr_to_json_val(expr: &Expr) -> serde_json::Value {
+    match expr {
+        Expr::Str   { value, .. } => serde_json::Value::String(value.clone()),
+        Expr::Int   { value, .. } => serde_json::json!(value),
+        Expr::Ident { name,  .. } => serde_json::Value::String(name.clone()),
+        _ => serde_json::Value::Null,
     }
 }
 
@@ -348,7 +416,7 @@ fn strip_test_blocks(source: &str) -> String {
 
 /// Run all `test { }` blocks found in a `.brief` file.
 /// Returns `true` if all tests passed (or there were no tests).
-pub fn test_file(path: &Path, verbose: bool) -> bool {
+pub fn test_file(path: &Path, verbose: bool, live: bool) -> bool {
     // ── 1. Read source ────────────────────────────────────────────────────
     let source = match std::fs::read_to_string(path) {
         Ok(s)  => s,
@@ -376,7 +444,8 @@ pub fn test_file(path: &Path, verbose: bool) -> bool {
     // ── 3. Type check ─────────────────────────────────────────────────────
     let file_dir = path.parent().unwrap_or(Path::new("."));
     let cwd      = std::env::current_dir().unwrap_or_default();
-    let ctx      = CheckContext { file_dir, cwd: &cwd, manifest: None };
+    let mf       = manifest::load_manifest(file_dir);
+    let ctx      = CheckContext { file_dir, cwd: &cwd, manifest: mf.as_ref(), brief_path: None, allow_missing_skills: false };
     let mut diags: Vec<BriefError> = parse_errors;
     diags.extend(checker::check(&program, &ctx));
     let skill_ifaces = {
@@ -398,7 +467,7 @@ pub fn test_file(path: &Path, verbose: bool) -> bool {
         }
         ifaces
     };
-    diags.extend(typeck::type_check_with_skills(&program, skill_ifaces));
+    diags.extend(typeck::type_check_with_skills(&program, skill_ifaces.clone()));
     if diags.iter().any(|d| d.is_error()) {
         print_diagnostics(&diags, &parse_source, &file_str);
         eprintln!("{} Cannot run tests — fix type errors first.", "error".red().bold());
@@ -417,6 +486,10 @@ pub fn test_file(path: &Path, verbose: bool) -> bool {
         return true;
     }
 
+    if live {
+        println!("{} Live mode: making real MCP calls (no mocks).", "⚡".yellow().bold());
+    }
+
     // ── 5. Run tests ──────────────────────────────────────────────────────
     let total  = tests.len();
     let mut passed = 0usize;
@@ -427,7 +500,7 @@ pub fn test_file(path: &Path, verbose: bool) -> bool {
     println!();
 
     for test in &tests {
-        let (ok, failures) = run_test(test, &program);
+        let (ok, failures) = run_test(test, &program, live, mf.clone(), skill_ifaces.clone());
         if ok {
             println!("  {} {}", "✅".green(), test.name);
             passed += 1;
@@ -439,26 +512,28 @@ pub fn test_file(path: &Path, verbose: bool) -> bool {
             failed += 1;
         }
         if verbose {
-            // Show the perform call log
-            let mut rt = TestRuntime::default();
-            rt.install_mocks(&test.mocks);
-            for cmd in &test.commands {
-                if let TestCmd::Run { task, step } = cmd {
-                    if let Some(t) = program.tasks.iter().find(|t| &t.name == task) {
-                        let steps: Vec<&Step> = if let Some(sn) = step {
-                            t.steps.iter().filter(|s| &s.name == sn).collect()
-                        } else {
-                            t.steps.iter().collect()
-                        };
-                        for s in steps { run_step(s, &mut rt); }
+            // Show the perform call log (mock mode only; live already printed inline)
+            if !live {
+                let mut rt = TestRuntime::default();
+                rt.install_mocks(&test.mocks);
+                for cmd in &test.commands {
+                    if let TestCmd::Run { task, step } = cmd {
+                        if let Some(t) = program.tasks.iter().find(|t| &t.name == task) {
+                            let steps: Vec<&Step> = if let Some(sn) = step {
+                                t.steps.iter().filter(|s| &s.name == sn).collect()
+                            } else {
+                                t.steps.iter().collect()
+                            };
+                            for s in steps { run_step(s, &mut rt); }
+                        }
                     }
                 }
-            }
-            if !rt.performed.is_empty() {
-                println!("       {} calls: {}",
-                    "perform".dimmed(),
-                    rt.performed.iter().map(|(s,f)| format!("{s}.{f}")).collect::<Vec<_>>().join(", ").dimmed()
-                );
+                if !rt.performed.is_empty() {
+                    println!("       {} calls: {}",
+                        "perform".dimmed(),
+                        rt.performed.iter().map(|(s,f)| format!("{s}.{f}")).collect::<Vec<_>>().join(", ").dimmed()
+                    );
+                }
             }
         }
     }
@@ -571,7 +646,7 @@ test "result check" {
     fn test_assert_performed_pass() {
         let prog  = parse_program(FIXTURE);
         let tests = extract_tests(FIXTURE);
-        let (ok, _) = run_test(&tests[0], &prog);
+        let (ok, _) = run_test(&tests[0], &prog, false, None, HashMap::new());
         assert!(ok, "fetch step should call GraphQL.query");
     }
 
@@ -579,7 +654,7 @@ test "result check" {
     fn test_assert_not_performed_pass() {
         let prog  = parse_program(FIXTURE);
         let tests = extract_tests(FIXTURE);
-        let (ok, _) = run_test(&tests[0], &prog);
+        let (ok, _) = run_test(&tests[0], &prog, false, None, HashMap::new());
         assert!(ok, "fetch step should NOT call DesignSystem.profileCard");
     }
 
@@ -587,7 +662,7 @@ test "result check" {
     fn test_full_task_both_skills() {
         let prog  = parse_program(FIXTURE);
         let tests = extract_tests(FIXTURE);
-        let (ok, failures) = run_test(&tests[1], &prog);
+        let (ok, failures) = run_test(&tests[1], &prog, false, None, HashMap::new());
         assert!(ok, "failures: {:?}", failures);
     }
 
@@ -595,7 +670,7 @@ test "result check" {
     fn test_result_ok_assertion() {
         let prog  = parse_program(FIXTURE);
         let tests = extract_tests(FIXTURE);
-        let (ok, failures) = run_test(&tests[2], &prog);
+        let (ok, failures) = run_test(&tests[2], &prog, false, None, HashMap::new());
         assert!(ok, "failures: {:?}", failures);
     }
 

@@ -8,15 +8,20 @@ mod fmt;
 mod gen;
 mod init;
 mod lexer;
+mod lock;
 mod lsp;
 mod manifest;
+mod mcp_schema;
 mod parser;
 mod registry;
 mod repl;
 mod runner;
+mod serve;
 mod skillgen;
 mod tester;
 mod typeck;
+mod verify;
+mod verifier;
 mod watch;
 
 use std::path::PathBuf;
@@ -40,6 +45,22 @@ struct Cli {
 enum Commands {
     /// Type-check a .brief file — fast, CI-friendly
     Check {
+        /// Path to the .brief file
+        file: PathBuf,
+
+        /// Suppress E107 (missing .briefskill) — useful when skills have not been generated yet
+        #[arg(long)]
+        allow_missing_skills: bool,
+    },
+
+    /// Verify dynamic annotations and write .brief.lock
+    Verify {
+        /// Path to the .brief file to verify
+        file: PathBuf,
+    },
+
+    /// Start a verified MCP server for a .brief file (requires valid .brief.lock)
+    Serve {
         /// Path to the .brief file
         file: PathBuf,
     },
@@ -107,6 +128,10 @@ enum Commands {
         /// Show perform call log for each test
         #[arg(short, long)]
         verbose: bool,
+
+        /// Make real MCP calls instead of using mocks (validates return types live)
+        #[arg(long)]
+        live: bool,
     },
 
     /// Format a .brief file (canonical style)
@@ -181,9 +206,21 @@ fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Check { file } => {
+        Commands::Check { file, allow_missing_skills } => {
             print_brief_banner();
-            let ok = runner::run_file(&file, runner::RunMode::Check);
+            let ok = runner::run_file(&file, runner::RunMode::Check { allow_missing_skills });
+            if ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::FAILURE }
+        }
+
+        Commands::Verify { file } => {
+            print_brief_banner();
+            let ok = verify::run_verify(&file);
+            if ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::FAILURE }
+        }
+
+        Commands::Serve { file } => {
+            // No banner — MCP protocol on stdio.
+            let ok = serve::run_serve(&file);
             if ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::FAILURE }
         }
 
@@ -229,9 +266,9 @@ fn main() -> std::process::ExitCode {
             if ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::FAILURE }
         }
 
-        Commands::Test { file, verbose } => {
+        Commands::Test { file, verbose, live } => {
             print_brief_banner();
-            let ok = tester::test_file(&file, verbose);
+            let ok = tester::test_file(&file, verbose, live);
             if ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::FAILURE }
         }
 

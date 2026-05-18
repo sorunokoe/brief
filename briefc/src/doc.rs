@@ -344,6 +344,7 @@ fn expr_str(expr: &Expr) -> String {
         }
         Expr::Ident { name, .. } => name.clone(),
         Expr::Str   { value, .. } => format!("\"{value}\""),
+        Expr::Int   { value, .. } => value.to_string(),
     }
 }
 

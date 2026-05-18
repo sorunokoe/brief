@@ -56,6 +56,10 @@ pub enum Token {
     })]
     Str(String),
 
+    /// Integer literal, e.g. `0`, `100`, `-42`.
+    #[regex(r"-?[0-9]+", |lex| lex.slice().parse::<i64>().ok())]
+    Int(i64),
+
     // ── Identifiers ───────────────────────────────────────────────────────
     /// Any word not matched by a keyword. Includes `TaskBrief`, `goal`, `extras`, etc.
     #[regex(r"[a-zA-Z_][a-zA-Z0-9_]*", |lex| lex.slice().to_string())]
@@ -165,5 +169,14 @@ mod tests {
         assert!(errs.is_empty(), "unexpected lex errors: {:?}", errs);
         assert_eq!(toks[1].token, Token::LAngle);
         assert_eq!(toks[toks.len()-1].token, Token::RAngle);
+    }
+
+    #[test]
+    fn lex_integer_literal() {
+        let (toks, errs) = lex("0 100 -42");
+        assert!(errs.is_empty());
+        assert_eq!(toks[0].token, Token::Int(0));
+        assert_eq!(toks[1].token, Token::Int(100));
+        assert_eq!(toks[2].token, Token::Int(-42));
     }
 }

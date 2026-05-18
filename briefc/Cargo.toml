@@ -36,3 +36,4 @@ toml       = { version = "0.8", features = ["parse"] }
 llvm-backend = []
 
 [dev-dependencies]
+tempfile = "3"

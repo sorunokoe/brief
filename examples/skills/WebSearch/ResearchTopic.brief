@@ -1,0 +1,31 @@
+// Example: search web for information and summarise results.
+// @url annotations use builtin:url verifier (ships with Brief).
+// @range constraints checked statically by brief check.
+
+import skill "WebSearch"
+
+task ResearchTopic : TaskBrief uses [WebSearch] {
+    goal = "Search the web for a topic and produce a structured summary"
+
+    step Search {
+        let results = perform WebSearch.search("Brief DSL Rust AI", 10)?;
+    }
+
+    step FetchTop {
+        let page = perform WebSearch.fetchPage("https://example.com")?;
+    }
+
+    step Summarise {
+        let summary = perform WebSearch.summarise("https://example.com", 500)?;
+    }
+}
+
+test "WebSearch boundary coverage" {
+    // @range(1, 20) for maxResults — must cover both boundaries:
+    let r_min = perform WebSearch.search("test", 1)?;
+    let r_max = perform WebSearch.search("test", 20)?;
+
+    // @range(100, 4000) for maxTokens — must cover both boundaries:
+    let s_min = perform WebSearch.summarise("https://example.com", 100)?;
+    let s_max = perform WebSearch.summarise("https://example.com", 4000)?;
+}

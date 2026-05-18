@@ -226,7 +226,7 @@ mod backend {
         let (program, p_errs) = parse(&tokens, &source);
         let cwd      = std::env::current_dir().unwrap_or_default();
         let file_dir = source_path.parent().unwrap_or(std::path::Path::new("."));
-        let ctx      = CheckContext { file_dir, cwd: &cwd, manifest: None };
+        let ctx      = CheckContext { file_dir, cwd: &cwd, manifest: None, brief_path: None, allow_missing_skills: false };
 
         let mut diags = p_errs;
         diags.extend(check(&program, &ctx));

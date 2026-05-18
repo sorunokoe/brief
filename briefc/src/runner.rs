@@ -14,6 +14,7 @@ use crate::errors::{print_diagnostics, BriefError};
 use crate::lexer::lex;
 use crate::manifest;
 use crate::parser::parse;
+use crate::serve;
 use crate::skillgen;
 use crate::typeck;
 
@@ -21,7 +22,7 @@ use crate::typeck;
 
 pub enum RunMode {
     /// Only validate — do not execute.
-    Check,
+    Check { allow_missing_skills: bool },
     /// Validate then execute (print task info in v0.0.1).
     Run,
 }
@@ -66,14 +67,15 @@ pub fn run_file(path: &Path, mode: RunMode) -> bool {
     let file_dir = path.parent().unwrap_or(Path::new("."));
     let cwd      = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let mf       = manifest::load_manifest(file_dir);
-    let ctx      = CheckContext { file_dir, cwd: &cwd, manifest: mf.as_ref() };
+    let allow_missing = matches!(mode, RunMode::Check { allow_missing_skills: true });
+    let ctx      = CheckContext { file_dir, cwd: &cwd, manifest: mf.as_ref(), brief_path: Some(path), allow_missing_skills: allow_missing };
 
     let mut diags: Vec<BriefError> = parse_errors;
     diags.extend(checker::check(&program, &ctx));
 
     // ── 4b. Type checking (with skill interfaces for cross-file E202) ──────
     let skill_ifaces = load_skill_interfaces(&program, file_dir, &cwd);
-    diags.extend(typeck::type_check_with_skills(&program, skill_ifaces));
+    diags.extend(typeck::type_check_with_skills(&program, skill_ifaces.clone()));
 
     // ── 4c. Deduplicate diagnostics by (code, span) ───────────────────────
     // Multiple passes (checker + typeck) can produce identical diagnostics when
@@ -138,7 +140,7 @@ pub fn run_file(path: &Path, mode: RunMode) -> bool {
     if matches!(mode, RunMode::Run) && !has_errors {
         println!();
         for task in &program.tasks {
-            execute_task(task);
+            execute_task(task, mf.as_ref(), &skill_ifaces);
         }
     }
 
@@ -220,27 +222,96 @@ fn collect_perform_calls(expr: &crate::ast::Expr) -> Vec<String> {
     }
 }
 
-fn execute_task(task: &Task) {
-    println!("{} Running brief: {}", "●".blue().bold(), task.name.bold());
+fn execute_task(task: &Task, mf: Option<&manifest::BriefManifest>, ifaces: &HashMap<String, skillgen::SkillInterface>) {
+    println!("{} Running task: {}", "●".blue().bold(), task.name.bold());
 
     for step in &task.steps {
-        print!("  {} step {}... ", "→".dimmed(), step.name.bold());
-        let effects: Vec<String> = step.body.iter()
-            .flat_map(|stmt| {
-                let expr = match stmt {
-                    crate::ast::Stmt::Let { value, .. }  => value,
-                    crate::ast::Stmt::Expr { value, .. } => value,
-                };
-                collect_perform_calls(expr)
-            })
-            .collect();
-
-        if effects.is_empty() {
-            println!("{}", "done".green());
-        } else {
-            println!("{} {}", "invokes".dimmed(), effects.join(", ").cyan());
-        }
+        println!("  {} step {}…", "→".dimmed(), step.name.bold());
+        execute_step(step, mf, ifaces);
     }
 
     println!("{} Complete.", "✅".green().bold());
+}
+
+fn execute_step(step: &Step, mf: Option<&manifest::BriefManifest>, ifaces: &HashMap<String, skillgen::SkillInterface>) {
+    for stmt in &step.body {
+        let expr = match stmt {
+            crate::ast::Stmt::Let  { value, .. } => value,
+            crate::ast::Stmt::Expr { value, .. } => value,
+        };
+        execute_expr(expr, mf, ifaces);
+    }
+}
+
+fn execute_expr(expr: &Expr, mf: Option<&manifest::BriefManifest>, ifaces: &HashMap<String, skillgen::SkillInterface>) {
+    match expr {
+        Expr::Perform { skill, func, args, .. } => {
+            let arg_vals: Vec<serde_json::Value> = args.iter()
+                .map(|a| expr_to_json(a))
+                .collect();
+
+            // Build named arguments by matching positional args to param names from .briefskill.
+            // Falls back to positional keys ("0", "1", ...) if interface is unavailable.
+            let arguments = build_named_arguments(skill, func, &arg_vals, ifaces);
+
+            print!("     {} {}.{}(", "perform".cyan(), skill, func);
+            if !arg_vals.is_empty() {
+                print!("{}", arg_vals.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", "));
+            }
+            print!(") … ");
+
+            match serve::call_skill_tool(skill, func, arguments, mf) {
+                Ok(result) => {
+                    let display = if result.is_null() {
+                        "ok".to_string()
+                    } else {
+                        result.to_string().chars().take(120).collect::<String>()
+                    };
+                    println!("{} {}", "✓".green(), display.dimmed());
+                }
+                Err(e) => {
+                    println!("{} {}", "✗".red(), e.red());
+                }
+            }
+        }
+        Expr::Await { expr: inner, .. } => execute_expr(inner, mf, ifaces),
+        _ => {}
+    }
+}
+
+/// Build a named MCP arguments object from positional Brief args.
+/// Uses .briefskill param names when available; falls back to positional keys.
+fn build_named_arguments(
+    skill:   &str,
+    func:    &str,
+    args:    &[serde_json::Value],
+    ifaces:  &HashMap<String, skillgen::SkillInterface>,
+) -> serde_json::Value {
+    if let Some(iface) = ifaces.get(skill) {
+        if let Some(fn_def) = iface.funcs.iter().find(|f| f.name == func) {
+            let mut obj = serde_json::Map::new();
+            for (i, val) in args.iter().enumerate() {
+                let key = fn_def.params.get(i)
+                    .map(|p| p.name.clone())
+                    .unwrap_or_else(|| i.to_string());
+                obj.insert(key, val.clone());
+            }
+            return serde_json::Value::Object(obj);
+        }
+    }
+    // Fallback: positional keys
+    let mut obj = serde_json::Map::new();
+    for (i, val) in args.iter().enumerate() {
+        obj.insert(i.to_string(), val.clone());
+    }
+    serde_json::Value::Object(obj)
+}
+
+fn expr_to_json(expr: &Expr) -> serde_json::Value {
+    match expr {
+        Expr::Str   { value, .. } => serde_json::Value::String(value.clone()),
+        Expr::Int   { value, .. } => serde_json::json!(value),
+        Expr::Ident { name,  .. } => serde_json::Value::String(name.clone()),
+        _ => serde_json::Value::Null,
+    }
 }

@@ -12,17 +12,25 @@ use std::path::{Path, PathBuf};
 
 use crate::ast::*;
 use crate::errors::{BriefError, ErrorCode};
+use crate::lock::{check_lock, lock_path, read_lock, LockState};
 use crate::manifest::BriefManifest;
+use crate::skillgen::{parse_briefskill, SkillInterface, StaticConstraint};
 
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub struct CheckContext<'a> {
     /// Directory of the `.brief` file being checked — used for skill lookups.
-    pub file_dir: &'a Path,
+    pub file_dir:             &'a Path,
     /// Current working directory — fallback for skill lookups.
-    pub cwd:      &'a Path,
+    pub cwd:                  &'a Path,
     /// Optional parsed `brief.toml` — used for manifest-defined skill path overrides.
-    pub manifest: Option<&'a BriefManifest>,
+    pub manifest:             Option<&'a BriefManifest>,
+    /// Path to the `.brief` source file — used for lock gate (E303).
+    /// `None` in unit tests that don't need lock checking.
+    pub brief_path:           Option<&'a Path>,
+    /// When `true`, missing `.briefskill` files produce a warning instead of E101.
+    /// Set by `brief check --allow-missing-skills` or by unit tests that run without real skill dirs.
+    pub allow_missing_skills: bool,
 }
 
 /// Check a program and return all diagnostics.
@@ -64,6 +72,18 @@ pub fn check(program: &Program, ctx: &CheckContext<'_>) -> Vec<BriefError> {
         check_task(task, &imported, &groups, &inline_effects, ctx, &mut diags);
     }
 
+    // 5. Spec coverage: load skill interfaces, then check test block coverage.
+    let skill_ifaces = load_skill_interfaces(program, ctx);
+    for test in &program.tests {
+        check_test_spec_coverage(test, &skill_ifaces, &mut diags);
+    }
+
+    // 6. Lock gate (E303): if any dynamic annotations exist, require a valid lock.
+    check_lock_gate(program, &skill_ifaces, ctx, &mut diags);
+
+    // 7. E309: dynamic annotations without a configured verifier.
+    check_unconfigured_verifiers(program, &skill_ifaces, ctx, &mut diags);
+
     diags
 }
 
@@ -71,6 +91,9 @@ pub fn check(program: &Program, ctx: &CheckContext<'_>) -> Vec<BriefError> {
 
 fn check_skill_import(import: &SkillImport, ctx: &CheckContext<'_>, diags: &mut Vec<BriefError>) {
     if find_skill_interface(&import.name, ctx).is_none() {
+        if ctx.allow_missing_skills {
+            return; // suppressed by --allow-missing-skills
+        }
         let skill_path = skill_interface_path_display(&import.name);
         diags.push(BriefError {
             code:    ErrorCode::MissingSkillInterface,
@@ -300,7 +323,7 @@ fn count_ident_uses(expr: &Expr, linear: &mut HashMap<String, (Span, usize)>) {
             for a in args { count_ident_uses(a, linear); }
         }
         Expr::Await { expr: inner, .. } => count_ident_uses(inner, linear),
-        Expr::Str { .. } => {}
+        Expr::Str { .. } | Expr::Int { .. } => {}
     }
 }
 
@@ -324,7 +347,7 @@ fn check_expr_for_perform(expr: &Expr, uses_set: &HashSet<&str>, _imported: &Has
                 check_expr_for_perform(arg, uses_set, _imported, diags);
             }
         }
-        Expr::Ident { .. } | Expr::Str { .. } => {}
+        Expr::Ident { .. } | Expr::Str { .. } | Expr::Int { .. } => {}
     }
 }
 
@@ -361,6 +384,331 @@ fn skill_interface_path_display(name: &str) -> String {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Spec coverage (E301 / E302)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Load parsed `SkillInterface` for every imported skill that has a `.briefskill` file.
+fn load_skill_interfaces(program: &Program, ctx: &CheckContext<'_>) -> HashMap<String, SkillInterface> {
+    let mut map = HashMap::new();
+    for import in &program.imports {
+        if let Some(path) = find_skill_interface(&import.name, ctx) {
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                if let Some(iface) = parse_briefskill(&content) {
+                    map.insert(import.name.clone(), iface);
+                }
+            }
+        }
+    }
+    map
+}
+
+/// Check that every `@range(min,max)` param has both boundary literals covered,
+/// and every `@enum(vals)` param has all enum values covered, across all
+/// `perform Skill.fn(args)` calls in the test body.
+fn check_test_spec_coverage(
+    test:   &TestDecl,
+    ifaces: &HashMap<String, SkillInterface>,
+    diags:  &mut Vec<BriefError>,
+) {
+    // Collect all perform calls: (skill, fn_name, args_vec, call_span)
+    let mut performs: Vec<(&str, &str, &[Expr], Span)> = Vec::new();
+    for stmt in &test.body {
+        collect_performs(stmt_value(stmt), &mut performs);
+    }
+
+    // Group calls by (skill, fn): (skill_name, fn_name) → Vec<&[Expr]>
+    let mut grouped: HashMap<(&str, &str), Vec<&[Expr]>> = HashMap::new();
+    for (skill, func, args, _span) in &performs {
+        grouped.entry((skill, func)).or_default().push(args);
+    }
+
+    // For each group, look up constraints and check coverage.
+    for ((skill_name, fn_name), all_call_args) in &grouped {
+        let iface = match ifaces.get(*skill_name) {
+            Some(i) => i,
+            None    => continue, // no interface loaded — silently skip
+        };
+        let skill_fn = match iface.funcs.iter().find(|f| f.name == *fn_name) {
+            Some(f) => f,
+            None    => continue, // fn not in interface — type checker handles this
+        };
+
+        for (param_idx, param) in skill_fn.params.iter().enumerate() {
+            for constraint in &param.static_constraints {
+                match constraint {
+                    StaticConstraint::Range(min, max) => {
+                        check_range_coverage(
+                            skill_name, fn_name, param_idx, &param.name, *min, *max,
+                            all_call_args, test.span, diags,
+                        );
+                    }
+                    StaticConstraint::Enum(vals) => {
+                        check_enum_coverage(
+                            skill_name, fn_name, param_idx, &param.name, vals,
+                            all_call_args, test.span, diags,
+                        );
+                    }
+                    // @matches / @nonEmpty are not coverage obligations on test args.
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+fn collect_performs<'a>(expr: &'a Expr, out: &mut Vec<(&'a str, &'a str, &'a [Expr], Span)>) {
+    match expr {
+        Expr::Perform { skill, func, args, span, .. } => {
+            out.push((skill.as_str(), func.as_str(), args.as_slice(), *span));
+            for arg in args { collect_performs(arg, out); }
+        }
+        Expr::Await { expr: inner, .. } => collect_performs(inner, out),
+        Expr::Call { args, .. } => {
+            for arg in args { collect_performs(arg, out); }
+        }
+        Expr::Ident { .. } | Expr::Str { .. } | Expr::Int { .. } => {}
+    }
+}
+
+/// Check that both `min` and `max` appear as literal int args at `param_idx`.
+fn check_range_coverage(
+    skill:    &str,
+    fn_name:  &str,
+    idx:      usize,
+    pname:    &str,
+    min:      i64,
+    max:      i64,
+    all_args: &[&[Expr]],
+    span:     Span,
+    diags:    &mut Vec<BriefError>,
+) {
+    let mut saw_min = false;
+    let mut saw_max = false;
+    for args in all_args {
+        if let Some(Expr::Int { value, .. }) = args.get(idx) {
+            if *value == min { saw_min = true; }
+            if *value == max { saw_max = true; }
+        }
+    }
+
+    if !saw_min {
+        diags.push(BriefError {
+            code:    ErrorCode::RangeBoundaryMissing,
+            message: format!(
+                "test block missing lower boundary for `{skill}.{fn_name}` param `{pname}`: \
+                 @range({min}, {max}) requires a call with arg = {min}"
+            ),
+            span,
+            hint: Some(format!(
+                "add: perform {skill}.{fn_name}({min}, ...) to cover the lower boundary"
+            )),
+        });
+    }
+    if !saw_max {
+        diags.push(BriefError {
+            code:    ErrorCode::RangeBoundaryMissing,
+            message: format!(
+                "test block missing upper boundary for `{skill}.{fn_name}` param `{pname}`: \
+                 @range({min}, {max}) requires a call with arg = {max}"
+            ),
+            span,
+            hint: Some(format!(
+                "add: perform {skill}.{fn_name}({max}, ...) to cover the upper boundary"
+            )),
+        });
+    }
+}
+
+/// Check that each enum value appears as a literal string arg at `param_idx`.
+fn check_enum_coverage(
+    skill:    &str,
+    fn_name:  &str,
+    idx:      usize,
+    pname:    &str,
+    vals:     &[String],
+    all_args: &[&[Expr]],
+    span:     Span,
+    diags:    &mut Vec<BriefError>,
+) {
+    let covered: HashSet<&str> = all_args.iter()
+        .filter_map(|args| args.get(idx))
+        .filter_map(|expr| if let Expr::Str { value, .. } = expr { Some(value.as_str()) } else { None })
+        .collect();
+
+    for val in vals {
+        if !covered.contains(val.as_str()) {
+            diags.push(BriefError {
+                code:    ErrorCode::EnumValueMissing,
+                message: format!(
+                    "test block missing enum value \"{val}\" for `{skill}.{fn_name}` param `{pname}`"
+                ),
+                span,
+                hint: Some(format!(
+                    "add: perform {skill}.{fn_name}(\"{val}\", ...) to cover all enum variants"
+                )),
+            });
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Lock gate (E303)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Emit E303 if the program has dynamic annotations and the lock file is
+/// missing, stale, or the source has changed since it was written.
+///
+/// "Dynamic annotations" = any `@xyz` in `.briefskill` params that is not in
+/// the static list (`@range`, `@enum`, `@matches`, `@nonEmpty`).
+fn check_lock_gate(
+    program:  &Program,
+    ifaces:   &HashMap<String, SkillInterface>,
+    ctx:      &CheckContext<'_>,
+    diags:    &mut Vec<BriefError>,
+) {
+    // Only run the gate if `require_lock` is enabled (default: true).
+    let (require_lock, max_age_hours) = if let Some(mf) = ctx.manifest {
+        (mf.verify.require_lock, mf.verify.max_lock_age_hours)
+    } else {
+        (true, 24) // defaults when no brief.toml
+    };
+
+    if !require_lock { return; }
+
+    // Check if there are any dynamic annotations across all loaded interfaces.
+    let has_dynamic = ifaces.values()
+        .flat_map(|iface| iface.funcs.iter())
+        .flat_map(|f| f.params.iter())
+        .any(|p| !p.dynamic_attrs.is_empty());
+
+    if !has_dynamic { return; }
+
+    // Dynamic annotations present — need a valid lock.
+    let brief_path = match ctx.brief_path {
+        Some(p) => p,
+        None    => return, // no path in context (unit tests) — skip
+    };
+
+    let lp = lock_path(brief_path);
+
+    let lock = match read_lock(&lp) {
+        Some(l) => l,
+        None    => {
+            diags.push(BriefError {
+                code:    ErrorCode::LockRequired,
+                message: format!(
+                    "dynamic annotations require a verified lock file (expected: {})",
+                    lp.display()
+                ),
+                span:    program.imports.first().map(|i| i.span).unwrap_or_default(),
+                hint:    Some("run: brief verify".to_string()),
+            });
+            return;
+        }
+    };
+
+    // Read source bytes for hash comparison.
+    let source_bytes = match std::fs::read(brief_path) {
+        Ok(b)  => b,
+        Err(_) => return, // can't read — skip gate
+    };
+
+    match check_lock(&lock, &source_bytes, max_age_hours) {
+        LockState::Fresh => {} // all good
+        LockState::Missing => unreachable!(), // handled above
+        LockState::SourceChanged => {
+            diags.push(BriefError {
+                code:    ErrorCode::LockRequired,
+                message: format!(
+                    "lock file {} is stale — source has changed since last verify",
+                    lp.display()
+                ),
+                span:    program.imports.first().map(|i| i.span).unwrap_or_default(),
+                hint:    Some("run: brief verify to re-seal the contract".to_string()),
+            });
+        }
+        LockState::Stale => {
+            diags.push(BriefError {
+                code:    ErrorCode::LockRequired,
+                message: format!(
+                    "lock file {} is older than {max_age_hours}h — re-verification required",
+                    lp.display()
+                ),
+                span:    program.imports.first().map(|i| i.span).unwrap_or_default(),
+                hint:    Some("run: brief verify to refresh the verification seal".to_string()),
+            });
+        }
+    }
+}
+
+/// E309: dynamic annotations that have no configured verifier in `brief.toml`.
+///
+/// A dynamic annotation is any `@xyz` in a `.briefskill` param that is not
+/// handled statically (`@range`, `@enum`, `@matches`, `@nonEmpty`).
+/// If the manifest has no `[verifiers."@xyz"]` entry, emit E309.
+fn check_unconfigured_verifiers(
+    program:     &Program,
+    skill_ifaces: &HashMap<String, SkillInterface>,
+    ctx:          &CheckContext<'_>,
+    diags:        &mut Vec<BriefError>,
+) {
+    let verifiers = ctx.manifest
+        .map(|m| &m.verifiers)
+        .cloned()
+        .unwrap_or_default();
+
+    // Collect (annotation, span) for all dynamic annotations that appear in
+    // actual `perform` calls (not just imported but unused functions).
+    let mut perform_list: Vec<(&str, &str, &[Expr], Span)> = Vec::new();
+    for task in &program.tasks {
+        for step in &task.steps {
+            for stmt in &step.body {
+                let expr = match stmt {
+                    Stmt::Expr { value, .. } | Stmt::Let { value, .. } => value,
+                };
+                collect_performs(expr, &mut perform_list);
+            }
+        }
+    }
+    for test in &program.tests {
+        for stmt in &test.body {
+            let expr = match stmt {
+                Stmt::Expr { value, .. } | Stmt::Let { value, .. } => value,
+            };
+            collect_performs(expr, &mut perform_list);
+        }
+    }
+
+    let mut seen: HashSet<String> = HashSet::new();
+    for (skill_name, fn_name, _args, span) in &perform_list {
+        let iface = match skill_ifaces.get(*skill_name) { Some(i) => i, None => continue };
+        let skill_fn = match iface.funcs.iter().find(|f| f.name == *fn_name) { Some(f) => f, None => continue };
+        for param in &skill_fn.params {
+            for dyn_attr in &param.dynamic_attrs {
+                if seen.contains(dyn_attr) { continue; }
+                let key_with = dyn_attr.as_str();
+                let key_without = dyn_attr.strip_prefix('@').unwrap_or(dyn_attr);
+                if !verifiers.contains_key(key_with) && !verifiers.contains_key(key_without) {
+                    seen.insert(dyn_attr.clone());
+                    diags.push(BriefError {
+                        code:    ErrorCode::UnconfiguredVerifier,
+                        message: format!(
+                            "error[E309]: annotation `{dyn_attr}` on {}::{} has no configured verifier — \
+                             add [verifiers.\"{dyn_attr}\"] to brief.toml",
+                            skill_name, fn_name
+                        ),
+                        span:    *span,
+                        hint:    Some(format!(
+                            "use a static constraint like @matches(\"pattern\") if format validation is sufficient, \
+                             or add [verifiers.\"{dyn_attr}\"] with mcp_command or mcp_url"
+                        )),
+                    });
+                }
+            }
+        }
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -371,7 +719,13 @@ mod tests {
     fn check_src(src: &str) -> Vec<BriefError> {
         let (tokens, _) = lex(src);
         let (program, _) = parse(&tokens, src);
-        let ctx = CheckContext { file_dir: Path::new("."), cwd: Path::new("."), manifest: None };
+        let ctx = CheckContext {
+            file_dir:             Path::new("."),
+            cwd:                  Path::new("."),
+            manifest:             None,
+            brief_path:           None,
+            allow_missing_skills: true,
+        };
         check(&program, &ctx)
     }
 
@@ -625,7 +979,7 @@ mod tests {
             }
         "#);
         let hard_errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
-        // W101 (no .briefskill) is ok; hard errors should be zero
+        // check_src uses allow_missing_skills=true so E107 is suppressed; only structural errors fire
         assert!(hard_errors.is_empty(), "unexpected hard errors: {hard_errors:?}");
     }
 
@@ -642,21 +996,47 @@ mod tests {
                 assert result is Ok
             }
         "#);
-        // The only errors should be W101 (no .briefskill files) — no E102/E103
+        // check_src uses allow_missing_skills=true so E107 is suppressed — only E102/E103 would appear
         let hard: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
         assert!(hard.is_empty(), "unexpected errors from test block mock: {hard:?}");
     }
 
-    // ── W101: skill has no interface file ─────────────────────────────────────
+    // ── E107: skill has no interface file ─────────────────────────────────────
 
     #[test]
-    fn w101_fires_on_imported_skill_without_briefskill() {
-        // When checking from "." (no .claude/skills/ dir), W101 should fire
+    fn e107_fires_on_imported_skill_without_briefskill() {
+        // Use strict mode (allow_missing_skills=false) — E107 should fire
+        let (tokens, _) = lex(r#"
+            import skill "GraphQL"
+            task T : TaskBrief uses [GraphQL] { goal = "x" }
+        "#);
+        let (program, _) = parse(&tokens, r#"
+            import skill "GraphQL"
+            task T : TaskBrief uses [GraphQL] { goal = "x" }
+        "#);
+        let ctx = CheckContext {
+            file_dir:             Path::new("."),
+            cwd:                  Path::new("."),
+            manifest:             None,
+            brief_path:           None,
+            allow_missing_skills: false,
+        };
+        let diags = check(&program, &ctx);
+        assert!(diags.iter().any(|d| d.code == ErrorCode::MissingSkillInterface), "{diags:?}");
+        assert!(diags.iter().any(|d| d.is_error()), "E107 must be an error: {diags:?}");
+    }
+
+    #[test]
+    fn e107_suppressed_by_allow_missing_skills() {
+        // allow_missing_skills=true → no E107 emitted at all
         let diags = check_src(r#"
             import skill "GraphQL"
             task T : TaskBrief uses [GraphQL] { goal = "x" }
         "#);
-        assert!(diags.iter().any(|d| d.code == ErrorCode::MissingSkillInterface), "{diags:?}");
+        let e107: Vec<_> = diags.iter()
+            .filter(|d| d.code == ErrorCode::MissingSkillInterface)
+            .collect();
+        assert!(e107.is_empty(), "E107 should be suppressed by allow_missing_skills: {e107:?}");
     }
 
     // ── Effect group used in multiple tasks ───────────────────────────────────
@@ -774,5 +1154,208 @@ mod tests {
             diags.iter().any(|d| d.code == ErrorCode::LinearBindingDropped),
             "expected E105 for shadow-before-consume: {diags:?}"
         );
+    }
+
+    // ── Spec coverage (E301/E302) ───────────────────────────────────────────
+
+    /// Build a CheckContext that points at a temp dir containing `.briefskill` files.
+    fn check_src_with_skills(src: &str, skills: &[(&str, &str)]) -> Vec<BriefError> {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let skills_root = dir.path().join(".claude").join("skills");
+        for (name, content) in skills {
+            let skill_dir = skills_root.join(name);
+            fs::create_dir_all(&skill_dir).unwrap();
+            fs::write(skill_dir.join(format!("{name}.briefskill")), content).unwrap();
+        }
+        let (tokens, _) = lex(src);
+        let (program, _) = parse(&tokens, src);
+        let ctx = CheckContext {
+            file_dir:             dir.path(),
+            cwd:                  dir.path(),
+            manifest:             None,
+            brief_path:           None,
+            allow_missing_skills: false,
+        };
+        check(&program, &ctx)
+    }
+
+    #[test]
+    fn e301_range_lower_boundary_missing() {
+        let skill_content = r#"interface Mapper {
+    fn mapValue(input: @range(0, 100) Int) -> Code
+}"#;
+        // test block only covers max=100, not min=0
+        let src = r#"
+import skill "Mapper"
+test "coverage" {
+    perform Mapper.mapValue(100);
+}
+"#;
+        let diags = check_src_with_skills(src, &[("Mapper", skill_content)]);
+        assert!(diags.iter().any(|d| d.code == ErrorCode::RangeBoundaryMissing), "{diags:?}");
+        // Ensure the lower boundary (0) is the one flagged
+        let e301: Vec<_> = diags.iter()
+            .filter(|d| d.code == ErrorCode::RangeBoundaryMissing)
+            .collect();
+        assert!(e301.iter().any(|d| d.message.contains("arg = 0")), "{e301:?}");
+    }
+
+    #[test]
+    fn e301_range_upper_boundary_missing() {
+        let skill_content = r#"interface Mapper {
+    fn mapValue(input: @range(0, 100) Int) -> Code
+}"#;
+        let src = r#"
+import skill "Mapper"
+test "coverage" {
+    perform Mapper.mapValue(0);
+}
+"#;
+        let diags = check_src_with_skills(src, &[("Mapper", skill_content)]);
+        let e301: Vec<_> = diags.iter()
+            .filter(|d| d.code == ErrorCode::RangeBoundaryMissing)
+            .collect();
+        assert!(!e301.is_empty(), "expected E301 for missing upper boundary: {diags:?}");
+        assert!(e301.iter().any(|d| d.message.contains("arg = 100")), "{e301:?}");
+    }
+
+    #[test]
+    fn e301_range_both_boundaries_present_no_error() {
+        let skill_content = r#"interface Mapper {
+    fn mapValue(input: @range(0, 100) Int) -> Code
+}"#;
+        let src = r#"
+import skill "Mapper"
+test "coverage" {
+    perform Mapper.mapValue(0);
+    perform Mapper.mapValue(100);
+}
+"#;
+        let diags = check_src_with_skills(src, &[("Mapper", skill_content)]);
+        let e301: Vec<_> = diags.iter()
+            .filter(|d| d.code == ErrorCode::RangeBoundaryMissing)
+            .collect();
+        assert!(e301.is_empty(), "unexpected E301: {e301:?}");
+    }
+
+    #[test]
+    fn e302_enum_value_missing() {
+        let skill_content = r#"interface Classifier {
+    fn classify(cat: @enum("ok", "warn", "err") String) -> Status
+}"#;
+        let src = r#"
+import skill "Classifier"
+test "coverage" {
+    perform Classifier.classify("ok");
+    perform Classifier.classify("warn");
+}
+"#;
+        // "err" is missing
+        let diags = check_src_with_skills(src, &[("Classifier", skill_content)]);
+        let e302: Vec<_> = diags.iter()
+            .filter(|d| d.code == ErrorCode::EnumValueMissing)
+            .collect();
+        assert!(!e302.is_empty(), "expected E302 for missing \"err\": {diags:?}");
+        assert!(e302.iter().any(|d| d.message.contains("\"err\"")), "{e302:?}");
+    }
+
+    #[test]
+    fn e302_enum_all_values_covered_no_error() {
+        let skill_content = r#"interface Classifier {
+    fn classify(cat: @enum("ok", "warn", "err") String) -> Status
+}"#;
+        let src = r#"
+import skill "Classifier"
+test "coverage" {
+    perform Classifier.classify("ok");
+    perform Classifier.classify("warn");
+    perform Classifier.classify("err");
+}
+"#;
+        let diags = check_src_with_skills(src, &[("Classifier", skill_content)]);
+        let e302: Vec<_> = diags.iter()
+            .filter(|d| d.code == ErrorCode::EnumValueMissing)
+            .collect();
+        assert!(e302.is_empty(), "unexpected E302: {e302:?}");
+    }
+
+    // ── Lock gate (E303) ────────────────────────────────────────────────────
+
+    fn check_src_with_skills_and_path(
+        src:    &str,
+        skills: &[(&str, &str)],
+        brief_path: Option<&Path>,
+    ) -> Vec<BriefError> {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let skills_root = dir.path().join(".claude").join("skills");
+        for (name, content) in skills {
+            let skill_dir = skills_root.join(name);
+            fs::create_dir_all(&skill_dir).unwrap();
+            fs::write(skill_dir.join(format!("{name}.briefskill")), content).unwrap();
+        }
+        let (tokens, _) = lex(src);
+        let (program, _) = parse(&tokens, src);
+        let ctx = CheckContext {
+            file_dir:             dir.path(),
+            cwd:                  dir.path(),
+            manifest:             None,
+            brief_path,
+            allow_missing_skills: false,
+        };
+        check(&program, &ctx)
+    }
+
+    #[test]
+    fn e303_missing_lock_for_dynamic_annotation() {
+        let skill_content = r#"interface Payment {
+    fn charge(amount: Int, webhook: @stripe-hook String) -> Handle
+}"#;
+        let src = r#"
+import skill "Payment"
+task Pay : TaskBrief uses [Payment] { goal = "charge" }
+"#;
+        // brief_path points to a nonexistent file → lock also nonexistent
+        let brief_path = Path::new("/tmp/nonexistent_for_test.brief");
+        let diags = check_src_with_skills_and_path(src, &[("Payment", skill_content)], Some(brief_path));
+        assert!(
+            diags.iter().any(|d| d.code == ErrorCode::LockRequired),
+            "expected E303 for missing lock: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn e303_no_error_when_only_static_constraints() {
+        let skill_content = r#"interface Mapper {
+    fn mapValue(input: @range(0, 100) Int) -> Code
+}"#;
+        let src = r#"
+import skill "Mapper"
+task T : TaskBrief uses [Mapper] { goal = "map" }
+"#;
+        // No dynamic annotations → lock gate should NOT fire
+        let diags = check_src_with_skills(src, &[("Mapper", skill_content)]);
+        let e303: Vec<_> = diags.iter()
+            .filter(|d| d.code == ErrorCode::LockRequired)
+            .collect();
+        assert!(e303.is_empty(), "unexpected E303: {e303:?}");
+    }
+
+    #[test]
+    fn e303_no_error_when_brief_path_is_none() {
+        let skill_content = r#"interface Payment {
+    fn charge(amount: Int, webhook: @stripe-hook String) -> Handle
+}"#;
+        let src = r#"
+import skill "Payment"
+task Pay : TaskBrief uses [Payment] { goal = "charge" }
+"#;
+        // brief_path = None → lock gate skips gracefully
+        let diags = check_src_with_skills_and_path(src, &[("Payment", skill_content)], None);
+        let e303: Vec<_> = diags.iter()
+            .filter(|d| d.code == ErrorCode::LockRequired)
+            .collect();
+        assert!(e303.is_empty(), "unexpected E303 when brief_path=None: {e303:?}");
     }
 }

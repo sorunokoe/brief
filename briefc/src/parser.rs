@@ -638,8 +638,11 @@ impl<'a> Parser<'a> {
         let (name, _) = self.expect_str()?;
         self.expect(&Token::LBrace)?;
 
-        // Test bodies use mock/run/assert syntax parsed by tester.rs.
-        // Skip tokens with brace-depth tracking so check/fmt don't error.
+        // Parse the test body:
+        // - `perform Skill.fn(args)` → collected into body as Stmt::Expr
+        // - Everything else (mock, run, assert, ...) → skipped opaquely
+        //   so tester.rs can re-parse the raw source without interference.
+        let mut body: Vec<Stmt> = Vec::new();
         let mut depth = 1usize;
         while !self.at_end() {
             match self.peek() {
@@ -649,13 +652,32 @@ impl<'a> Parser<'a> {
                     if depth == 0 { break; }
                     self.advance();
                 }
+                // Parse `perform Skill.fn(literal_args)` at depth 1 only.
+                Some(Token::Perform) if depth == 1 => {
+                    let stmt_start = self.current_span().start;
+                    if let Some(expr) = self.parse_expr() {
+                        // Consume optional trailing semicolon.
+                        if self.peek() == Some(&Token::Semi) { self.advance(); }
+                        let stmt_end = self.prev_span().end;
+                        body.push(Stmt::Expr { value: expr, span: Span::new(stmt_start, stmt_end) });
+                    } else {
+                        // parse_expr failed — skip to next semi or brace to recover.
+                        while !self.at_end() {
+                            match self.peek() {
+                                Some(Token::Semi) | Some(Token::RBrace) => { break; }
+                                _ => { self.advance(); }
+                            }
+                        }
+                        if self.peek() == Some(&Token::Semi) { self.advance(); }
+                    }
+                }
                 _ => { self.advance(); }
             }
         }
 
         let end = self.current_span().end;
         self.expect(&Token::RBrace);
-        Some(TestDecl { name, body: vec![], span: Span::new(start, end) })
+        Some(TestDecl { name, body, span: Span::new(start, end) })
     }
 
     // ── step FetchData { ... } ────────────────────────────────────────────
@@ -792,6 +814,13 @@ impl<'a> Parser<'a> {
                 self.advance();
                 let end = self.prev_span().end;
                 Some(Expr::Str { value: val, span: Span::new(start, end) })
+            }
+
+            // Integer literal as expression (e.g. boundary values in perform args)
+            Some(Token::Int(n)) => {
+                self.advance();
+                let end = self.prev_span().end;
+                Some(Expr::Int { value: n, span: Span::new(start, end) })
             }
 
             got => {

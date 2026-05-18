@@ -4,7 +4,8 @@
 /// - E0xx: Parse errors
 /// - E1xx: Structural/semantic errors
 /// - E2xx: Type errors
-/// - W1xx: Warnings (missing interfaces, stale skills)
+/// - E3xx: Spec/constraint/lock errors
+/// - W1xx: Warnings (stale skill interfaces)
 
 use std::fmt;
 
@@ -31,7 +32,18 @@ pub enum ErrorCode {
     WrongArgCount,
     /// Struct field attribute value fails constraint (e.g. @url on non-URL)
     AttributeConstraint,
+    // ── Spec / constraint coverage errors (Phase 1) ───────────────────────
+    /// `@range(min, max)` boundary literal missing in test block (E301)
+    RangeBoundaryMissing,
+    /// `@enum(vals)` value literal missing in test block (E302)
+    EnumValueMissing,
+    /// `.brief.lock` missing, stale, or source-changed — run `brief verify` (E303)
+    LockRequired,
+    // ── Phase 2: verifier protocol errors ────────────────────────────────
+    /// Dynamic annotation has no configured verifier in `brief.toml` (E309)
+    UnconfiguredVerifier,
     // ── Warnings ──────────────────────────────────────────────────────────
+    /// Missing `.briefskill` file — suppress with `--allow-missing-skills` (E107)
     MissingSkillInterface,
     #[allow(dead_code)]
     StaleSkillInterface,
@@ -50,7 +62,11 @@ impl fmt::Display for ErrorCode {
             ErrorCode::UnknownType           => "E201",
             ErrorCode::WrongArgCount         => "E202",
             ErrorCode::AttributeConstraint   => "E203",
-            ErrorCode::MissingSkillInterface => "W101",
+            ErrorCode::RangeBoundaryMissing  => "E301",
+            ErrorCode::EnumValueMissing      => "E302",
+            ErrorCode::LockRequired          => "E303",
+            ErrorCode::UnconfiguredVerifier  => "E309",
+            ErrorCode::MissingSkillInterface => "E107",
             ErrorCode::StaleSkillInterface   => "W102",
         };
         write!(f, "{code}")
@@ -70,6 +86,11 @@ impl ErrorCode {
             | ErrorCode::UnknownType
             | ErrorCode::WrongArgCount
             | ErrorCode::AttributeConstraint
+            | ErrorCode::RangeBoundaryMissing
+            | ErrorCode::EnumValueMissing
+            | ErrorCode::LockRequired
+            | ErrorCode::UnconfiguredVerifier
+            | ErrorCode::MissingSkillInterface
         )
     }
 }

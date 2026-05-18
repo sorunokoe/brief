@@ -44,7 +44,7 @@ pub fn run_ci(start: &PathBuf) -> bool {
 
         for path in paths {
             // Run in check-only mode; runner prints its own diagnostics.
-            let ok = runner::run_file(&path, RunMode::Check);
+            let ok = runner::run_file(&path, RunMode::Check { allow_missing_skills: false });
             if ok {
                 println!("  {} {}", "✓".green(), path.display());
                 pass += 1;

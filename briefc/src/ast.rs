@@ -260,6 +260,8 @@ pub enum Expr {
     Ident { name: String, span: Span },
     /// String literal value.
     Str { value: String, span: Span },
+    /// Integer literal value.
+    Int { value: i64, span: Span },
 }
 
 impl Expr {
@@ -270,6 +272,7 @@ impl Expr {
             Expr::Call    { span, .. } => *span,
             Expr::Ident   { span, .. } => *span,
             Expr::Str     { span, .. } => *span,
+            Expr::Int     { span, .. } => *span,
         }
     }
 }

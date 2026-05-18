@@ -214,7 +214,7 @@ fn eval_input(session: &mut ReplSession, src: &str, cwd: &std::path::Path) {
 
     // Semantic + type check.
     let file_dir = std::path::Path::new(".");
-    let ctx = CheckContext { file_dir, cwd, manifest: None };
+    let ctx = CheckContext { file_dir, cwd, manifest: None, brief_path: None, allow_missing_skills: false };
     let mut diags = checker::check(&program, &ctx);
     diags.extend(typeck::type_check_with_skills(
         &program,
@@ -253,7 +253,7 @@ fn check_session(session: &ReplSession, cwd: &std::path::Path) {
     let (program, parse_errors) = parse(&tokens, &session.declarations);
 
     let file_dir = std::path::Path::new(".");
-    let ctx = CheckContext { file_dir, cwd, manifest: None };
+    let ctx = CheckContext { file_dir, cwd, manifest: None, brief_path: None, allow_missing_skills: false };
     let mut diags = parse_errors;
     diags.extend(checker::check(&program, &ctx));
     diags.extend(typeck::type_check_with_skills(

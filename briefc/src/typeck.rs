@@ -276,7 +276,7 @@ fn check_expr_types(expr: &Expr, env: &TypeEnv<'_>, diags: &mut Vec<BriefError>)
         Expr::Call  { args, .. }         => {
             for arg in args { check_expr_types(arg, env, diags); }
         }
-        Expr::Ident { .. } | Expr::Str { .. } => {}
+        Expr::Ident { .. } | Expr::Str { .. } | Expr::Int { .. } => {}
     }
 }
 
