@@ -352,6 +352,17 @@ fn render_task(task: &Task, out: &mut String) {
         }
     }
 
+    if let Some(provides) = &task.provides {
+        writeln!(out).ok();
+        writeln!(out, "**Provides:**").ok();
+        writeln!(out).ok();
+        writeln!(out, "| Field | Type | ").ok();
+        writeln!(out, "|-------|------|").ok();
+        for field in provides {
+            writeln!(out, "| `{}` | `{}` |", field.name, type_ref_str(&field.type_ref)).ok();
+        }
+    }
+
     writeln!(out).ok();
 
     // Steps
@@ -442,9 +453,25 @@ fn expr_str(expr: &Expr) -> String {
         } => {
             let arg_str = args.iter().map(expr_str).collect::<Vec<_>>().join(", ");
             match receiver {
+                Some(r) if args.is_empty() => format!("{r}.{func}"),
                 Some(r) => format!("{r}.{func}({arg_str})"),
                 None => format!("{func}({arg_str})"),
             }
+        }
+        Expr::Match { scrutinee, arms } => {
+            let arms = arms
+                .iter()
+                .map(|arm| {
+                    let pattern = match &arm.pattern {
+                        Pattern::Variant(name) => name.clone(),
+                        Pattern::Variant1(name, binding) => format!("{name}({binding})"),
+                        Pattern::Wildcard => "_".to_string(),
+                    };
+                    format!("{pattern} => {}", expr_str(&arm.body))
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!("match {} {{ {arms} }}", expr_str(scrutinee))
         }
         Expr::Ident { name, .. } => name.clone(),
         Expr::Str { value, .. } => format!("\"{value}\""),

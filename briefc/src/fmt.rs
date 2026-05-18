@@ -78,6 +78,14 @@ impl Formatter {
             .join(" ")
     }
 
+    fn fmt_pattern(pattern: &Pattern) -> String {
+        match pattern {
+            Pattern::Variant(name) => name.clone(),
+            Pattern::Variant1(name, binding) => format!("{name}({binding})"),
+            Pattern::Wildcard => "_".to_string(),
+        }
+    }
+
     // ── Expressions ───────────────────────────────────────────────────────
 
     fn fmt_expr(expr: &Expr) -> String {
@@ -93,9 +101,26 @@ impl Formatter {
             Expr::Call { receiver, func, args, .. } => {
                 let arg_str = args.iter().map(Self::fmt_expr).collect::<Vec<_>>().join(", ");
                 match receiver {
+                    Some(r) if args.is_empty() => format!("{r}.{func}"),
                     Some(r) => format!("{r}.{func}({arg_str})"),
                     None    => format!("{func}({arg_str})"),
                 }
+            }
+            Expr::Match { scrutinee, arms } => {
+                let scrutinee = Self::fmt_expr(scrutinee);
+                let width = arms
+                    .iter()
+                    .map(|arm| Self::fmt_pattern(&arm.pattern).len())
+                    .max()
+                    .unwrap_or(0);
+                let mut out = format!("match {scrutinee} {{\n");
+                for arm in arms {
+                    let pattern = Self::fmt_pattern(&arm.pattern);
+                    let body = Self::fmt_expr(&arm.body);
+                    out.push_str(&format!("    {pattern:<width$} => {body}\n"));
+                }
+                out.push('}');
+                out
             }
             Expr::Ident { name, .. } => name.clone(),
             Expr::Str   { value, .. } => format!("{value:?}"),
@@ -105,6 +130,23 @@ impl Formatter {
 
     // ── Statements ────────────────────────────────────────────────────────
 
+    fn fmt_expr_stmt(&mut self, prefix: &str, expr: &Expr, suffix: &str) {
+        let rendered = Self::fmt_expr(expr);
+        if !rendered.contains('\n') {
+            self.line(&format!("{prefix}{rendered}{suffix}"));
+            return;
+        }
+
+        let lines = rendered.lines().collect::<Vec<_>>();
+        self.line(&format!("{prefix}{}", lines[0]));
+        for line in &lines[1..lines.len().saturating_sub(1)] {
+            self.line(line);
+        }
+        if let Some(last) = lines.last() {
+            self.line(&format!("{last}{suffix}"));
+        }
+    }
+
     fn fmt_stmt(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::Let { name, value, attrs, .. } => {
@@ -113,15 +155,31 @@ impl Formatter {
                 } else {
                     format!("{} ", attrs.iter().map(|a| format!("@{a}")).collect::<Vec<_>>().join(" "))
                 };
-                self.line(&format!("{prefix}let {name} = {};", Self::fmt_expr(value)));
+                self.fmt_expr_stmt(&format!("{prefix}let {name} = "), value, ";");
             }
             Stmt::Expr { value, .. } => {
-                self.line(&format!("{};", Self::fmt_expr(value)));
+                self.fmt_expr_stmt("", value, ";");
             }
         }
     }
 
     // ── Steps ─────────────────────────────────────────────────────────────
+
+    fn fmt_typed_fields(f: &mut Formatter, keyword: &str, fields: &[ExtrasField]) {
+        if fields.len() == 1 {
+            let field = &fields[0];
+            f.line(&format!("{keyword} {{ {}: {} }}", field.name, Self::fmt_type_ref(&field.type_ref)));
+        } else if !fields.is_empty() {
+            f.line(&format!("{keyword} {{"));
+            f.indented(|g| {
+                for (i, field) in fields.iter().enumerate() {
+                    let comma = if i + 1 < fields.len() { "," } else { "" };
+                    g.line(&format!("{}: {}{}", field.name, Self::fmt_type_ref(&field.type_ref), comma));
+                }
+            });
+            f.line("}");
+        }
+    }
 
     fn fmt_step(&mut self, step: &Step) {
         self.line(&format!("step {} {{", step.name));
@@ -273,28 +331,39 @@ impl Formatter {
                 f.line(&format!("goal   = {goal:?}"));
             }
 
-            // Sort extras by key
-            let mut extras = task.extras.clone();
-            extras.sort_by(|a, b| a.0.cmp(&b.0));
-            if !extras.is_empty() {
-                if extras.len() == 1 {
-                    f.line(&format!("extras = [{}]", extras.iter()
-                        .map(|(k,v)| format!("{k:?}: {v:?}"))
-                        .collect::<Vec<_>>().join(", ")));
-                } else {
-                    f.line("extras = [");
-                    f.indented(|g| {
-                        for (i, (k, v)) in extras.iter().enumerate() {
-                            let comma = if i + 1 < extras.len() { "," } else { "" };
-                            g.line(&format!("{k:?}: {v:?}{comma}"));
+            // Format extras if present
+            if let Some(extras_node) = &task.extras {
+                match extras_node {
+                    ExtrasNode::StringMap(pairs) => {
+                        let mut sorted = pairs.clone();
+                        sorted.sort_by(|a, b| a.0.cmp(&b.0));
+                        if sorted.len() == 1 {
+                            f.line(&format!("extras = [{}]", sorted.iter()
+                                .map(|(k,v)| format!("{k:?}: {v:?}"))
+                                .collect::<Vec<_>>().join(", ")));
+                        } else if !sorted.is_empty() {
+                            f.line("extras = [");
+                            f.indented(|g| {
+                                for (i, (k, v)) in sorted.iter().enumerate() {
+                                    let comma = if i + 1 < sorted.len() { "," } else { "" };
+                                    g.line(&format!("{k:?}: {v:?}{comma}"));
+                                }
+                            });
+                            f.line("]");
                         }
-                    });
-                    f.line("]");
+                    }
+                    ExtrasNode::TypedRecord(fields) => {
+                        Self::fmt_typed_fields(f, "extras", fields);
+                    }
                 }
             }
 
+            if let Some(provides) = &task.provides {
+                Self::fmt_typed_fields(f, "provides", provides);
+            }
+
             for (i, step) in task.steps.iter().enumerate() {
-                if i > 0 || task.goal.is_some() || !task.extras.is_empty() {
+                if i > 0 || task.goal.is_some() || task.extras.is_some() || task.provides.is_some() {
                     f.blank();
                 }
                 f.fmt_step(step);

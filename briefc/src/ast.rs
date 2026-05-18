@@ -223,6 +223,7 @@ pub struct Task {
     pub goal: Option<String>,
     pub extras: Option<ExtrasNode>,
     pub extras_span: Option<Span>,
+    pub provides: Option<Vec<ExtrasField>>,
     pub steps: Vec<Step>,
     pub span: Span,
 }
@@ -258,6 +259,20 @@ pub enum Stmt {
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
+pub struct MatchArm {
+    pub pattern: Pattern,
+    pub body: Box<Expr>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub enum Pattern {
+    Variant(String),
+    Variant1(String, String),
+    Wildcard,
+}
+
+#[derive(Debug, Clone)]
 pub enum Expr {
     /// `perform GraphQL.query(UserProfileQuery)?`
     Perform {
@@ -277,6 +292,11 @@ pub enum Expr {
         args: Vec<Expr>,
         span: Span,
     },
+    /// `match value { Pattern => expr }`
+    Match {
+        scrutinee: Box<Expr>,
+        arms: Vec<MatchArm>,
+    },
     /// Bare identifier (variable reference).
     Ident { name: String, span: Span },
     /// String literal value.
@@ -291,6 +311,10 @@ impl Expr {
             Expr::Perform { span, .. } => *span,
             Expr::Await { span, .. } => *span,
             Expr::Call { span, .. } => *span,
+            Expr::Match { scrutinee, arms } => arms
+                .last()
+                .map(|arm| scrutinee.span().merge(arm.span))
+                .unwrap_or_else(|| scrutinee.span()),
             Expr::Ident { span, .. } => *span,
             Expr::Str { span, .. } => *span,
             Expr::Int { span, .. } => *span,

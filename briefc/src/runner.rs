@@ -269,6 +269,15 @@ fn print_task_summary(task: &Task) {
         println!("  {:<8} {}", "extras:".dimmed(), extras_str);
     }
 
+    if let Some(provides) = &task.provides {
+        let provides_str = provides
+            .iter()
+            .map(|field| format!("{}: {}", field.name, type_ref_str(&field.type_ref)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!("  {:<8} {}", "provides:".dimmed(), provides_str);
+    }
+
     if !task.steps.is_empty() {
         let steps = task
             .steps
@@ -286,6 +295,13 @@ fn collect_perform_calls(expr: &crate::ast::Expr) -> Vec<String> {
         crate::ast::Expr::Await { expr: inner, .. } => collect_perform_calls(inner),
         crate::ast::Expr::Call { args, .. } => {
             args.iter().flat_map(collect_perform_calls).collect()
+        }
+        crate::ast::Expr::Match { scrutinee, arms } => {
+            let mut out = collect_perform_calls(scrutinee);
+            for arm in arms {
+                out.extend(collect_perform_calls(&arm.body));
+            }
+            out
         }
         _ => Vec::new(),
     }

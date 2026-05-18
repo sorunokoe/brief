@@ -50,6 +50,8 @@ pub enum ErrorCode {
     StaleSkillInterface,
     /// Old `extras = ["k": "v"]` syntax is deprecated — use `extras { ... }` (W103)
     DeprecatedStringExtras,
+    /// `@BriefBuilder` task is missing a `provides { ... }` block (W104)
+    BriefBuilderProvidesMissing,
     /// Typed `extras` field references an unknown type (E208)
     UnknownExtrasField,
 }
@@ -73,9 +75,10 @@ impl fmt::Display for ErrorCode {
             ErrorCode::EnumValueMissing       => "E302",
             ErrorCode::LockRequired           => "E303",
             ErrorCode::UnconfiguredVerifier   => "E309",
-            ErrorCode::MissingSkillInterface  => "E107",
-            ErrorCode::StaleSkillInterface    => "W102",
-            ErrorCode::DeprecatedStringExtras => "W103",
+            ErrorCode::MissingSkillInterface      => "E107",
+            ErrorCode::StaleSkillInterface        => "W102",
+            ErrorCode::DeprecatedStringExtras     => "W103",
+            ErrorCode::BriefBuilderProvidesMissing => "W104",
         };
         write!(f, "{code}")
     }

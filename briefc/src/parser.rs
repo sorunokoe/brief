@@ -764,6 +764,7 @@ impl<'a> Parser<'a> {
         let mut goal = None;
         let mut extras = None;
         let mut extras_span = None;
+        let mut provides = None;
         let mut steps = Vec::new();
 
         while self.peek() != Some(&Token::RBrace) && !self.at_end() {
@@ -787,7 +788,7 @@ impl<'a> Parser<'a> {
                             extras_span = Some(span);
                         }
                         Some(Token::LBrace) => {
-                            let (fields, span) = self.parse_typed_extras(extras_start);
+                            let (fields, span) = self.parse_typed_fields(extras_start);
                             extras = Some(ExtrasNode::TypedRecord(fields));
                             extras_span = Some(span);
                         }
@@ -798,6 +799,25 @@ impl<'a> Parser<'a> {
                                 message: format!("expected `=` or `{{` after `extras`, got `{got:?}`"),
                                 span,
                                 hint:    Some("use `extras = [\"key\": \"value\"]` or `extras { field: Type }`".to_string()),
+                            });
+                        }
+                    }
+                }
+                Some(Token::Ident(ref s)) if s == "provides" => {
+                    let provides_start = self.current_span().start;
+                    self.advance();
+                    match self.peek() {
+                        Some(Token::LBrace) => {
+                            let (fields, _) = self.parse_typed_fields(provides_start);
+                            provides = Some(fields);
+                        }
+                        got => {
+                            let span = self.current_span();
+                            self.errors.push(BriefError {
+                                code: ErrorCode::ParseError,
+                                message: format!("expected `{{` after `provides`, got `{got:?}`"),
+                                span,
+                                hint: Some("use `provides { field: Type }`".to_string()),
                             });
                         }
                     }
@@ -813,7 +833,7 @@ impl<'a> Parser<'a> {
                         code: ErrorCode::ParseError,
                         message: format!("unexpected token `{got:?}` inside task body"),
                         span,
-                        hint: Some("expected `goal`, `extras`, or `step`".to_string()),
+                        hint: Some("expected `goal`, `extras`, `provides`, or `step`".to_string()),
                     });
                     self.advance();
                 }
@@ -834,6 +854,7 @@ impl<'a> Parser<'a> {
             goal,
             extras,
             extras_span,
+            provides,
             steps,
             span: Span::new(start, end),
         })
@@ -869,9 +890,9 @@ impl<'a> Parser<'a> {
         (pairs, Span::new(start, self.prev_span().end))
     }
 
-    // ── extras { field: TypeRef, ... } ──────────────────────────────────────
+    // ── typed records: `extras { ... }`, `provides { ... }` ─────────────────
 
-    fn parse_typed_extras(&mut self, start: usize) -> (Vec<ExtrasField>, Span) {
+    fn parse_typed_fields(&mut self, start: usize) -> (Vec<ExtrasField>, Span) {
         let mut fields = Vec::new();
         if self.expect(&Token::LBrace).is_none() {
             return (fields, Span::new(start, self.prev_span().end));
@@ -1049,10 +1070,88 @@ impl<'a> Parser<'a> {
 
     // ── expression ────────────────────────────────────────────────────────
 
+    fn parse_pattern(&mut self) -> Option<Pattern> {
+        match self.peek().cloned() {
+            Some(Token::Ident(name)) if name == "_" => {
+                self.advance();
+                Some(Pattern::Wildcard)
+            }
+            Some(Token::Ident(name)) => {
+                self.advance();
+                if self.peek() == Some(&Token::LParen) {
+                    self.advance();
+                    let (binding, _) = self.expect_ident()?;
+                    self.expect(&Token::RParen)?;
+                    Some(Pattern::Variant1(name, binding))
+                } else {
+                    Some(Pattern::Variant(name))
+                }
+            }
+            got => {
+                let span = self.current_span();
+                self.errors.push(BriefError {
+                    code: ErrorCode::ParseError,
+                    message: format!("expected match pattern, got `{got:?}`"),
+                    span,
+                    hint: Some("expected `Variant`, `Variant(name)`, or `_`".to_string()),
+                });
+                None
+            }
+        }
+    }
+
+    fn parse_match_expr(&mut self) -> Option<Expr> {
+        self.expect(&Token::Match)?;
+        let scrutinee = self.parse_expr()?;
+        self.expect(&Token::LBrace)?;
+
+        let mut arms = Vec::new();
+        while self.peek() != Some(&Token::RBrace) && !self.at_end() {
+            let pos_before = self.pos;
+            let arm_start = self.current_span().start;
+            let Some(pattern) = self.parse_pattern() else {
+                if self.pos == pos_before {
+                    self.advance();
+                }
+                continue;
+            };
+            if self.expect(&Token::FatArrow).is_none() {
+                if self.pos == pos_before {
+                    self.advance();
+                }
+                continue;
+            }
+            let Some(body) = self.parse_expr() else {
+                if self.pos == pos_before {
+                    self.advance();
+                }
+                continue;
+            };
+            let span = Span::new(arm_start, body.span().end);
+            arms.push(MatchArm {
+                pattern,
+                body: Box::new(body),
+                span,
+            });
+            if self.pos == pos_before {
+                self.advance();
+            }
+        }
+
+        self.expect(&Token::RBrace)?;
+        Some(Expr::Match {
+            scrutinee: Box::new(scrutinee),
+            arms,
+        })
+    }
+
     fn parse_expr(&mut self) -> Option<Expr> {
         let start = self.current_span().start;
 
         match self.peek().cloned() {
+            // `match expr { Pattern => expr }`
+            Some(Token::Match) => self.parse_match_expr(),
+
             // `perform Skill.fn(args)?`
             Some(Token::Perform) => {
                 self.advance();
@@ -1097,7 +1196,7 @@ impl<'a> Parser<'a> {
                 })
             }
 
-            // `Ident` — could be `foo.bar(args)`, `foo(args)`, or just `foo`
+            // `Ident` — could be `foo.bar(args)`, `foo.bar`, `foo(args)`, or just `foo`
             Some(Token::Ident(name)) => {
                 self.advance();
 
@@ -1115,9 +1214,14 @@ impl<'a> Parser<'a> {
                     }
                     self.advance(); // `.`
                     let (func, _) = self.expect_ident()?;
-                    self.expect(&Token::LParen)?;
-                    let args = self.parse_arg_list()?;
-                    self.expect(&Token::RParen)?;
+                    let args = if self.peek() == Some(&Token::LParen) {
+                        self.advance();
+                        let args = self.parse_arg_list()?;
+                        self.expect(&Token::RParen)?;
+                        args
+                    } else {
+                        Vec::new()
+                    };
                     let end = self.prev_span().end;
                     Some(Expr::Call {
                         receiver: Some(name),
@@ -1257,6 +1361,28 @@ mod tests {
     }
 
     #[test]
+    fn parse_task_provides_block() {
+        let src = r#"
+            @BriefBuilder
+            task T : TaskBrief {
+                goal = "x"
+                provides {
+                    deploymentUrl: String
+                    buildId: String
+                }
+            }
+        "#;
+        let (prog, errs) = parse_src(src);
+        assert!(errs.is_empty(), "{errs:?}");
+        let provides = prog.tasks[0].provides.as_ref().expect("provides block");
+        assert_eq!(provides.len(), 2);
+        assert_eq!(provides[0].name, "deploymentUrl");
+        assert_eq!(provides[0].type_ref.name, "String");
+        assert_eq!(provides[1].name, "buildId");
+        assert_eq!(provides[1].type_ref.name, "String");
+    }
+
+    #[test]
     fn parse_sealed_type() {
         let src = "sealed type Platform = iOS | Android | Web";
         let (prog, errs) = parse_src(src);
@@ -1309,6 +1435,65 @@ mod tests {
         assert!(errs.is_empty(), "{errs:?}");
         assert_eq!(prog.protocols.len(), 1);
         assert_eq!(prog.protocols[0].methods[0].name, "render");
+    }
+
+    #[test]
+    fn parse_match_expr() {
+        let src = r#"
+            task T : TaskBrief {
+                goal = "test"
+                step Render {
+                    let view = match platform {
+                        iOS => perform DesignSystem.renderMobile(platform)?
+                        Android => perform DesignSystem.renderAndroid(platform)?
+                        _ => perform DesignSystem.renderWeb(platform)?
+                    };
+                }
+            }
+        "#;
+        let (prog, errs) = parse_src(src);
+        assert!(errs.is_empty(), "{errs:?}");
+        let Stmt::Let { value, .. } = &prog.tasks[0].steps[0].body[0] else {
+            panic!("expected let statement");
+        };
+        match value {
+            Expr::Match { scrutinee, arms } => {
+                assert!(matches!(scrutinee.as_ref(), Expr::Ident { name, .. } if name == "platform"));
+                assert_eq!(arms.len(), 3);
+                assert!(matches!(arms[0].pattern, Pattern::Variant(ref name) if name == "iOS"));
+                assert!(matches!(arms[1].pattern, Pattern::Variant(ref name) if name == "Android"));
+                assert!(matches!(arms[2].pattern, Pattern::Wildcard));
+            }
+            other => panic!("expected match expression, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_match_variant_binding_body() {
+        let src = r#"
+            task T : TaskBrief {
+                goal = "test"
+                step Handle {
+                    let name = match result {
+                        Ok(user) => user.name
+                        Err(e) => "unknown"
+                    };
+                }
+            }
+        "#;
+        let (prog, errs) = parse_src(src);
+        assert!(errs.is_empty(), "{errs:?}");
+        let Stmt::Let { value, .. } = &prog.tasks[0].steps[0].body[0] else {
+            panic!("expected let statement");
+        };
+        match value {
+            Expr::Match { arms, .. } => {
+                assert!(matches!(arms[0].pattern, Pattern::Variant1(ref variant, ref binding) if variant == "Ok" && binding == "user"));
+                assert!(matches!(arms[0].body.as_ref(), Expr::Call { receiver: Some(ref receiver), func, args, .. } if receiver == "user" && func == "name" && args.is_empty()));
+                assert!(matches!(arms[1].pattern, Pattern::Variant1(ref variant, ref binding) if variant == "Err" && binding == "e"));
+            }
+            other => panic!("expected match expression, got {other:?}"),
+        }
     }
 
     #[test]

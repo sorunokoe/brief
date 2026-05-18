@@ -171,6 +171,7 @@ fn check_task(
     }
 
     check_task_extras(task, type_env, diags);
+    check_brief_builder_provides(task, diags);
 
     // Expand effect group aliases in `uses [...]`.
     let mut expanded_uses: Vec<&str> = Vec::new();
@@ -262,6 +263,20 @@ fn check_task_extras(task: &Task, env: &TypeEnv<'_>, diags: &mut Vec<BriefError>
     }
 }
 
+fn check_brief_builder_provides(task: &Task, diags: &mut Vec<BriefError>) {
+    if task.has_builder && task.provides.is_none() {
+        diags.push(BriefError {
+            code: ErrorCode::BriefBuilderProvidesMissing,
+            message: format!(
+                "task '{}' is annotated @BriefBuilder but has no provides {{ }} block",
+                task.name
+            ),
+            span: task.span,
+            hint: Some("add: provides { field: Type }".to_string()),
+        });
+    }
+}
+
 fn check_extras_field_type(
     field_name: &str,
     ty:         &TypeRef,
@@ -272,11 +287,14 @@ fn check_extras_field_type(
     if !env.type_exists(&ty.name, &[]) {
         let ty_name = type_ref_str(ty);
         diags.push(BriefError {
-            code:    ErrorCode::UnknownExtrasField,
-            message: format!("extras field '{}' has unknown type '{}'", field_name, ty_name),
+            code: ErrorCode::UnknownExtrasField,
+            message: format!(
+                "extras field '{}' has unknown type '{}' — declare it as a sealed type or struct",
+                field_name, ty_name
+            ),
             span,
-            hint:    Some(format!(
-                "declare `struct {}` or `sealed type {}` before using it in extras",
+            hint: Some(format!(
+                "declare `sealed type {}` or `struct {}` before using it in extras",
                 ty_name, ty_name
             )),
         });
@@ -442,6 +460,12 @@ fn count_ident_uses(expr: &Expr, linear: &mut HashMap<String, (Span, usize)>) {
                 count_ident_uses(a, linear);
             }
         }
+        Expr::Match { scrutinee, arms } => {
+            count_ident_uses(scrutinee, linear);
+            for arm in arms {
+                count_ident_uses(&arm.body, linear);
+            }
+        }
         Expr::Await { expr: inner, .. } => count_ident_uses(inner, linear),
         Expr::Str { .. } | Expr::Int { .. } => {}
     }
@@ -473,6 +497,12 @@ fn check_expr_for_perform(
         Expr::Call { args, .. } => {
             for arg in args {
                 check_expr_for_perform(arg, uses_set, _imported, diags);
+            }
+        }
+        Expr::Match { scrutinee, arms } => {
+            check_expr_for_perform(scrutinee, uses_set, _imported, diags);
+            for arm in arms {
+                check_expr_for_perform(&arm.body, uses_set, _imported, diags);
             }
         }
         Expr::Ident { .. } | Expr::Str { .. } | Expr::Int { .. } => {}
@@ -615,6 +645,12 @@ fn collect_performs<'a>(expr: &'a Expr, out: &mut Vec<(&'a str, &'a str, &'a [Ex
         Expr::Call { args, .. } => {
             for arg in args {
                 collect_performs(arg, out);
+            }
+        }
+        Expr::Match { scrutinee, arms } => {
+            collect_performs(scrutinee, out);
+            for arm in arms {
+                collect_performs(&arm.body, out);
             }
         }
         Expr::Ident { .. } | Expr::Str { .. } | Expr::Int { .. } => {}
@@ -957,6 +993,65 @@ mod tests {
     }
 
     #[test]
+    fn match_platform_parses_and_checks_without_errors() {
+        let src = r#"
+            task Render : TaskBrief {
+                goal = "render"
+                step Render {
+                    let view = match platform {
+                        iOS => "mobile"
+                        Android => "desktop"
+                        _ => "other"
+                    };
+                }
+            }
+        "#;
+        let (tokens, lex_errs) = lex(src);
+        assert!(lex_errs.is_empty(), "lex errors: {lex_errs:?}");
+        let (program, parse_errs) = parse(&tokens, src);
+        assert!(parse_errs.is_empty(), "parse errors: {parse_errs:?}");
+        let ctx = CheckContext {
+            file_dir: Path::new("."),
+            cwd: Path::new("."),
+            manifest: None,
+            brief_path: None,
+            allow_missing_skills: true,
+        };
+        let diags = check(&program, &ctx);
+        let hard_errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
+        assert!(hard_errors.is_empty(), "unexpected errors: {hard_errors:?}");
+    }
+
+    #[test]
+    fn match_result_parses_and_checks_without_errors() {
+        let src = r#"
+            task HandleResult : TaskBrief {
+                goal = "handle"
+                step Handle {
+                    let name = match result {
+                        Ok(v) => v
+                        Err(e) => "fail"
+                    };
+                }
+            }
+        "#;
+        let (tokens, lex_errs) = lex(src);
+        assert!(lex_errs.is_empty(), "lex errors: {lex_errs:?}");
+        let (program, parse_errs) = parse(&tokens, src);
+        assert!(parse_errs.is_empty(), "parse errors: {parse_errs:?}");
+        let ctx = CheckContext {
+            file_dir: Path::new("."),
+            cwd: Path::new("."),
+            manifest: None,
+            brief_path: None,
+            allow_missing_skills: true,
+        };
+        let diags = check(&program, &ctx);
+        let hard_errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
+        assert!(hard_errors.is_empty(), "unexpected errors: {hard_errors:?}");
+    }
+
+    #[test]
     fn error_on_missing_goal() {
         let diags = check_src("task T : TaskBrief {}");
         assert!(
@@ -1133,6 +1228,76 @@ mod tests {
         "#;
         let diags = check_str(src);
         assert!(diags.iter().any(|d| d.code == ErrorCode::DeprecatedStringExtras), "{diags:?}");
+    }
+
+    #[test]
+    fn typed_extras_sealed_type_has_no_e208() {
+        let src = r#"
+            sealed type Platform = iOS | Android | Web
+            task DeploymentBrief : TaskBrief {
+                goal = "deploy"
+                extras { platform: Platform }
+            }
+        "#;
+        let diags = check_str(src);
+        assert!(
+            diags.iter().all(|d| d.code != ErrorCode::UnknownExtrasField),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn typed_extras_undeclared_type_emits_e208() {
+        let src = r#"
+            task DeploymentBrief : TaskBrief {
+                goal = "deploy"
+                extras { platform: UndeclaredType }
+            }
+        "#;
+        let diags = check_str(src);
+        let diag = diags
+            .iter()
+            .find(|d| d.code == ErrorCode::UnknownExtrasField)
+            .expect("missing E208 diagnostic");
+        assert_eq!(
+            diag.message,
+            "extras field 'platform' has unknown type 'UndeclaredType' — declare it as a sealed type or struct"
+        );
+    }
+
+    #[test]
+    fn brief_builder_without_provides_emits_w104() {
+        let src = r#"
+            @BriefBuilder
+            task DeploymentBrief : TaskBrief {
+                goal = "deploy"
+            }
+        "#;
+        let diags = check_str(src);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == ErrorCode::BriefBuilderProvidesMissing),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn brief_builder_with_provides_has_no_w104() {
+        let src = r#"
+            @BriefBuilder
+            task DeploymentBrief : TaskBrief {
+                goal = "deploy"
+                provides { deploymentUrl: String }
+            }
+        "#;
+        let diags = check_str(src);
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.code != ErrorCode::BriefBuilderProvidesMissing),
+            "{diags:?}"
+        );
     }
 
     // ── Effect fn @once return type auto-marks binding ───────────────────────
@@ -1746,7 +1911,7 @@ import skill "Payment"
 task Pay : TaskBrief uses [Payment] { goal = "charge" }
 "#;
         // brief_path points to a nonexistent file → lock also nonexistent
-        let brief_path = Path::new("/tmp/nonexistent_for_test.brief");
+        let brief_path = Path::new("./nonexistent_for_test.brief");
         let diags =
             check_src_with_skills_and_path(src, &[("Payment", skill_content)], Some(brief_path));
         assert!(
