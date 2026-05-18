@@ -1,0 +1,7 @@
+// Auto-generated for the phase contracts example.
+// Regenerate: brief skillgen .claude/skills/PaymentService
+
+interface PaymentService {
+    fn authorize(amount: Int, currency: String) -> Result<String>
+    fn capture(authToken: String) -> Result<String>
+}

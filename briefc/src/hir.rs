@@ -75,6 +75,8 @@ pub struct HirArm {
 #[derive(Debug, Clone)]
 pub struct HirStep {
     pub name: String,
+    pub pre_conditions: Vec<String>,
+    pub post_conditions: Vec<String>,
     pub bindings: Vec<HirBinding>,
     pub span: Span,
 }
@@ -208,6 +210,8 @@ fn lower_step(step: &ast::Step, env: &TypeEnv<'_>, base_locals: &LocalTypes) -> 
 
     HirStep {
         name: step.name.clone(),
+        pre_conditions: step.pre_conditions.clone(),
+        post_conditions: step.post_conditions.clone(),
         bindings,
         span: step.span,
     }
@@ -593,5 +597,27 @@ mod tests {
         assert_eq!(hir.sealed_types.len(), 1);
         assert_eq!(hir.sealed_types[0].name, "Platform");
         assert_eq!(hir.sealed_types[0].variants, vec!["iOS", "Android", "Web"]);
+    }
+
+    #[test]
+    fn lowers_step_phase_contracts() {
+        let hir = lower_src(
+            r#"
+            task Payments : TaskBrief {
+                goal = "hi"
+                step Charge {
+                    pre { amount > 0 }
+                    post { receipt.isValid }
+
+                    let receipt = "ok";
+                }
+            }
+        "#,
+        );
+
+        let step = &hir.tasks[0].steps[0];
+        assert_eq!(step.pre_conditions, vec!["amount > 0"]);
+        assert_eq!(step.post_conditions, vec!["receipt.isValid"]);
+        assert_eq!(step.bindings.len(), 1);
     }
 }

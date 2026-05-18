@@ -236,6 +236,8 @@ pub struct Task {
 #[derive(Debug, Clone)]
 pub struct Step {
     pub name: String,
+    pub pre_conditions: Vec<String>,
+    pub post_conditions: Vec<String>,
     pub body: Vec<Stmt>,
     pub span: Span,
 }

@@ -184,6 +184,15 @@ impl Formatter {
     fn fmt_step(&mut self, step: &Step) {
         self.line(&format!("step {} {{", step.name));
         self.indented(|f| {
+            if !step.pre_conditions.is_empty() {
+                f.line(&format!("pre {{ {} }}", step.pre_conditions.join(", ")));
+            }
+            if !step.post_conditions.is_empty() {
+                f.line(&format!("post {{ {} }}", step.post_conditions.join(", ")));
+            }
+            if (!step.pre_conditions.is_empty() || !step.post_conditions.is_empty()) && !step.body.is_empty() {
+                f.blank();
+            }
             for stmt in &step.body {
                 f.fmt_stmt(stmt);
             }
@@ -614,6 +623,24 @@ mod tests {
         assert!(out.contains("task T : TaskBrief uses [GraphQL] {"));
         assert!(out.contains("step Fetch {"));
         assert!(out.contains("let x = perform GraphQL.query(Q)?;"));
+    }
+
+    #[test]
+    fn fmt_step_phase_contracts() {
+        let src = r#"
+            task T : TaskBrief {
+                goal = "g"
+                step Charge {
+                    pre { amount > 0 }
+                    post { receipt.isValid }
+                    let receipt = "ok";
+                }
+            }
+        "#;
+        let out = roundtrip(src);
+        assert!(out.contains("pre { amount > 0 }"));
+        assert!(out.contains("post { receipt.isValid }"));
+        assert!(out.contains("\n\n        let receipt = \"ok\";"));
     }
 
     #[test]

@@ -159,6 +159,54 @@ impl<'a> Parser<'a> {
     fn _source(&self) -> &str {
         self.source
     }
+
+    fn parse_contract_block(&mut self) -> Option<Vec<String>> {
+        self.expect(&Token::LBrace)?;
+        let mut conditions = Vec::new();
+        let mut condition_start: Option<usize> = None;
+
+        while self.peek() != Some(&Token::RBrace) && !self.at_end() {
+            let spanned = match self.tokens.get(self.pos) {
+                Some(spanned) => spanned,
+                None => break,
+            };
+
+            if spanned.token == Token::Comma {
+                if let Some(start) = condition_start.take() {
+                    let raw = &self.source[start..spanned.start];
+                    let condition = normalize_contract_condition(raw);
+                    if !condition.is_empty() {
+                        conditions.push(condition);
+                    }
+                }
+                self.advance();
+                continue;
+            }
+
+            condition_start.get_or_insert(spanned.start);
+            self.advance();
+        }
+
+        if let Some(start) = condition_start.take() {
+            let block_end = self
+                .tokens
+                .get(self.pos)
+                .map(|spanned| spanned.start)
+                .unwrap_or(self.source.len());
+            let raw = &self.source[start..block_end];
+            let condition = normalize_contract_condition(raw);
+            if !condition.is_empty() {
+                conditions.push(condition);
+            }
+        }
+
+        self.expect(&Token::RBrace);
+        Some(conditions)
+    }
+}
+
+fn normalize_contract_condition(raw: &str) -> String {
+    raw.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1008,6 +1056,22 @@ impl<'a> Parser<'a> {
         let (name, _) = self.expect_ident()?;
         self.expect(&Token::LBrace)?;
 
+        let mut pre_conditions = Vec::new();
+        let mut post_conditions = Vec::new();
+        loop {
+            match self.peek() {
+                Some(Token::Ident(keyword)) if keyword == "pre" => {
+                    self.advance();
+                    pre_conditions.extend(self.parse_contract_block()?);
+                }
+                Some(Token::Ident(keyword)) if keyword == "post" => {
+                    self.advance();
+                    post_conditions.extend(self.parse_contract_block()?);
+                }
+                _ => break,
+            }
+        }
+
         let mut body = Vec::new();
         while self.peek() != Some(&Token::RBrace) && !self.at_end() {
             let pos_before = self.pos;
@@ -1023,6 +1087,8 @@ impl<'a> Parser<'a> {
         self.expect(&Token::RBrace);
         Some(Step {
             name,
+            pre_conditions,
+            post_conditions,
             body,
             span: Span::new(start, end),
         })
@@ -1346,6 +1412,27 @@ mod tests {
         assert!(
             matches!(&step.body[0], Stmt::Let { name, value: Expr::Perform { propagate: true, .. }, .. } if name == "user")
         );
+    }
+
+    #[test]
+    fn parse_step_phase_contracts() {
+        let src = r#"
+            task T : TaskBrief {
+                goal = "test"
+                step Charge {
+                    pre { x > 0 }
+                    post { y.isValid }
+
+                    let y = "ok";
+                }
+            }
+        "#;
+        let (prog, errs) = parse_src(src);
+        assert!(errs.is_empty(), "{errs:?}");
+        let step = &prog.tasks[0].steps[0];
+        assert_eq!(step.pre_conditions, vec!["x > 0"]);
+        assert_eq!(step.post_conditions, vec!["y.isValid"]);
+        assert_eq!(step.body.len(), 1);
     }
 
     #[test]

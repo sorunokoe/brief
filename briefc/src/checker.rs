@@ -367,6 +367,8 @@ fn check_step(
     task_linear: &mut HashMap<String, (Span, usize)>,
     diags: &mut Vec<BriefError>,
 ) {
+    record_phase_contracts(step);
+
     // step_linear: @once bindings introduced in this step.
     let mut step_linear: HashMap<String, (Span, usize)> = HashMap::new();
     let mut locals = base_locals.clone();
@@ -476,6 +478,16 @@ fn check_step(
     for (_, (_, uses)) in task_linear.iter_mut() {
         *uses = 0;
     }
+}
+
+fn record_phase_contracts(step: &Step) {
+    if step.pre_conditions.is_empty() && step.post_conditions.is_empty() {
+        return;
+    }
+
+    // H2 stores phase contracts and makes the checker aware of them.
+    // H3 will type-check and evaluate these assertions.
+    let _ = (&step.pre_conditions, &step.post_conditions);
 }
 
 fn stmt_value(stmt: &Stmt) -> &Expr {
