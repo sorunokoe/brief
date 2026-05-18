@@ -143,10 +143,15 @@ task TaskName : TaskBrief uses [DesignSystem, GraphQL] {
 | `brief build <file> --target wasm32-unknown-unknown` | Compile to WASM |
 | `brief test <file>` | Run `test { }` blocks with mock skill system |
 | `brief fmt <file>` | Auto-format to canonical style |
+| `brief fmt <file> --check` | Fail if file is not formatted (CI mode) |
 | `brief doc <file>` | Generate Markdown documentation |
 | `brief gen "<desc>"` | Generate a brief from natural language |
+| `brief gen "<desc>" --force` | Overwrite existing output file |
 | `brief skillgen <path>` | Generate `.briefskill` from skill's README.md |
 | `brief add skill <Name>` | Install a skill from the registry |
+| `brief watch <path>` | Re-check on every file save (dev loop) |
+| `brief init <name>` | Scaffold a new Brief project |
+| `brief ci` | Run all checks in `brief.toml` `[ci]` section |
 | `brief repl` | Interactive REPL |
 | `brief lsp` | LSP server (stdio) — for editor integration |
 | `brief --help` | Full command reference |
@@ -191,19 +196,47 @@ Add an `## Interface` section to your skill's `README.md`:
 
 ## CI Integration
 
+The recommended way to validate all briefs in a project is `brief ci`:
+
+```bash
+brief ci
+# brief v1.0.0
+# ✅ 40/40 examples passed
+```
+
+`brief ci` reads `brief.toml`'s `[ci]` section and runs `brief check` on each listed file.
+It exits with code 0 only when all checks pass — ideal for CI gates.
+
+**GitHub Actions:**
+
 ```yaml
 # .github/workflows/ci.yml
 - name: Validate briefs
-  run: |
-    for f in **/*.brief; do
-      brief check "$f"
-    done
+  run: brief ci
 ```
 
-Or with Make:
-```makefile
-brief-check:
-    find . -name "*.brief" -exec brief check {} \;
+**`brief.toml` example:**
+
+```toml
+[ci]
+examples = [
+  "examples/01-hello.brief",
+  "examples/06-auth-login.brief",
+  "tasks/*.brief",
+]
+```
+
+You can also validate a single file:
+
+```bash
+brief check my-feature.brief   # fast, single-file type-check
+```
+
+**Format enforcement (no unformatted briefs in CI):**
+
+```yaml
+- name: Check Brief formatting
+  run: brief fmt --check examples/*.brief
 ```
 
 ---
@@ -242,7 +275,7 @@ task Login : TaskBrief uses [AuthEffects] {
 
 ### Linear Types (`@once`)
 
-Ensure resources are consumed exactly once — no leaks, no double-use:
+Ensure resources are consumed exactly once — no leaks, no double-use. The compiler tracks `@once` bindings **within and across steps**:
 
 ```brief
 effect Payment {
@@ -252,14 +285,32 @@ effect Payment {
 
 task ProcessPayment : TaskBrief uses [Payment] {
     goal = "Charge and confirm payment"
+
     step Charge {
         @once let handle = perform Payment.charge(100)?;
-        let receipt = perform Payment.confirm(handle)?;   // ✅ consumed once
+        let receipt = perform Payment.confirm(handle)?;   // ✅ consumed in same step
     }
 }
 ```
 
-The compiler enforces: `E104` if handle is reused, `E105` if handle is never consumed.
+**Cross-step tracking** — if the binding is not consumed in the step it was declared, it is promoted to task-level and must be consumed in exactly one later step:
+
+```brief
+task TwoStepPayment : TaskBrief uses [Payment] {
+    goal = "Acquire handle in step 1, confirm in step 2"
+
+    step Acquire {
+        @once let handle = perform Payment.charge(100)?;
+        // handle NOT used here → promoted to cross-step tracking
+    }
+
+    step Confirm {
+        let receipt = perform Payment.confirm(handle)?;   // ✅ consumed across steps
+    }
+}
+```
+
+The compiler enforces: `E104` if the handle is reused (in the same or across steps), `E105` if it is never consumed.
 
 ### Generate Docs
 
@@ -273,7 +324,7 @@ brief doc my-feature.brief --output docs/my-feature.md
 
 ---
 
-## Advanced Patterns (v0.4 — examples 27–32)
+## Advanced Patterns (v0.4–v1.0 — examples 27–42)
 
 ### Test Blocks (`brief test`)
 
@@ -351,13 +402,14 @@ See `examples/30-event-sourcing.brief` for commands, projections, and saga orche
 
 ---
 
-## Next: v1.0
+## What's New in v1.0
 
-v1.0 (stability):
-- Language Specification 1.0 (frozen syntax)
-- CI/CD GitHub Actions workflows (`ci.yml`, `release.yml`)
-- `brief fmt --check` mode for CI diff enforcement
-- Documentation website
-- Performance optimization
+- **Cross-step `@once` linear tracking** — resource handles can be acquired in one step and consumed in another; `E104`/`E105` cover the whole task lifetime.
+- **`brief ci`** — single command to validate all briefs in a project (`brief.toml` driven).
+- **`brief gen --force`** — regenerate a brief without manual deletion.
+- **`brief fmt --check`** — CI format enforcement.
+- **`brief watch`** and **`brief init`** — dev-loop and scaffolding commands.
+- **Security-hardened registry** — skill name validation, 512 KB size cap, HTTP timeouts.
+- **117 compiler tests**, 40 verified examples.
 
 Watch [releases](https://github.com/yourusername/brief/releases) for updates.

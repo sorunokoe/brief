@@ -1,0 +1,129 @@
+// Cross-Step Linear Type Safety
+//
+// Demonstrates @once tracking across task steps. When a linear binding is
+// declared in step N but not consumed there, the compiler promotes it to
+// task-level tracking. It must then be consumed in exactly one later step.
+//
+// This pattern is useful for:
+//   - Two-phase-commit protocols (acquire lock → do work → release)
+//   - Database transactions (begin → mutate → commit/rollback)
+//   - File handles (open → read/write → close)
+//   - Distributed leases (claim → do work → surrender)
+
+import skill "Database"
+import skill "Audit"
+import skill "LeaseService"
+import skill "WorkService"
+
+effect Database {
+    fn beginTransaction(isolation: String) -> @once TxHandle
+    fn execute(tx: TxHandle, query: String) -> TxHandle
+    fn commit(tx: TxHandle) -> CommitResult
+    fn rollback(tx: TxHandle) -> Unit
+}
+
+effect Audit {
+    fn logEvent(event: String, context: String) -> Unit
+}
+
+struct MigrationPlan {
+    id: @nonEmpty String
+    description: @nonEmpty String
+    up: @nonEmpty String
+    down: @nonEmpty String
+}
+
+// ─── Acquire → execute → commit (happy path) ─────────────────────────────────
+// TxHandle is a linear resource. Acquired in step Begin, passed through
+// Execute, consumed in Commit. The compiler verifies exactly-once across all
+// three steps.
+
+@BriefBuilder
+task RunMigration : TaskBrief uses [Database, Audit] {
+    goal   = "Apply a schema migration inside a transaction — linear TxHandle threads through steps"
+    extras = [
+        "pattern": "two-phase-commit",
+        "rollbackOn": "any error"
+    ]
+
+    step Begin {
+        // TxHandle acquired here but not consumed — promoted to task-level linear tracking.
+        @once let tx = perform Database.beginTransaction("serializable")?;
+        let _ = perform Audit.logEvent("migration_started", planId)?;
+    }
+
+    step Execute {
+        // tx consumed by Database.execute (argument). execute returns a new plain TxHandle.
+        let tx = perform Database.execute(tx, migrationSQL)?;
+        let _ = perform Audit.logEvent("migration_executed", planId)?;
+    }
+
+    step Commit {
+        // TxHandle consumed here — exactly once across the task lifetime. ✅
+        let result = perform Database.commit(tx)?;
+        let _ = perform Audit.logEvent("migration_committed", planId)?;
+    }
+}
+
+// ─── Three-step lease workflow ────────────────────────────────────────────────
+// LeaseHandle is acquired in Claim, not touched in Work (intermediate step),
+// and surrendered in Release. The compiler tracks it across all three steps.
+
+effect LeaseService {
+    fn claim(resourceId: String, ttlSeconds: String) -> @once LeaseHandle
+    fn surrender(handle: LeaseHandle) -> Unit
+}
+
+effect WorkService {
+    fn processItem(itemId: String) -> WorkResult
+}
+
+@BriefBuilder
+task ProcessWithLease : TaskBrief uses [LeaseService, WorkService, Audit] {
+    goal   = "Claim a distributed lease, do work, then surrender it — linear handle prevents lease leaks"
+    extras = [
+        "pattern": "distributed-lease",
+        "ttl": "30s"
+    ]
+
+    step Claim {
+        // Lease handle acquired. Not consumed → promoted to cross-step tracking.
+        @once let lease = perform LeaseService.claim(resourceId, "30")?;
+        let _ = perform Audit.logEvent("lease_claimed", resourceId)?;
+    }
+
+    step Work {
+        // Intermediate step — does not touch `lease`. The compiler leaves it
+        // in task-level tracking, awaiting consumption.
+        let result = perform WorkService.processItem(itemId)?;
+        let _ = perform Audit.logEvent("work_complete", resourceId)?;
+    }
+
+    step Release {
+        // Lease handle consumed (surrendered) — task-level @once satisfied. ✅
+        let _ = perform LeaseService.surrender(lease)?;
+        let _ = perform Audit.logEvent("lease_released", resourceId)?;
+    }
+}
+
+// ─── Error cases (for documentation) ─────────────────────────────────────────
+//
+// The following would be compile errors:
+//
+// (1) E104 — double-consume across steps:
+//
+//   step Commit {
+//       let r1 = perform Database.commit(tx)?;
+//   }
+//   step Retry {
+//       let r2 = perform Database.commit(tx)?;   // error[E104]: 'tx' consumed 2 times
+//   }
+//
+// (2) E105 — never consumed:
+//
+//   step Begin {
+//       @once let tx = perform Database.beginTransaction("serializable")?;
+//   }
+//   step Work {
+//       // tx never passed to commit or rollback → error[E105]: 'tx' dropped — resource leak
+//   }

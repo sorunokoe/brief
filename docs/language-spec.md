@@ -1,8 +1,8 @@
-# Brief Language Specification — v0.4
+# Brief Language Specification — v1.0
 
 > *"If it compiles, the AI has everything it needs."*
 
-This document is the normative reference for the Brief language, version 0.3.
+This document is the normative reference for the Brief language, version 1.0.
 
 ---
 
@@ -217,7 +217,7 @@ effect_group_decl ::= 'type' Ident '=' '[' Ident (',' Ident)* ']'
 
 ### 4.9 Linear Types (`@once`)
 
-Linear types enforce that a value is consumed **exactly once** in a step body. They prevent resource leaks and double-use of handles.
+Linear types enforce that a value is consumed **exactly once**. They prevent resource leaks and double-use of handles. The `@once` checker tracks bindings both **within a step** and **across steps** in a task.
 
 **Declaration on effect functions:**
 ```brief
@@ -228,19 +228,34 @@ effect Payment {
 }
 ```
 
-A function annotated with `-> @once T` means: the returned value of type `T` must be used in exactly one subsequent `perform` call within the same step.
+A function annotated with `-> @once T` returns a linear value that must be passed to exactly one `perform` call during the task's lifetime.
 
 **Declaration on `let` bindings:**
 ```brief
 step Process {
     @once let handle = perform Payment.charge(amount)?;   // handle is linear
-    let confirm = perform Payment.confirm(handle)?;       // ✅ consumed once
+    let confirm = perform Payment.confirm(handle)?;       // ✅ consumed in same step
+}
+```
+
+**Cross-step linear tracking:**
+
+If a `@once` binding is declared in step N but **not consumed there**, the compiler promotes it to task-level tracking. It must then be consumed in exactly one later step:
+
+```brief
+step Acquire {
+    @once let token = perform Auth.acquireToken(scope)?;
+    // token not used here → promoted to cross-step tracking
+}
+
+step Use {
+    let result = perform Auth.callWithToken(token, endpoint)?;  // ✅ consumed once across steps
 }
 ```
 
 **Error cases:**
-- `E104 LinearBindingReused` — a `@once` binding is passed to `perform` more than once in the same step.
-- `E105 LinearBindingDropped` — a `@once` binding is declared but never passed to any `perform` call in the step.
+- `E104 LinearBindingReused` — a `@once` binding is consumed more than once (within a step, or counting across steps).
+- `E105 LinearBindingDropped` — a `@once` binding is declared but never consumed in any step of the task.
 
 ```brief
 step BadDouble {
@@ -253,6 +268,13 @@ step BadDrop {
     @once let h = perform Payment.charge(100)?;
     // error[E105]: @once binding 'h' is never consumed — resource leak
 }
+
+// Cross-step double-use:
+step Acquire {
+    @once let token = perform Auth.acquireToken(scope)?;
+}
+step UseA { let _ = perform Auth.callWithToken(token, endpointA)?; }
+step UseB { let _ = perform Auth.callWithToken(token, endpointB)?; }  // error[E104]: consumed 2 times across steps
 ```
 
 ---
@@ -595,25 +617,31 @@ kv_pairs       ::= STRING ':' STRING (',' STRING ':' STRING)*
 | `brief build <file>.brief --target wasm32-unknown-unknown` | Compile to WASM. |
 | `brief test <file>.brief` | Run `test { }` blocks with mock skill system. |
 | `brief fmt <file>.brief` | Auto-format to canonical style (idempotent). |
+| `brief fmt <file>.brief --check` | Fail with exit code 1 if file is not formatted (CI mode). |
 | `brief doc <file>.brief` | Generate Markdown documentation from declarations. |
 | `brief doc <file>.brief --output <path>` | Write generated docs to file. |
 | `brief repl` | Interactive REPL (tree-walking, fast iteration). |
 | `brief lsp` | Start LSP server on stdio (for editor integration). |
 | `brief gen "<description>"` | AI-generate a `.brief` file from natural language. |
+| `brief gen "<description>" --force` | Overwrite an existing output file. |
 | `brief skillgen <skill-path>` | Generate `.briefskill` interface from skill README. |
 | `brief add skill <Name>` | Install a skill from the registry. |
 | `brief add skill ./path/` | Install a skill from a local directory. |
 | `brief add skill --list` | List available skills in the registry. |
+| `brief watch <path>` | Watch a file or directory; re-check on every save. |
+| `brief init <name>` | Scaffold a new Brief project in a new directory. |
+| `brief ci` | Run all checks listed in `brief.toml` `[ci]` examples. |
+| `brief completions <shell>` | Generate shell completions (bash, zsh, fish, powershell). |
 
 ---
 
 ## 12. Versioning
 
-This document describes Brief v0.4. The language is under active development.
-Syntax and semantics may change between minor versions until v1.0.
+This document describes Brief v1.0. The language is stable.
 
 **Version history:**
 - `v0.1` — Core language: tasks, steps, effects, sealed types, structs, protocols, skill imports
 - `v0.2` — Ecosystem: `brief test`, `brief fmt`, LSP go-to-def/find-refs, WASM, skill registry
 - `v0.3` — Power types: `@once` linear types, type aliases, effect groups, `brief doc`
-- `v0.4` — Test block support in main parser (`brief check` handles `test { }` files); `@mcp` alias attribute; 32 examples (27–32: composition, AI pipeline, platform branching, event sourcing, concurrency, MCP)
+- `v0.4` — Test block support in main parser (`brief check` handles `test { }` files); `@mcp` alias attribute; examples 27–40 (composition, AI pipeline, platform branching, event sourcing, concurrency, MCP, background jobs, distributed transactions); `brief watch`, `brief init`, `brief ci`
+- `v1.0` — Stability: cross-step `@once` linear type tracking (E104/E105 across steps); `brief gen --force`; `brief fmt --check`; security-hardened skill registry (name validation, size caps, HTTP timeouts); diagnostic deduplication; `ExitCode` API (no `process::exit` in library modules); StringPool O(1) dedup; OnceLock-based builtin type sets; 117 compiler tests; 40 verified examples

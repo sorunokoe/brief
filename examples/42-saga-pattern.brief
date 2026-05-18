@@ -1,0 +1,202 @@
+// Saga Pattern — Distributed Transaction with Compensating Actions
+//
+// A saga is a sequence of local transactions where each step has a
+// corresponding compensation (rollback) action. This is the standard
+// approach to long-running distributed transactions that cannot hold a
+// single ACID lock across services.
+//
+// Brief is ideal for describing sagas because:
+//   - `sealed type` models the explicit command/event vocabulary
+//   - `@once` linear handles prevent accidentally skipping compensation
+//   - `uses [...]` makes all participating services explicit
+//   - step ordering encodes the happy path; compensation steps follow
+//
+// Pattern: Order Fulfillment Saga
+//   1. Reserve inventory  → compensate: release reservation
+//   2. Charge payment     → compensate: refund payment
+//   3. Ship order         → compensate: cancel shipment
+//   4. Confirm order      → (terminal — no compensation needed)
+
+import skill "Inventory"
+import skill "Payment"
+import skill "Shipping"
+import skill "Orders"
+import skill "Notifications"
+
+sealed type SagaStep   = ReserveInventory | ChargePayment | ShipOrder | ConfirmOrder
+sealed type SagaResult = Committed(String) | RolledBack(String, SagaStep)
+
+struct OrderSaga {
+    orderId: @nonEmpty String
+    customerId: @nonEmpty String
+    sku: @nonEmpty String
+    quantity: String
+    amountCents: String
+    currency: String
+    shippingAddress: @nonEmpty String
+}
+
+effect Inventory {
+    fn reserve(sku: String, quantity: String) -> @once ReservationHandle
+    fn confirm(handle: ReservationHandle, orderId: String) -> Unit
+    fn release(handle: ReservationHandle) -> Unit
+}
+
+effect Payment {
+    fn charge(customerId: String, amountCents: String, currency: String) -> @once ChargeHandle
+    fn capture(handle: ChargeHandle, orderId: String) -> PaymentReceipt
+    fn refund(handle: ChargeHandle, reason: String) -> RefundResult
+}
+
+effect Shipping {
+    fn createShipment(orderId: String, address: String) -> @once ShipmentHandle
+    fn dispatch(handle: ShipmentHandle) -> TrackingNumber
+    fn cancel(handle: ShipmentHandle, reason: String) -> Unit
+}
+
+effect Orders {
+    fn create(saga: String) -> OrderId
+    fn confirm(orderId: String, trackingNumber: String) -> Unit
+    fn cancel(orderId: String, reason: String) -> Unit
+}
+
+effect Notifications {
+    fn orderConfirmed(customerId: String, orderId: String, trackingNumber: String) -> Unit
+    fn orderFailed(customerId: String, orderId: String, reason: String) -> Unit
+}
+
+// ─── Happy path ───────────────────────────────────────────────────────────────
+
+@BriefBuilder
+task FulfillOrder : TaskBrief uses [Inventory, Payment, Shipping, Orders, Notifications] {
+    goal   = "Execute the order fulfillment saga — reserve inventory, charge, ship, confirm"
+    extras = [
+        "pattern": "saga",
+        "compensationPolicy": "backward-recovery",
+        "idempotency": "orderId used as idempotency key at each step"
+    ]
+
+    step CreateOrder {
+        let orderId = perform Orders.create(sagaPayload)?;
+    }
+
+    step ReserveInventory {
+        // Reservation handle is linear — if not confirmed, must be released.
+        @once let reservation = perform Inventory.reserve(sku, quantity)?;
+        let _ = perform Inventory.confirm(reservation, orderId)?;
+    }
+
+    step ChargePayment {
+        // Charge handle is linear — if not captured, must be refunded.
+        @once let charge = perform Payment.charge(customerId, amountCents, currency)?;
+        let receipt = perform Payment.capture(charge, orderId)?;
+    }
+
+    step Ship {
+        // Shipment handle is linear — if not dispatched, must be cancelled.
+        @once let shipment = perform Shipping.createShipment(orderId, shippingAddress)?;
+        let trackingNumber = perform Shipping.dispatch(shipment)?;
+    }
+
+    step Confirm {
+        let _ = perform Orders.confirm(orderId, trackingNumber)?;
+        let _ = perform Notifications.orderConfirmed(customerId, orderId, trackingNumber)?;
+    }
+}
+
+// ─── Compensation saga (backward recovery) ───────────────────────────────────
+
+@BriefBuilder
+task CompensateFulfillment : TaskBrief uses [Inventory, Payment, Shipping, Orders, Notifications] {
+    goal   = "Roll back a partially-executed fulfillment saga in reverse step order"
+    extras = [
+        "pattern": "backward-recovery",
+        "trigger": "any step failure in FulfillOrder",
+        "order": "compensation steps run in reverse execution order"
+    ]
+
+    step CancelShipment {
+        // Only executed if Ship step succeeded. Cancels before physical dispatch.
+        @once let shipment = perform Shipping.createShipment(orderId, shippingAddress)?;
+        let _ = perform Shipping.cancel(shipment, cancellationReason)?;
+    }
+
+    step RefundPayment {
+        // Only executed if ChargePayment step succeeded.
+        @once let charge = perform Payment.charge(customerId, amountCents, currency)?;
+        let _ = perform Payment.refund(charge, cancellationReason)?;
+    }
+
+    step ReleaseInventory {
+        // Only executed if ReserveInventory step succeeded.
+        @once let reservation = perform Inventory.reserve(sku, quantity)?;
+        let _ = perform Inventory.release(reservation)?;
+    }
+
+    step CancelOrder {
+        let _ = perform Orders.cancel(orderId, cancellationReason)?;
+        let _ = perform Notifications.orderFailed(customerId, orderId, cancellationReason)?;
+    }
+}
+
+// ─── Idempotent retry saga ────────────────────────────────────────────────────
+
+@BriefBuilder
+task RetryFulfillment : TaskBrief uses [Inventory, Payment, Orders, Notifications] {
+    goal   = "Resume a stalled fulfillment saga from the last committed step using idempotency keys"
+    extras = [
+        "pattern": "saga-resume",
+        "idempotencyKey": "orderId",
+        "maxRetries": "3"
+    ]
+
+    step CheckStatus {
+        // Load current saga state to determine which step to resume from.
+        let sagaState = perform Orders.create(checkStatusQuery)?;
+    }
+
+    step ResumeInventory {
+        // Re-try reservation if not yet confirmed (idempotent by orderId).
+        @once let reservation = perform Inventory.reserve(sku, quantity)?;
+        let _ = perform Inventory.confirm(reservation, orderId)?;
+    }
+
+    step ResumePayment {
+        // Re-try charge if not yet captured (idempotent by orderId).
+        @once let charge = perform Payment.charge(customerId, amountCents, currency)?;
+        let receipt = perform Payment.capture(charge, orderId)?;
+    }
+
+    step NotifyResume {
+        let _ = perform Notifications.orderConfirmed(customerId, orderId, resumedTrackingNumber)?;
+    }
+}
+
+test "FulfillOrder declares all required effects" {
+    mock Inventory {
+        fn reserve(sku, quantity) -> Ok(ReservationHandle { id: "res-1" })
+        fn confirm(handle, orderId) -> Ok(Unit)
+    }
+    mock Payment {
+        fn charge(customerId, amountCents, currency) -> Ok(ChargeHandle { id: "ch-1" })
+        fn capture(handle, orderId) -> Ok(PaymentReceipt { id: "rcpt-1" })
+    }
+    mock Shipping {
+        fn createShipment(orderId, address) -> Ok(ShipmentHandle { id: "sh-1" })
+        fn dispatch(handle) -> Ok(TrackingNumber { value: "TRK-999" })
+    }
+    mock Orders {
+        fn create(saga) -> Ok(OrderId { id: "ord-1" })
+        fn confirm(orderId, trackingNumber) -> Ok(Unit)
+    }
+    mock Notifications {
+        fn orderConfirmed(customerId, orderId, trackingNumber) -> Ok(Unit)
+    }
+
+    run FulfillOrder
+    assert performed Inventory.reserve
+    assert performed Payment.charge
+    assert performed Shipping.dispatch
+    assert performed Orders.confirm
+    assert result is Ok
+}

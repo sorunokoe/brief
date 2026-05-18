@@ -13,6 +13,9 @@ effect Receipt {
     fn email(url: String, recipientEmail: String) -> SendResult
 }
 
+// ─── Same-step consumption ────────────────────────────────────────────────────
+// handle is acquired and consumed in the same step — simplest case.
+
 task ChargeCard : TaskBrief uses [Payment, Receipt] {
     goal   = "Charge a card and generate a receipt — linear handle consumed exactly once"
     extras = [
@@ -31,11 +34,45 @@ task ChargeCard : TaskBrief uses [Payment, Receipt] {
     }
 }
 
+// ─── Cross-step consumption ───────────────────────────────────────────────────
+// handle is acquired in step Acquire (not consumed there → promoted to task-level
+// tracking) and consumed in step Finalize. The compiler verifies exactly-once
+// semantics across both steps.
+
+task TwoPhaseCharge : TaskBrief uses [Payment] {
+    goal   = "Acquire a charge handle in one step, confirm it in a later step — cross-step @once"
+    extras = [
+        "domain": "payments",
+        "pattern": "two-phase-commit"
+    ]
+
+    step Acquire {
+        // @once on the let binding — if not consumed here, the compiler promotes
+        // this binding to task-level linear tracking.
+        @once let handle = perform Payment.charge(amount, currency)?;
+        // (no Payment.confirm here — handle escapes to next step)
+    }
+
+    step Validate {
+        // Intermediate step that does not touch `handle` — allowed.
+        let status = perform Payment.charge(checkAmount, currency)?;
+        let _ = perform Payment.confirm(status)?;
+    }
+
+    step Finalize {
+        // handle consumed here — exactly once across the task lifetime. ✅
+        let confirmation = perform Payment.confirm(handle)?;
+    }
+}
+
+// ─── Explicit @once let — refund path ────────────────────────────────────────
+
 task RefundOrder : TaskBrief uses [Payment] {
     goal   = "Refund an order — explicit @once prevents accidentally reusing the handle"
 
     step Validate {
-        let orderId = perform Payment.lookupOrder(orderId)?;
+        let orderId = perform Payment.charge(zeroAmount, currency)?;
+        let _ = perform Payment.confirm(orderId)?;
     }
 
     step Refund {
