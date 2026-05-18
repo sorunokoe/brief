@@ -27,7 +27,6 @@ fn unescape_str(s: &str) -> String {
 /// and logos applies the longest-then-first-declared rule.
 #[derive(Logos, Debug, PartialEq, Clone)]
 #[logos(skip r"[ \t\n\r]+")] // skip whitespace
-#[logos(skip r"//[^\n]*")]   // skip line comments
 pub enum Token {
     // ── Keywords ──────────────────────────────────────────────────────────
     #[token("task")]     Task,
@@ -59,6 +58,9 @@ pub enum Token {
     /// Integer literal, e.g. `0`, `100`, `-42`.
     #[regex(r"-?[0-9]+", |lex| lex.slice().parse::<i64>().ok())]
     Int(i64),
+
+    #[regex(r"//[^\n]*", |lex| lex.slice().to_string())]
+    LineComment(String),
 
     // ── Identifiers ───────────────────────────────────────────────────────
     /// Any word not matched by a keyword. Includes `TaskBrief`, `goal`, `extras`, etc.
@@ -102,6 +104,7 @@ pub fn lex(source: &str) -> (Vec<Spanned>, Vec<(usize, usize)>) {
     while let Some(result) = lexer.next() {
         let span = lexer.span();
         match result {
+            Ok(Token::LineComment(_)) => {}
             Ok(tok) => tokens.push(Spanned { token: tok, start: span.start, end: span.end }),
             Err(_)  => errors.push((span.start, span.end)),
         }
@@ -178,5 +181,20 @@ mod tests {
         assert_eq!(toks[0].token, Token::Int(0));
         assert_eq!(toks[1].token, Token::Int(100));
         assert_eq!(toks[2].token, Token::Int(-42));
+    }
+
+    #[test]
+    fn logos_emits_line_comment_tokens() {
+        let mut lexer = Token::lexer("// keep me\ntask");
+        assert_eq!(lexer.next(), Some(Ok(Token::LineComment("// keep me".to_string()))));
+    }
+
+    #[test]
+    fn lex_skips_line_comments_for_parser() {
+        let src = "// keep me\ntask Hello : TaskBrief { goal = \"hi\" }";
+        let (toks, errs) = lex(src);
+        assert!(errs.is_empty());
+        assert!(toks.iter().all(|t| !matches!(&t.token, Token::LineComment(_))));
+        assert_eq!(toks[0].token, Token::Task);
     }
 }

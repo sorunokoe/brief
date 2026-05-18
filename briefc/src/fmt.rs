@@ -13,13 +13,14 @@
 /// - String literals: double quotes
 /// - `extras` entries: sorted alphabetically by key
 /// - Trailing newline, no trailing whitespace
-/// - Comments are NOT preserved (parse → regenerate)
+/// - `brief fmt --write` refuses to overwrite files that contain `//` comments
 
 use std::path::Path;
 use colored::Colorize;
+use logos::Logos;
 
 use crate::ast::*;
-use crate::lexer::lex;
+use crate::lexer::{lex, Token};
 use crate::parser::parse;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -386,6 +387,36 @@ impl Formatter {
     }
 }
 
+fn format_source(source: &str) -> String {
+    let (tokens, _)  = lex(source);
+    let (program, _) = parse(&tokens, source);
+    Formatter::format_program(&program)
+}
+
+fn offset_to_line(source: &str, offset: usize) -> usize {
+    source[..offset].bytes().filter(|b| *b == b'\n').count() + 1
+}
+
+fn line_comment_lines(source: &str) -> Vec<usize> {
+    let mut lines = Vec::new();
+    let mut lexer = Token::lexer(source);
+
+    while let Some(result) = lexer.next() {
+        if let Ok(Token::LineComment(_)) = result {
+            lines.push(offset_to_line(source, lexer.span().start));
+        }
+    }
+
+    lines.dedup();
+    lines
+}
+
+fn format_for_write(source: &str) -> Result<String, Vec<usize>> {
+    let formatted = format_source(source);
+    let comment_lines = line_comment_lines(source);
+    if comment_lines.is_empty() { Ok(formatted) } else { Err(comment_lines) }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Public entry point
 // ─────────────────────────────────────────────────────────────────────────────
@@ -403,10 +434,7 @@ pub fn fmt_file(path: &Path, write: bool, check: bool) -> bool {
         }
     };
 
-    let (tokens, _)  = lex(&source);
-    let (program, _) = parse(&tokens, &source);
-
-    let formatted = Formatter::format_program(&program);
+    let formatted = format_source(&source);
 
     if check {
         if formatted == source {
@@ -420,6 +448,16 @@ pub fn fmt_file(path: &Path, write: bool, check: bool) -> bool {
     }
 
     if write {
+        let formatted = match format_for_write(&source) {
+            Ok(formatted) => formatted,
+            Err(lines) => {
+                let line_list = lines.iter().map(|line| line.to_string()).collect::<Vec<_>>().join(", ");
+                eprintln!("{}: comments detected — formatted output would drop comments on lines {line_list}", "error".red().bold());
+                eprintln!("fix: remove comments before running brief fmt --write, or use brief fmt (without --write) to preview");
+                return false;
+            }
+        };
+
         if formatted == source {
             println!("{} {} (unchanged)", "✅".green(), path.display());
             return true;
@@ -543,5 +581,16 @@ mod tests {
     fn fmt_trailing_newline() {
         let src = "task H : TaskBrief { goal = \"hi\" }";
         assert!(roundtrip(src).ends_with('\n'));
+    }
+
+    #[test]
+    fn fmt_does_not_silently_drop_comments() {
+        let src = "// This is a task comment\ntask Hello : TaskBrief { goal = \"hi\" }";
+        let result = format_for_write(src);
+        assert!(
+            matches!(&result, Ok(out) if out.contains("// This is a task comment")) || result.is_err(),
+            "fmt silently dropped a comment"
+        );
+        assert!(matches!(result, Err(lines) if lines == vec![1]));
     }
 }
