@@ -33,6 +33,8 @@ pub enum ErrorCode {
     AttributeConstraint,
     /// Generic type parameter shadows a real declared type (builtin or user-defined)
     ScopedGenericConflict,
+    /// Match arms do not cover every variant of a sealed type (warning by default)
+    NonExhaustiveMatch,
     // ── Spec / constraint coverage errors (Phase 1) ───────────────────────
     /// `@range(min, max)` boundary literal missing in test block (E301)
     RangeBoundaryMissing,
@@ -66,18 +68,19 @@ impl fmt::Display for ErrorCode {
             ErrorCode::LinearBindingReused => "E104",
             ErrorCode::LinearBindingDropped => "E105",
             ErrorCode::UnknownEffectGroup => "E106",
-            ErrorCode::UnknownType            => "E201",
-            ErrorCode::WrongArgCount          => "E202",
-            ErrorCode::AttributeConstraint    => "E203",
-            ErrorCode::ScopedGenericConflict  => "E206",
-            ErrorCode::UnknownExtrasField     => "E208",
-            ErrorCode::RangeBoundaryMissing   => "E301",
-            ErrorCode::EnumValueMissing       => "E302",
-            ErrorCode::LockRequired           => "E303",
-            ErrorCode::UnconfiguredVerifier   => "E309",
-            ErrorCode::MissingSkillInterface      => "E107",
-            ErrorCode::StaleSkillInterface        => "W102",
-            ErrorCode::DeprecatedStringExtras     => "W103",
+            ErrorCode::UnknownType => "E201",
+            ErrorCode::WrongArgCount => "E202",
+            ErrorCode::AttributeConstraint => "E203",
+            ErrorCode::ScopedGenericConflict => "E206",
+            ErrorCode::NonExhaustiveMatch => "E207",
+            ErrorCode::UnknownExtrasField => "E208",
+            ErrorCode::RangeBoundaryMissing => "E301",
+            ErrorCode::EnumValueMissing => "E302",
+            ErrorCode::LockRequired => "E303",
+            ErrorCode::UnconfiguredVerifier => "E309",
+            ErrorCode::MissingSkillInterface => "E107",
+            ErrorCode::StaleSkillInterface => "W102",
+            ErrorCode::DeprecatedStringExtras => "W103",
             ErrorCode::BriefBuilderProvidesMissing => "W104",
         };
         write!(f, "{code}")

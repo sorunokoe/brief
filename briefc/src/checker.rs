@@ -212,6 +212,7 @@ fn check_task(
     //   step_linear = bindings declared @once in the current step.
     // This lets us detect cross-step E104/E105 violations.
     let uses_set: HashSet<&str> = expanded_uses.iter().copied().collect();
+    let base_locals = task_base_locals(task);
     let mut task_linear: HashMap<String, (Span, usize)> = HashMap::new();
 
     for step in &task.steps {
@@ -220,6 +221,8 @@ fn check_task(
             &uses_set,
             imported,
             inline_effects,
+            type_env,
+            &base_locals,
             &mut task_linear,
             diags,
         );
@@ -297,6 +300,18 @@ fn check_brief_builder_provides(task: &Task, diags: &mut Vec<BriefError>) {
     }
 }
 
+type LocalTypes = HashMap<String, TypeRef>;
+
+fn task_base_locals(task: &Task) -> LocalTypes {
+    let mut locals = HashMap::new();
+    if let Some(ExtrasNode::TypedRecord(fields)) = &task.extras {
+        for field in fields {
+            locals.insert(field.name.clone(), field.type_ref.clone());
+        }
+    }
+    locals
+}
+
 fn check_extras_field_type(
     field_name: &str,
     ty: &TypeRef,
@@ -347,15 +362,19 @@ fn check_step(
     uses_set: &HashSet<&str>,
     imported: &HashSet<&str>,
     inline_effects: &HashMap<(&str, &str), &[Attribute]>,
+    env: &TypeEnv<'_>,
+    base_locals: &LocalTypes,
     task_linear: &mut HashMap<String, (Span, usize)>,
     diags: &mut Vec<BriefError>,
 ) {
     // step_linear: @once bindings introduced in this step.
     let mut step_linear: HashMap<String, (Span, usize)> = HashMap::new();
+    let mut locals = base_locals.clone();
 
-    // First pass: validate performs and collect step_linear bindings.
+    // First pass: validate performs, match exhaustiveness, and collect step_linear bindings.
     for stmt in &step.body {
-        check_expr_for_perform(stmt_value(stmt), uses_set, imported, diags);
+        let expr = stmt_value(stmt);
+        check_expr_semantics(expr, uses_set, imported, env, &locals, diags);
 
         if let Stmt::Let {
             attrs,
@@ -393,6 +412,10 @@ fn check_step(
                     });
                 }
                 step_linear.insert(name.clone(), (*span, 0));
+            }
+
+            if let Some(ty) = infer_expr_type(value, env, &locals) {
+                locals.insert(name.clone(), ty);
             }
         }
     }
@@ -514,14 +537,18 @@ fn count_ident_uses(expr: &Expr, linear: &mut HashMap<String, (Span, usize)>) {
     }
 }
 
-fn check_expr_for_perform(
+fn check_expr_semantics(
     expr: &Expr,
     uses_set: &HashSet<&str>,
     _imported: &HashSet<&str>,
+    env: &TypeEnv<'_>,
+    locals: &LocalTypes,
     diags: &mut Vec<BriefError>,
 ) {
     match expr {
-        Expr::Perform { skill, span, .. } => {
+        Expr::Perform {
+            skill, span, args, ..
+        } => {
             if !uses_set.contains(skill.as_str()) {
                 diags.push(BriefError {
                     code: ErrorCode::PerformWithoutUses,
@@ -533,22 +560,155 @@ fn check_expr_for_perform(
                     hint: Some(format!("add '{skill}' to the task's `uses` clause")),
                 });
             }
+            for arg in args {
+                check_expr_semantics(arg, uses_set, _imported, env, locals, diags);
+            }
         }
         Expr::Await { expr: inner, .. } => {
-            check_expr_for_perform(inner, uses_set, _imported, diags);
+            check_expr_semantics(inner, uses_set, _imported, env, locals, diags);
         }
         Expr::Call { args, .. } => {
             for arg in args {
-                check_expr_for_perform(arg, uses_set, _imported, diags);
+                check_expr_semantics(arg, uses_set, _imported, env, locals, diags);
             }
         }
         Expr::Match { scrutinee, arms } => {
-            check_expr_for_perform(scrutinee, uses_set, _imported, diags);
+            check_expr_semantics(scrutinee, uses_set, _imported, env, locals, diags);
+            let scrutinee_ty = infer_expr_type(scrutinee, env, locals);
             for arm in arms {
-                check_expr_for_perform(&arm.body, uses_set, _imported, diags);
+                let mut arm_locals = locals.clone();
+                if let Some((binding, binding_ty)) =
+                    match_pattern_binding(&arm.pattern, scrutinee_ty.as_ref(), env, arm.span)
+                {
+                    arm_locals.insert(binding, binding_ty);
+                }
+                check_expr_semantics(&arm.body, uses_set, _imported, env, &arm_locals, diags);
             }
+            check_match_exhaustiveness(expr, scrutinee_ty.as_ref(), arms, env, diags);
         }
         Expr::Ident { .. } | Expr::Str { .. } | Expr::Int { .. } => {}
+    }
+}
+
+fn check_match_exhaustiveness(
+    expr: &Expr,
+    scrutinee_ty: Option<&TypeRef>,
+    arms: &[MatchArm],
+    env: &TypeEnv<'_>,
+    diags: &mut Vec<BriefError>,
+) {
+    let Some(scrutinee_ty) = scrutinee_ty else {
+        return;
+    };
+    let Some(sealed) = env.sealed_type(&scrutinee_ty.name) else {
+        return;
+    };
+    if arms
+        .iter()
+        .any(|arm| matches!(arm.pattern, Pattern::Wildcard))
+    {
+        return;
+    }
+
+    let covered: HashSet<&str> = arms
+        .iter()
+        .filter_map(|arm| match &arm.pattern {
+            Pattern::Variant(name) | Pattern::Variant1(name, _) => Some(name.as_str()),
+            Pattern::Wildcard => None,
+        })
+        .collect();
+
+    let missing: Vec<String> = sealed
+        .variants
+        .iter()
+        .filter(|variant| !covered.contains(variant.name.as_str()))
+        .map(|variant| variant.name.clone())
+        .collect();
+
+    if missing.is_empty() {
+        return;
+    }
+
+    diags.push(BriefError {
+        code: ErrorCode::NonExhaustiveMatch,
+        message: format!(
+            "non-exhaustive match on '{}': missing variants [{}]",
+            sealed.name,
+            missing.join(", ")
+        ),
+        span: expr.span(),
+        hint: Some(format!(
+            "add arms for {} or add a wildcard `_` arm",
+            missing.join(", ")
+        )),
+    });
+}
+
+fn infer_expr_type(expr: &Expr, env: &TypeEnv<'_>, locals: &LocalTypes) -> Option<TypeRef> {
+    match expr {
+        Expr::Ident { name, .. } => locals.get(name).cloned(),
+        Expr::Str { span, .. } => Some(TypeRef {
+            name: "String".to_string(),
+            args: Vec::new(),
+            optional: false,
+            span: *span,
+        }),
+        Expr::Int { span, .. } => Some(TypeRef {
+            name: "Int".to_string(),
+            args: Vec::new(),
+            optional: false,
+            span: *span,
+        }),
+        Expr::Perform { skill, func, .. } => env.effect_fn(skill, func).map(|sig| sig.ret.clone()),
+        Expr::Await { expr: inner, .. } => infer_expr_type(inner, env, locals),
+        Expr::Call { .. } | Expr::Match { .. } => None,
+    }
+}
+
+fn match_pattern_binding(
+    pattern: &Pattern,
+    scrutinee_ty: Option<&TypeRef>,
+    env: &TypeEnv<'_>,
+    span: Span,
+) -> Option<(String, TypeRef)> {
+    match pattern {
+        Pattern::Variant1(variant, binding) => Some((
+            binding.clone(),
+            pattern_binding_type(variant, scrutinee_ty, env, span),
+        )),
+        Pattern::Variant(_) | Pattern::Wildcard => None,
+    }
+}
+
+fn pattern_binding_type(
+    variant_name: &str,
+    scrutinee_ty: Option<&TypeRef>,
+    env: &TypeEnv<'_>,
+    span: Span,
+) -> TypeRef {
+    scrutinee_ty
+        .and_then(|ty| builtin_variant_binding_type(ty, variant_name))
+        .or_else(|| {
+            scrutinee_ty.and_then(|ty| env.sealed_variant_field_type(&ty.name, variant_name))
+        })
+        .unwrap_or_else(|| default_binding_type(span))
+}
+
+fn builtin_variant_binding_type(scrutinee_ty: &TypeRef, variant_name: &str) -> Option<TypeRef> {
+    match (scrutinee_ty.name.as_str(), variant_name) {
+        ("Result", "Ok") if !scrutinee_ty.args.is_empty() => Some(scrutinee_ty.args[0].clone()),
+        ("Result", "Err") if scrutinee_ty.args.len() >= 2 => Some(scrutinee_ty.args[1].clone()),
+        ("Option", "Some") if !scrutinee_ty.args.is_empty() => Some(scrutinee_ty.args[0].clone()),
+        _ => None,
+    }
+}
+
+fn default_binding_type(span: Span) -> TypeRef {
+    TypeRef {
+        name: "String".to_string(),
+        args: Vec::new(),
+        optional: false,
+        span,
     }
 }
 
@@ -1137,6 +1297,84 @@ mod tests {
         );
         let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
         assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    }
+
+    #[test]
+    fn exhaustive_match_with_wildcard_has_no_e207() {
+        let diags = check_src(
+            r#"
+            sealed type Platform = iOS | Android | Web
+            task Render : TaskBrief {
+                goal = "render"
+                extras { platform: Platform }
+                step Render {
+                    let view = match platform {
+                        iOS => "a"
+                        _ => "b"
+                    };
+                }
+            }
+        "#,
+        );
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.code != ErrorCode::NonExhaustiveMatch),
+            "unexpected diags: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn exhaustive_match_covering_all_sealed_variants_has_no_e207() {
+        let diags = check_src(
+            r#"
+            sealed type Platform = iOS | Android | Web
+            task Render : TaskBrief {
+                goal = "render"
+                extras { platform: Platform }
+                step Render {
+                    let view = match platform {
+                        iOS => "a"
+                        Android => "b"
+                        Web => "c"
+                    };
+                }
+            }
+        "#,
+        );
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.code != ErrorCode::NonExhaustiveMatch),
+            "unexpected diags: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn non_exhaustive_match_emits_e207_with_missing_variants() {
+        let diags = check_src(
+            r#"
+            sealed type Platform = iOS | Android | Web
+            task Render : TaskBrief {
+                goal = "render"
+                extras { platform: Platform }
+                step Render {
+                    let view = match platform {
+                        iOS => "a"
+                        Android => "b"
+                    };
+                }
+            }
+        "#,
+        );
+        let diag = diags
+            .iter()
+            .find(|d| d.code == ErrorCode::NonExhaustiveMatch)
+            .expect("missing E207 diagnostic");
+        assert_eq!(
+            diag.message,
+            "non-exhaustive match on 'Platform': missing variants [Web]"
+        );
     }
 
     #[test]
