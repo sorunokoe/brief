@@ -6,6 +6,7 @@ mod doc;
 mod errors;
 mod fmt;
 mod gen;
+mod hir;
 mod init;
 mod lexer;
 mod lock;
@@ -164,6 +165,12 @@ enum Commands {
         output: Option<PathBuf>,
     },
 
+    /// Print the typed HIR for a .brief file
+    Hir {
+        /// Path to the .brief file
+        file: PathBuf,
+    },
+
     /// Watch a .brief file (or directory) for changes and re-check on every save
     Watch {
         /// Path to the .brief file or directory to watch
@@ -296,6 +303,12 @@ fn main() -> std::process::ExitCode {
         Commands::Doc { file, output } => {
             print_brief_banner();
             let ok = doc::doc_file(&file, output.as_deref());
+            if ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::FAILURE }
+        }
+
+        Commands::Hir { file } => {
+            print_brief_banner();
+            let ok = hir::print_hir_file(&file);
             if ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::FAILURE }
         }
 

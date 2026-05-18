@@ -289,7 +289,7 @@ impl ReplEvaluator {
 fn parse_repl_expr(src: &str) -> Result<crate::ast::Expr, ReplError> {
     let expr_src = src.trim().trim_end_matches(';');
     let wrapped = format!(
-        "task __repl_expr__ : TaskBrief {\n    goal = \"eval\"\n    step Eval {\n        {expr_src};\n    }\n}"
+        "task __repl_expr__ : TaskBrief {{\n    goal = \"eval\"\n    step Eval {{\n        {expr_src};\n    }}\n}}"
     );
 
     let (tokens, lex_errors) = lex(&wrapped);
