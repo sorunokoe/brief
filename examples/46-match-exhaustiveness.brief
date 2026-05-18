@@ -1,0 +1,51 @@
+import skill "DesignSystem"
+
+sealed type Platform = iOS | Android | Web
+sealed type Tier = Free | Pro | Enterprise
+
+task RenderDashboard : TaskBrief uses [DesignSystem] {
+    goal = "Render the dashboard appropriate for the user's platform and tier"
+
+    extras {
+        platform: Platform
+        tier: Tier
+    }
+
+    step DetectCapabilities {
+        // Exhaustive match — all variants covered
+        let layoutMode = match platform {
+            iOS     => "native-ios"
+            Android => "native-android"
+            Web     => "responsive"
+        };
+
+        // Wildcard catch-all is also fine
+        let tierLabel = match tier {
+            Enterprise => "Enterprise Plan"
+            _          => "Standard Plan"
+        };
+    }
+
+    step RenderUI {
+        let view = perform DesignSystem.scaffold(layoutMode, tierLabel)?;
+    }
+}
+
+test "exhaustive platform match" {
+    let p = iOS
+    let label = match p {
+        iOS     => "ios"
+        Android => "android"
+        Web     => "web"
+    }
+    assert label == "ios"
+}
+
+test "wildcard tier match" {
+    let t = Free
+    let label = match t {
+        Enterprise => "premium"
+        _          => "standard"
+    }
+    assert label == "standard"
+}

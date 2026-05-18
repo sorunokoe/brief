@@ -65,6 +65,24 @@ task ReviewPR : TaskBrief {
 
 `extras { ... }` gives the compiler a schema it can validate. The old `extras = ["key": "value"]` form still parses, but it emits W103.
 
+### Match Expressions
+
+Use `match` to branch on sealed type variants:
+
+```brief
+sealed type Environment = Production | Staging | Development
+
+step Configure {
+    let config = match environment {
+        Production  => perform Config.loadProd()?
+        Staging     => perform Config.loadStaging()?
+        Development => perform Config.loadDev()?
+    }
+}
+```
+
+Brief checks that your match is exhaustive — if you forget a variant, you get `warning[E207]` with the missing variant names listed.
+
 ### Step 2 — Generate skill interfaces
 
 Brief needs typed `.briefskill` interfaces to type-check your `perform` calls. Put skill docs in `.claude/skills/<Name>/README.md` with an `## Interface` section, then:
@@ -298,6 +316,7 @@ Copy `examples/skills/brief.toml` as a starting point for your project.
 | `E102` | Skill in `uses` but not imported | Add `import skill "..."` |
 | `E103` | `perform` calls skill not in `uses` | Add skill to `uses [...]` |
 | `E107` | No `.briefskill` file found | Run `brief skillgen .claude/skills/<Name>/` |
+| `E207` | Match on a sealed type is not exhaustive | Add the missing variants or a trailing `_` arm |
 | `E301` | `@range` boundary not in test block | Add `perform` calls with min/max values in a `test` block |
 | `E302` | `@enum` value not in test block | Add `perform` calls for each enum value in a `test` block |
 | `E303` | `.brief.lock` missing or stale | Run `brief verify` |
