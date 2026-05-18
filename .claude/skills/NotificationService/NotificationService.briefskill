@@ -1,0 +1,8 @@
+// Auto-generated for the v0.5 showcase example.
+
+effects [network]
+interface NotificationService {
+    fn email(audience: String, reportUrl: String) -> Result<String>
+    fn webhook(reportUrl: String) -> Result<String>
+    fn send(targetUserId: String, message: String, channel: String) -> Result<String>
+}

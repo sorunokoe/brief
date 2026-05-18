@@ -83,6 +83,42 @@ step Configure {
 
 Brief checks that your match is exhaustive — if you forget a variant, you get `warning[E207]` with the missing variant names listed.
 
+## Phase Contracts
+
+Document step invariants with `pre` and `post` blocks:
+
+```brief
+step ProcessPayment {
+    pre { amount > 0 }
+    post { receipt.isValid }
+
+    let receipt = perform PaymentService.charge(amount)?
+}
+```
+
+## Effect Contracts
+
+Declare what side-effects your task produces:
+
+```brief
+task FetchData : TaskBrief uses [NetworkService] {
+    effects [network]
+    ...
+}
+```
+
+Missing effect declarations emit `error[E209]`.
+
+## Workflow Combinators
+
+Compose steps with `parallel`, `retry`, and `fallback`:
+
+```brief
+parallel { FetchUsers, FetchProducts }
+retry(3) { SyncToBackend }
+fallback { SyncPrimary, SyncFallback }
+```
+
 ### Step 2 — Generate skill interfaces
 
 Brief needs typed `.briefskill` interfaces to type-check your `perform` calls. Put skill docs in `.claude/skills/<Name>/README.md` with an `## Interface` section, then:

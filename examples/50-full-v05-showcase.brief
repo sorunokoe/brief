@@ -1,0 +1,86 @@
+import skill "AnalyticsService"
+import skill "ReportService"
+import skill "NotificationService"
+
+sealed type ReportFormat = PDF | CSV | JSON
+sealed type Audience = Internal | External | Executive
+
+@BriefBuilder
+task GenerateAnalyticsReport : TaskBrief uses [AnalyticsService, ReportService, NotificationService] {
+    goal = "Generate and distribute an analytics report for the given audience and format"
+
+    effects [network, storage]
+
+    extras {
+        format: ReportFormat
+        audience: Audience
+    }
+
+    provides {
+        reportUrl: String
+        reportId: String
+    }
+
+    parallel {
+        FetchMetrics
+        FetchDimensions
+    }
+
+    retry(3) {
+        GenerateReport
+    }
+
+    fallback {
+        DistributeByEmail
+        DistributeByWebhook
+    }
+
+    step FetchMetrics {
+        pre { audience.isSelected }
+
+        let metrics = perform AnalyticsService.getMetrics(audience)?;
+    }
+
+    step FetchDimensions {
+        let dimensions = perform AnalyticsService.getDimensions()?;
+    }
+
+    step GenerateReport {
+        pre { metrics.isReady, dimensions.isReady }
+        post { report.isValid }
+
+        let template = match format {
+            PDF  => "executive-pdf"
+            CSV  => "data-export"
+            JSON => "api-response"
+        };
+
+        let report = perform ReportService.generate(metrics, dimensions, template)?;
+        let reportUrl = report.url;
+        let reportId = report.id;
+    }
+
+    step DistributeByEmail {
+        pre { report.isValid }
+
+        let ok = perform NotificationService.email(audience, reportUrl)?;
+    }
+
+    step DistributeByWebhook {
+        let ok = perform NotificationService.webhook(reportUrl)?;
+    }
+}
+
+test "pdf format match" {
+    let f = PDF
+    let tmpl = match f {
+        PDF  => "executive-pdf"
+        CSV  => "data-export"
+        JSON => "api-response"
+    }
+    assert tmpl == "executive-pdf"
+}
+
+test "executive audience" {
+    assert audience == Executive
+}

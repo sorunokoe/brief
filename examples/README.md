@@ -116,6 +116,21 @@ brief doc examples/26-brief-doc.brief --output docs/26-brief-doc.md
 | [39-multi-tenancy.brief](39-multi-tenancy.brief) | SaaS | Tenant isolation (RLS), context resolution, provisioning, quota enforcement, suspend/resume | ✅ W101 |
 | [40-conflict-resolution.brief](40-conflict-resolution.brief) | Sync | Vector clock conflict detection, three-way merge, CRDT (G-Counter, ORSet), manual resolution | ✅ W101 |
 
+## Examples (41–50 · v0.5 language wave)
+
+| File | Feature | What it shows | `brief check` |
+|------|---------|---------------|---------------|
+| [41-cross-step-linear.brief](41-cross-step-linear.brief) | Cross-step linear types | `@once` values acquired in one step and consumed later | ✅ W101 |
+| [42-saga-pattern.brief](42-saga-pattern.brief) | Distributed sagas | Multi-step orchestration with rollback semantics | ✅ W101 |
+| [43-match-platform.brief](43-match-platform.brief) | Match expressions | Platform dispatch with sealed variants | ✅ |
+| [44-match-result-handling.brief](44-match-result-handling.brief) | Result matching | `Ok(...)` / `Err(...)` branching | ✅ |
+| [45-typed-extras.brief](45-typed-extras.brief) | Typed extras + provides | `extras { ... }`, `provides { ... }`, `@BriefBuilder` | ✅ |
+| [46-match-exhaustiveness.brief](46-match-exhaustiveness.brief) | Exhaustiveness checking | `warning[E207]` coverage rules for sealed types | ✅ |
+| [47-phase-contracts.brief](47-phase-contracts.brief) | Phase contracts | `pre { ... }` / `post { ... }` step assertions | ✅ |
+| [48-effect-contracts.brief](48-effect-contracts.brief) | Effect contracts | Task-level `effects [...]` declarations and E209 validation | ✅ |
+| [49-workflow-combinators.brief](49-workflow-combinators.brief) | Workflow combinators | `parallel`, `retry(n)`, and `fallback` groups | ✅ |
+| [50-full-v05-showcase.brief](50-full-v05-showcase.brief) | Full v0.5 showcase | Typed HIR-era features together in one end-to-end task | ✅ |
+
 ```bash
 # Run tests in examples that have test { } blocks:
 brief test examples/14-test-suite.brief
