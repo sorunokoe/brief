@@ -2,6 +2,20 @@
 
 Provides safe, sandboxed file system operations for AI agents.
 
+## How to use
+
+1. Copy `examples/skills/brief.toml` to your project root and set your `mcp_command` for this skill.
+2. Write a `.brief` task that imports and uses `FileSystem`.
+3. Run the enforcement chain:
+
+```bash
+brief check  YourTask.brief     # type-check @local-path annotations, ~0ms
+brief verify YourTask.brief     # verify paths exist → writes .brief.lock
+brief serve  YourTask.brief     # start MCP server for AI (requires valid lock)
+```
+
+See `TransformFile.brief` for a working example.
+
 ## Interface
 
 ```

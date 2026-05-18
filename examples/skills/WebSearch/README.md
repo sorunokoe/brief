@@ -2,6 +2,20 @@
 
 Provides web search and page fetching for AI agents.
 
+## How to use
+
+1. Copy `examples/skills/brief.toml` to your project root.
+2. Configure `BRAVE_API_KEY` env var (or swap for another search MCP server).
+3. Run the enforcement chain:
+
+```bash
+brief check  ResearchTopic.brief    # checks @range boundaries in test block, ~0ms
+brief verify ResearchTopic.brief    # validates @url annotations → writes .brief.lock
+brief serve  ResearchTopic.brief    # start MCP server for AI (requires valid lock)
+```
+
+See `ResearchTopic.brief` for a working example showing `@range` boundary coverage in tests.
+
 ## Interface
 
 ```

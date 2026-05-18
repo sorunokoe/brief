@@ -1,415 +1,285 @@
 # Getting Started with Brief
 
-> *If it compiles, the AI has everything it needs.*
+Brief is a typed DSL that gives AI agents a verified, sealed context. Instead of hoping the AI uses the right tools, you declare exactly which skills it can use — and prove they work — before the AI ever connects.
 
-This guide takes you from zero to your first validated `.brief` file in 5 minutes.
+**The workflow in one line:** write → check → verify → serve → AI connects.
 
 ---
 
 ## Install
-
-**Build from source (requires Rust):**
 
 ```bash
 git clone https://github.com/yourusername/brief
 cd brief
 cargo build --release
 cp target/release/brief /usr/local/bin/
-```
-
-**Verify:**
-```bash
 brief --version
-# brief 0.0.1
 ```
 
 ---
 
-## Your First Brief
+## 5-Minute Walkthrough
 
-Create `hello.brief`:
+### Step 1 — Write a task
+
+Create `review-pr.brief`:
 
 ```brief
-task Hello : TaskBrief {
-    goal = "Say hello to the world"
+import skill "GitHub"
+import skill "FileSystem"
+
+task ReviewPR : TaskBrief uses [GitHub, FileSystem] {
+    goal = "Fetch a pull request and write a review summary to a file"
+
+    step FetchPR {
+        let pr = perform GitHub.getFile("owner/repo", "CHANGELOG.md", "main")?;
+    }
+
+    step WriteReport {
+        let _ = perform FileSystem.writeFile("/workspace/review.md", "summary")?;
+    }
+}
+
+test "boundary coverage" {
+    let _ = perform GitHub.listIssues("owner/repo", "open")?;
+    let _ = perform GitHub.listIssues("owner/repo", "closed")?;
 }
 ```
 
-Validate it:
+### Step 2 — Generate skill interfaces
+
+Brief needs typed `.briefskill` interfaces to type-check your `perform` calls. Put skill docs in `.claude/skills/<Name>/README.md` with an `## Interface` section, then:
+
 ```bash
-brief check hello.brief
-# brief v0.0.1
-#
-# ● Brief: Hello
-#   goal:    Say hello to the world
-#   skills:  none required
+brief skillgen .claude/skills/GitHub/
+brief skillgen .claude/skills/FileSystem/
+```
+
+Or skip this for now — `brief check` will warn (W101) but still pass.
+
+### Step 3 — Type-check
+
+```bash
+brief check review-pr.brief
 # ✅ All ingredients present. Ready for AI.
 ```
 
-Run it:
-```bash
-brief run hello.brief
-# ● Running brief: Hello
-# ✅ Complete.
+Fast, no network, CI-safe. Run this on every save with `brief watch review-pr.brief`.
+
+### Step 4 — Configure brief.toml
+
+Create `brief.toml` in your project root:
+
+```toml
+[skills.GitHub]
+mcp_command = ["npx", "-y", "@modelcontextprotocol/server-github"]
+
+[skills.FileSystem]
+mcp_command = ["npx", "-y", "@brief/filesystem-skill"]
+
+[verifiers."@url"]
+skill = "builtin:url"          # ships with Brief
+
+[verifiers."@github-repo"]
+mcp_command = ["npx", "-y", "@brief/github-verifier"]
 ```
 
----
-
-## Adding Skills
-
-Skills represent external capabilities — Figma, GraphQL, a design system, an API client.  
-They live in `.claude/skills/<SkillName>/` as a `README.md`.
-
-### 1. Generate a skill interface
+### Step 5 — Verify (seal the contract)
 
 ```bash
-brief skillgen .claude/skills/GraphQL/
-# ✅ .claude/skills/GraphQL/GraphQL.briefskill
+brief verify review-pr.brief
+# ✅ Verified 3 annotations → review-pr.brief.lock
 ```
 
-This reads the skill's `README.md` and emits a typed `.briefskill` interface file.
+This runs your verifiers (URL checks, repo access, etc.) and writes `review-pr.brief.lock`. Commit this file — it proves the brief was valid at a point in time. The lock is invalidated automatically if you change the `.brief` source.
 
-### 2. Import the skill
+### Step 6 — Serve to AI
 
-```brief
-import skill "GraphQL"
+```bash
+brief serve review-pr.brief
+```
 
-@BriefBuilder
-task FetchUser : TaskBrief uses [GraphQL] {
-    goal = "Fetch user profile from the GraphQL API"
+This starts an MCP server on stdio. Point Claude Code or GitHub Copilot at it:
 
-    step Fetch {
-        let user = perform GraphQL.query(UserProfileQuery)?;
+**`.claude/mcp.json`:**
+```json
+{
+  "mcpServers": {
+    "review-pr": {
+      "command": "brief",
+      "args": ["serve", "review-pr.brief"]
     }
+  }
 }
 ```
 
-### 3. Validate
-
-```bash
-brief check fetch-user.brief
-# ✅ All ingredients present. Ready for AI.
-```
+The AI now only sees `GitHub.getFile`, `GitHub.listIssues`, `GitHub.createPR`, `FileSystem.writeFile`, etc. — exactly the tools declared in `uses []`. Nothing else.
 
 ---
 
-## Generating Briefs with AI
+## Key Concepts
 
-```bash
-brief gen "A task that displays a user profile screen using our design system and GraphQL"
+### The enforcement chain
+
+```
+brief check   — static types, ~0ms, no network
+      ↓
+brief verify  — runtime proofs, writes .brief.lock
+      ↓
+brief serve   — MCP server, requires valid lock, no lock = no server
 ```
 
-This produces a `.brief` template with the description as the `goal`. In v0.1, it will call a configured LLM to generate a complete brief.
+Each step is a gate. You can't reach `serve` without a valid lock.
 
----
+### Skill interfaces (`.briefskill`)
 
-## Brief File Structure
+A `.briefskill` file declares the typed API of a skill:
 
-```brief
-// Optional: import skills
-import skill "DesignSystem"
-import skill "GraphQL"
-
-// Optional decorator (marks that task uses @BriefBuilder composition)
-@BriefBuilder
-
-// Task declaration
-task TaskName : TaskBrief uses [DesignSystem, GraphQL] {
-    // Required: what this task accomplishes
-    goal = "Human-readable description"
-
-    // Optional: key-value metadata
-    extras = ["platform": "iOS", "figmaURL": "https://..."]
-
-    // Optional: workflow steps
-    step StepName {
-        // Invoke a skill effect with `perform`
-        let result = perform SkillName.functionName(arg)?;
-        // The `?` propagates errors automatically
-    }
+```
+interface GitHub {
+    fn getFile(repo: @github-repo String, path: String, branch: @nonEmpty String) -> FileContent
+    fn listIssues(repo: @github-repo String, state: @enum("open","closed","all") String) -> IssueList
 }
 ```
 
+Generate from a skill's `README.md`:
+```bash
+brief skillgen .claude/skills/GitHub/
+```
+
+Or generate with an LLM (set `BRIEF_LLM_API_KEY`):
+```bash
+BRIEF_LLM_API_KEY=sk-... brief skillgen .claude/skills/GitHub/
+```
+
+### Annotations
+
+| Annotation | Checked by | Meaning |
+|------------|-----------|---------|
+| `@nonEmpty` | `brief check` | String/collection must not be empty |
+| `@range(1, 100)` | `brief check` | Integer must be in [1, 100] |
+| `@enum("a","b")` | `brief check` | Must be one of the listed values |
+| `@matches("regex")` | `brief check` | String must match pattern |
+| `@url` | `brief verify` | URL must be reachable (HTTP) |
+| `@local-path` | `brief verify` | File/directory must exist |
+| `@github-repo` | `brief verify` | GitHub repo must be accessible |
+| `@once` | `brief serve` | Handle can be used exactly once (linear type) |
+
+Static annotations (`@nonEmpty`, `@range`, `@enum`, `@matches`) are checked instantly. Dynamic annotations (`@url`, `@local-path`, etc.) require a configured verifier in `brief.toml` and are checked by `brief verify`.
+
 ---
 
-## Commands Reference
+## Commands
 
-| Command | Description |
+| Command | What it does |
 |---------|-------------|
-| `brief check <file>` | Type-check only (fast, ideal for CI) |
-| `brief run <file>` | Validate + execute (shows step-by-step output) |
-| `brief build <file>` | Compile to native binary via LLVM |
-| `brief build <file> --emit-ir` | Emit LLVM IR for inspection |
-| `brief build <file> --target wasm32-unknown-unknown` | Compile to WASM |
-| `brief test <file>` | Run `test { }` blocks with mock skill system |
-| `brief fmt <file>` | Auto-format to canonical style |
-| `brief fmt <file> --check` | Fail if file is not formatted (CI mode) |
-| `brief doc <file>` | Generate Markdown documentation |
-| `brief gen "<desc>"` | Generate a brief from natural language |
-| `brief gen "<desc>" --force` | Overwrite existing output file |
-| `brief skillgen <path>` | Generate `.briefskill` from skill's README.md |
-| `brief add skill <Name>` | Install a skill from the registry |
-| `brief watch <path>` | Re-check on every file save (dev loop) |
-| `brief init <name>` | Scaffold a new Brief project |
-| `brief ci` | Run all checks in `brief.toml` `[ci]` section |
-| `brief repl` | Interactive REPL |
-| `brief lsp` | LSP server (stdio) — for editor integration |
-| `brief --help` | Full command reference |
+| `brief check <file>` | Type-check, fast, no network. Use in CI and on every save. |
+| `brief verify <file>` | Run verifiers, write `.brief.lock`. Run when brief changes. |
+| `brief serve <file>` | Start MCP server. Requires valid lock. This is what AI connects to. |
+| `brief run <file>` | Execute the brief against real skill MCP servers directly. |
+| `brief test <file>` | Run `test { }` blocks with mock skills. |
+| `brief test <file> --live` | Run tests against real MCP servers (no mocks). |
+| `brief gen "<desc>"` | Generate a `.brief` file from a natural language description. |
+| `brief skillgen <path>` | Generate `.briefskill` from a skill directory's README. |
+| `brief watch <file>` | Re-check on every save (dev loop). |
+| `brief init <name>` | Scaffold a new Brief project. |
+| `brief fmt <file>` | Auto-format to canonical style. |
+| `brief doc <file>` | Generate Markdown documentation. |
+| `brief ci` | Check all `[ci] examples` from `brief.toml`. |
 
 ---
 
-## Error Messages
+## Generating a Brief with AI
 
-Brief's errors are designed to teach, not just report:
+If you have an LLM API key, Brief can write the `.brief` for you:
 
+```bash
+export BRIEF_LLM_API_KEY=sk-...
+brief gen "fetch a PR, review changed files, post a comment with findings"
+# → ReviewPR.brief  (3 attempts with compiler feedback)
 ```
-error[E101]: task 'Hello' is missing a `goal` field
-  → hello.brief:1:1
-  fix: add: goal = "describe what this task accomplishes"
 
-warning[W101]: skill 'GraphQL' has no interface file
-  → fetch-user.brief:1:1
-  fix: .claude/skills/GraphQL/GraphQL.briefskill not found — run: brief skillgen .claude/skills/GraphQL/
-
-error[E102]: skill 'GraphQL' is in `uses` but never imported
-  → fetch-user.brief:3:1
-  fix: add: import skill "GraphQL" at the top of the file
-```
+The generator runs `brief check` on each attempt and feeds error codes back to the LLM until it compiles cleanly.
 
 ---
 
-## Skill README Format for `brief skillgen`
+## Testing
 
-Add an `## Interface` section to your skill's `README.md`:
+Write `test { }` blocks directly in your `.brief` files:
 
-```markdown
-## Interface
+```brief
+test "lists open and closed issues" {
+    mock GitHub {
+        fn listIssues(repo, state) -> Ok([Issue { id: "1", title: "Bug" }])
+    }
 
-- `fn query(op: Operation) -> Result<T, QueryError>`
-- `fn mutation(op: Mutation) -> Result<T, MutationError>`
-- `fn schema(operationName: String) -> Schema`
+    run ReviewPR.FetchPR
+    assert performed GitHub.getFile
+    assert result is Ok
+}
 ```
 
-`brief skillgen` parses this section and emits the typed `.briefskill` file.
+Run with mocks (fast, no network):
+```bash
+brief test review-pr.brief
+```
+
+Run against real skill servers (integration test):
+```bash
+brief test review-pr.brief --live
+```
 
 ---
 
 ## CI Integration
 
-The recommended way to validate all briefs in a project is `brief ci`:
-
-```bash
-brief ci
-# brief v1.0.0
-# ✅ 40/40 examples passed
-```
-
-`brief ci` reads `brief.toml`'s `[ci]` section and runs `brief check` on each listed file.
-It exits with code 0 only when all checks pass — ideal for CI gates.
-
-**GitHub Actions:**
-
 ```yaml
-# .github/workflows/ci.yml
-- name: Validate briefs
+# .github/workflows/brief.yml
+- name: Check briefs
   run: brief ci
+
+- name: Format check
+  run: brief fmt --check tasks/*.brief
 ```
 
-**`brief.toml` example:**
-
+`brief.toml`:
 ```toml
 [ci]
 examples = [
-  "examples/01-hello.brief",
-  "examples/06-auth-login.brief",
-  "tasks/*.brief",
+    "tasks/review-pr.brief",
+    "tasks/deploy.brief",
 ]
 ```
 
-You can also validate a single file:
+---
 
-```bash
-brief check my-feature.brief   # fast, single-file type-check
-```
+## Reference Skills
 
-**Format enforcement (no unformatted briefs in CI):**
+Five complete reference skills live in [`examples/skills/`](../examples/skills/):
 
-```yaml
-- name: Check Brief formatting
-  run: brief fmt --check examples/*.brief
-```
+| Skill | Purpose | Key annotations |
+|-------|---------|----------------|
+| `FileSystem` | Read/write local files | `@local-path` |
+| `GitHub` | GitHub API — files, PRs, issues | `@github-repo`, `@nonEmpty`, `@enum` |
+| `WebSearch` | Web search and page fetching | `@url`, `@range` |
+| `Memory` | Key-value store with TTL | `@nonEmpty`, `@range` |
+| `Shell` | Run shell commands | `@shell-command`, `@enum`, `@range` |
+
+Each includes a `.briefskill` interface, `README.md`, and a working `.brief` example.
+
+Copy `examples/skills/brief.toml` as a starting point for your project.
 
 ---
 
-## Phase 3 Power Types (v0.3)
+## Error Codes
 
-### Type Aliases
-
-Give a name to a refined type so you can reuse it everywhere:
-
-```brief
-type Email    = @matches("[^@]+@[^@]+") String
-type NonEmpty = @nonEmpty String
-
-struct User {
-    id:    NonEmpty     // cleaner than @nonEmpty String inline
-    email: Email
-}
-```
-
-### Effect Groups
-
-Name a set of skills that always travel together:
-
-```brief
-type AuthEffects = [Auth, Session, Permissions]
-
-task Login : TaskBrief uses [AuthEffects] {
-    goal = "Authenticate user"
-    // uses expands to [Auth, Session, Permissions]
-    step Verify {
-        let identity = perform Auth.verify(credentials)?;
-    }
-}
-```
-
-### Linear Types (`@once`)
-
-Ensure resources are consumed exactly once — no leaks, no double-use. The compiler tracks `@once` bindings **within and across steps**:
-
-```brief
-effect Payment {
-    fn charge(amount: Int) -> @once PaymentHandle
-    fn confirm(handle: PaymentHandle) -> PaymentConfirmation
-}
-
-task ProcessPayment : TaskBrief uses [Payment] {
-    goal = "Charge and confirm payment"
-
-    step Charge {
-        @once let handle = perform Payment.charge(100)?;
-        let receipt = perform Payment.confirm(handle)?;   // ✅ consumed in same step
-    }
-}
-```
-
-**Cross-step tracking** — if the binding is not consumed in the step it was declared, it is promoted to task-level and must be consumed in exactly one later step:
-
-```brief
-task TwoStepPayment : TaskBrief uses [Payment] {
-    goal = "Acquire handle in step 1, confirm in step 2"
-
-    step Acquire {
-        @once let handle = perform Payment.charge(100)?;
-        // handle NOT used here → promoted to cross-step tracking
-    }
-
-    step Confirm {
-        let receipt = perform Payment.confirm(handle)?;   // ✅ consumed across steps
-    }
-}
-```
-
-The compiler enforces: `E104` if the handle is reused (in the same or across steps), `E105` if it is never consumed.
-
-### Generate Docs
-
-```bash
-brief doc examples/26-brief-doc.brief
-# Renders: # Brief Module: 26-brief-doc
-# ## Skills, ## Types, ## Tasks, etc.
-
-brief doc my-feature.brief --output docs/my-feature.md
-```
-
----
-
-## Advanced Patterns (v0.4–v1.0 — examples 27–42)
-
-### Test Blocks (`brief test`)
-
-Write tests directly in your `.brief` files. `brief check` parses them without errors;
-`brief test` executes them with mock skills:
-
-```brief
-test "FetchProfile loads user via GraphQL" {
-    mock GraphQL {
-        fn query(op) -> Ok(User { id: "u1", name: "Ada Lovelace" })
-    }
-
-    run FetchProfile
-    assert performed GraphQL.query
-    assert result is Ok
-}
-```
-
-```bash
-brief test examples/14-test-suite.brief
-# ✅ 5 tests passed, 0 failed
-```
-
-### MCP Integration (`@mcp` attribute)
-
-Mark skills that are backed by MCP servers using the `@mcp` type alias:
-
-```brief
-type GitHubMCP   = @mcp GitHub
-type FileSystemMCP = @mcp FileSystem
-```
-
-This signals to the AI agent (and future tooling) that these effects are served
-by a Model Context Protocol server rather than a traditional HTTP API.
-
-See `examples/32-mcp-integration.brief` for a full AI code-review pipeline using
-GitHub + FileSystem + Browser + Database MCP skills.
-
-### AI / RAG Pipeline
-
-Chain LLM calls as typed effects — the compiler ensures every AI capability is declared:
-
-```brief
-import skill "LLM"
-import skill "Embeddings"
-import skill "VectorStore"
-
-task RagSearch : TaskBrief uses [Embeddings, VectorStore, LLM] {
-    goal = "Embed → retrieve → generate grounded answer"
-
-    step Embed   { let embedding = perform Embeddings.embed(query)?; }
-    step Retrieve { let results  = perform VectorStore.search(embedding, topK)?; }
-    step Generate { let answer   = perform LLM.complete(ragPrompt, temperature)?; }
-}
-```
-
-See `examples/28-ai-pipeline.brief` for the full RAG pipeline with tests.
-
-### Event Sourcing
-
-Commands emit typed events; projections replay them. All via `EventStore` effect:
-
-```brief
-sealed type OrderEvent = OrderCreated(String) | OrderPaid(String) | OrderShipped(String)
-
-task PlaceOrder : TaskBrief uses [EventStore, GraphQL] {
-    goal = "Place a new order — emit OrderCreated event"
-
-    step Validate { let cart = perform GraphQL.query(CartQuery)?; }
-    step Emit     { let _    = perform EventStore.append(orderId, OrderCreated(orderId))?; }
-}
-```
-
-See `examples/30-event-sourcing.brief` for commands, projections, and saga orchestration.
-
----
-
-## What's New in v1.0
-
-- **Cross-step `@once` linear tracking** — resource handles can be acquired in one step and consumed in another; `E104`/`E105` cover the whole task lifetime.
-- **`brief ci`** — single command to validate all briefs in a project (`brief.toml` driven).
-- **`brief gen --force`** — regenerate a brief without manual deletion.
-- **`brief fmt --check`** — CI format enforcement.
-- **`brief watch`** and **`brief init`** — dev-loop and scaffolding commands.
-- **Security-hardened registry** — skill name validation, 512 KB size cap, HTTP timeouts.
-- **117 compiler tests**, 40 verified examples.
-
-Watch [releases](https://github.com/yourusername/brief/releases) for updates.
+| Code | When | Fix |
+|------|------|-----|
+| `E101` | Missing `goal` field | Add `goal = "..."` to the task |
+| `E102` | Skill in `uses` but not imported | Add `import skill "..."` |
+| `E103` | `perform` calls skill not in `uses` | Add skill to `uses [...]` |
+| `E107` | No `.briefskill` file found | Run `brief skillgen .claude/skills/<Name>/` |
+| `E301` | `@range` boundary not in test block | Add `perform` calls with min/max values in a `test` block |
+| `E302` | `@enum` value not in test block | Add `perform` calls for each enum value in a `test` block |
+| `E303` | `.brief.lock` missing or stale | Run `brief verify` |
+| `E309` | Annotation has no verifier | Add `[verifiers."@annotation"]` to `brief.toml` |

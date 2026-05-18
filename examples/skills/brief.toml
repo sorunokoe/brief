@@ -1,5 +1,9 @@
-// Example brief.toml for a project using FileSystem + WebSearch skills.
-// Copy to your project root as brief.toml and adjust paths.
+// Example brief.toml for a project using the reference skills.
+// Copy to your project root as brief.toml and adjust the mcp_command entries.
+//
+// Package availability:
+//   ✅ @modelcontextprotocol/server-* — official packages from Anthropic, installable today
+//   🔧 @brief/* — reference package names; substitute your own MCP server for now
 
 [project]
 name    = "my-brief-project"
@@ -7,49 +11,56 @@ version = "0.1.0"
 
 # ── Skills ────────────────────────────────────────────────────────────────────
 # Each skill needs an mcp_command or mcp_url pointing to its MCP server.
+# Replace the mcp_command with whatever runs your actual skill server.
 
 [skills.FileSystem]
-# Run as: npx @brief/filesystem-skill (or replace with your own server)
+# 🔧 Placeholder — replace with your file-system MCP server
+# e.g. a local server: mcp_command = ["node", "path/to/filesystem-server.js"]
 mcp_command = ["npx", "-y", "@brief/filesystem-skill"]
 
 [skills.GitHub]
+# ✅ Official Anthropic package — works today
+# Requires GITHUB_TOKEN env var
 mcp_command = ["npx", "-y", "@modelcontextprotocol/server-github"]
 
 [skills.WebSearch]
+# ✅ Official Anthropic package — works today
+# Requires BRAVE_API_KEY env var
 mcp_command = ["npx", "-y", "@modelcontextprotocol/server-brave-search"]
 
 [skills.Memory]
+# ✅ Official Anthropic package — works today
 mcp_command = ["npx", "-y", "@modelcontextprotocol/server-memory"]
 
 [skills.Shell]
+# 🔧 Placeholder — replace with your shell MCP server
 mcp_command = ["npx", "-y", "@brief/shell-skill"]
 
 # ── Verifiers ─────────────────────────────────────────────────────────────────
 # Configure a verifier for each @annotation used in .briefskill files.
-# brief check (E309) will warn if an annotation has no verifier.
+# brief check (E309) will warn if an annotation has no configured verifier.
 
 [verifiers."@url"]
-# Ships with Brief — validates http/https URLs are reachable.
+# ✅ Ships with Brief — validates http/https URLs are reachable (no install needed)
 skill = "builtin:url"
 
 [verifiers."@local-path"]
-# Verify local file paths exist and are readable.
-# Install: npm i -g @brief/local-path-verifier
+# 🔧 Placeholder — replace with a verifier that checks file paths exist
+# Simple alternative: mcp_command = ["node", "./verify-local-path.js"]
 mcp_command = ["npx", "-y", "@brief/local-path-verifier"]
 
 [verifiers."@github-repo"]
-# Verify GitHub repos are accessible (uses GITHUB_TOKEN).
-# Install: npm i -g @brief/github-verifier
+# 🔧 Placeholder — replace with a verifier that checks GitHub repo access
+# Uses GITHUB_TOKEN if set
 mcp_command = ["npx", "-y", "@brief/github-verifier"]
 
 [verifiers."@shell-command"]
-# Verify commands exist in PATH.
-# Install: npm i -g @brief/shell-verifier
+# 🔧 Placeholder — replace with a verifier that checks commands exist in PATH
 mcp_command = ["npx", "-y", "@brief/shell-verifier"]
 
 # ── Verification settings ─────────────────────────────────────────────────────
 [verify]
-# Locks expire after 24 hours (default). Increase for stable environments.
+# Locks expire after 24 hours (default). Increase for stable, air-gapped environments.
 max_lock_age_hours = 24
 
 # ── CI ─────────────────────────────────────────────────────────────────────────

@@ -99,16 +99,17 @@ mcp_command = ["npx", "-y", "@figma/brief-verifier"]
 | `brief check <file>` | ✅ works | Type-check — fast, no network, CI-safe |
 | `brief verify <file>` | ✅ works | Seal the contract → writes `.brief.lock` |
 | `brief serve <file>` | ✅ works | Start MCP server (requires valid lock) |
+| `brief run <file>` | ✅ works | Execute `.brief` against real MCP skill servers |
+| `brief test <file>` | ✅ works | Run `test { }` blocks with mock skill system |
+| `brief test <file> --live` | ✅ works | Same, but make real MCP calls instead of mocks |
 | `brief gen "<desc>"` | ✅ works | Generate `.brief` from description (LLM if `BRIEF_LLM_API_KEY` set) |
 | `brief skillgen <path>` | ✅ works | Generate `.briefskill` from README (LLM if `BRIEF_LLM_API_KEY` set) |
-| `brief test <file>` | ✅ works | Run `test { }` blocks with mock skill system |
 | `brief fmt <file>` | ✅ works | Auto-format to canonical style |
 | `brief doc <file>` | ✅ works | Generate Markdown documentation |
 | `brief watch <file>` | ✅ works | Live re-check on every save |
 | `brief init <name>` | ✅ works | Scaffold a new Brief project |
 | `brief ci` | ✅ works | Check all `[ci] examples` from `brief.toml` |
 | `brief lsp` | ✅ works | LSP server for editor integration |
-| `brief run <file>` | 🔧 roadmap | Execute a .brief file against real skills |
 | `brief build <file>` | 🔧 roadmap | Compile to native binary via LLVM |
 
 ## Composable Verification
@@ -177,9 +178,10 @@ Each skill includes: `.briefskill` interface, `README.md`, and a `.brief` exampl
 - ✅ `brief ci`, shell completions, VS Code grammar
 - ✅ `brief verify` — composable verifier protocol (MCP)
 - ✅ `brief serve` — MCP server with lock gate enforcement
+- ✅ `brief run` — real execution against skill MCP servers
+- ✅ `brief test --live` — empirical type validation against real MCP servers
 - ✅ `brief gen` — LLM generation with compiler feedback loop
 - ✅ `brief skillgen` — LLM annotation extraction
-- 🔧 `brief run` — real execution against skill MCP servers
 - 🔧 LLVM/WASM backend
 - 🔧 npm verifier packages (`@brief/local-path-verifier`, etc.)
 

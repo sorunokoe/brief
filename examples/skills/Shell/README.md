@@ -2,6 +2,25 @@
 
 Executes shell commands safely within a configured sandbox.
 
+## How to use
+
+```bash
+brief check  YourTask.brief     # checks @enum("bash","sh","python","node") and @range coverage
+brief verify YourTask.brief     # verifies @shell-command executables exist in PATH
+brief serve  YourTask.brief     # start MCP server for AI (requires valid lock)
+```
+
+**`brief.toml` entry:**
+```toml
+[skills.Shell]
+# 🔧 Replace with your actual shell MCP server
+mcp_command = ["npx", "-y", "@brief/shell-skill"]
+
+[verifiers."@shell-command"]
+# 🔧 Replace with a verifier that checks commands exist in PATH
+mcp_command = ["npx", "-y", "@brief/shell-verifier"]
+```
+
 ## Interface
 
 ```

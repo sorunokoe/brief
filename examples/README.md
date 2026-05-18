@@ -1,13 +1,43 @@
 # Brief Examples
 
-A collection of `.brief` files to explore the language features. Run any file with:
+A collection of `.brief` files demonstrating the language features and the full verify → serve workflow.
+
+---
+
+## Quick start — the complete workflow
+
+These examples in [`examples/skills/`](skills/) show end-to-end usage: skill interface + task + verify + serve:
+
+| Skill | `.briefskill` | Example task | What it shows |
+|-------|--------------|--------------|---------------|
+| [FileSystem](skills/FileSystem/) | `FileSystem.briefskill` | `TransformFile.brief` | `@local-path` annotation, `brief verify` |
+| [GitHub](skills/GitHub/) | `GitHub.briefskill` | `ResearchTopic.brief` via WebSearch | `@github-repo`, `@enum` boundary coverage |
+| [WebSearch](skills/WebSearch/) | `WebSearch.briefskill` | `ResearchTopic.brief` | `@url`, `@range` with test coverage |
+| [Memory](skills/Memory/) | `Memory.briefskill` | Key-value with TTL | `@nonEmpty`, `@range` |
+| [Shell](skills/Shell/) | `Shell.briefskill` | Run commands | `@shell-command`, `@enum` |
+
+To run a skill example end-to-end:
+
+```bash
+cd examples/skills
+brief check WebSearch/ResearchTopic.brief       # type-check
+brief verify WebSearch/ResearchTopic.brief      # seal the contract → writes .brief.lock
+brief serve WebSearch/ResearchTopic.brief       # start MCP server for AI
+```
+
+Use `brief.toml` in `examples/skills/` as a starting point for your own project.
+
+---
+
+## Running examples
 
 ```bash
 brief check  <file>.brief          # type-check (fast, CI-friendly)
-brief run    <file>.brief          # check + execute steps
-brief build  <file>.brief          # compile to native binary via LLVM IR
-brief build  <file>.brief --emit-ir # inspect the generated LLVM IR
-brief test   <file>.brief          # run test { } blocks (see 14-test-suite.brief)
+brief verify <file>.brief          # seal contract → .brief.lock
+brief serve  <file>.brief          # start MCP server (requires valid lock)
+brief run    <file>.brief          # execute steps against real MCP skill servers
+brief test   <file>.brief          # run test { } blocks with mocks
+brief test   <file>.brief --live   # run test { } blocks against real servers
 brief fmt    <file>.brief          # auto-format to canonical style
 ```
 
@@ -95,6 +125,9 @@ brief test examples/34-background-jobs.brief
 brief test examples/36-pagination.brief
 brief test examples/37-webhook-handler.brief
 brief test examples/40-conflict-resolution.brief
+
+# Run tests against real MCP servers (no mocks):
+brief test examples/32-mcp-integration.brief --live
 ```
 
 ---
@@ -237,26 +270,4 @@ brief skillgen .claude/skills/GraphQL/
 ```
 
 The examples are all structurally valid — W101 is a soft warning, not an error.
-
----
-
-## Compile to IR and inspect
-
-```bash
-brief build examples/11-ai-chat.brief --emit-ir
-cat 11-ai-chat.ll
-```
-
-Each `task` becomes an LLVM function, each `step` a labelled section, and
-`perform Skill.fn(args)` emits a `brief_rt_perform(skill, fn, argc)` call.
-
----
-
-## WASM target
-
-```bash
-brief build examples/02-profile-screen.brief --target wasm32-unknown-unknown
-# outputs: 02-profile-screen.wasm
-```
-
-Requires `wasm-ld` (ships with LLVM). The `brief_rt_*` functions become host imports.
+Once you add `.briefskill` interfaces for your own skills, type-checking becomes fully strict.

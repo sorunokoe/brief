@@ -2,6 +2,22 @@
 
 Provides GitHub repository and PR operations for AI agents.
 
+## How to use
+
+Requires a `GITHUB_TOKEN` environment variable with repo access.
+
+```bash
+brief check  YourTask.brief     # checks @enum("open","closed","all") coverage in tests
+brief verify YourTask.brief     # verifies @github-repo repos are accessible
+brief serve  YourTask.brief     # start MCP server for AI (requires valid lock)
+```
+
+**`brief.toml` entry (uses the official Anthropic MCP server — installable today):**
+```toml
+[skills.GitHub]
+mcp_command = ["npx", "-y", "@modelcontextprotocol/server-github"]
+```
+
 ## Interface
 
 ```

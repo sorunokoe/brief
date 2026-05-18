@@ -2,6 +2,20 @@
 
 Provides persistent key-value memory for AI agents across sessions.
 
+## How to use
+
+```bash
+brief check  YourTask.brief     # checks @range(0, 86400) and @nonEmpty statically
+brief verify YourTask.brief     # (no dynamic annotations — verify is a no-op here)
+brief serve  YourTask.brief     # start MCP server for AI
+```
+
+**`brief.toml` entry (official Anthropic MCP server — installable today):**
+```toml
+[skills.Memory]
+mcp_command = ["npx", "-y", "@modelcontextprotocol/server-memory"]
+```
+
 ## Interface
 
 ```
