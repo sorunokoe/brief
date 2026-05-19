@@ -186,6 +186,52 @@ pub struct Decorator {
     pub span: Span,
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// needs {} block
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Kind of prerequisite in a `needs {}` block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NeedKind {
+    /// `env "VAR_NAME"` — requires an environment variable to be set and non-empty.
+    Env,
+    /// `feature "FLAG"` — requires a feature flag to be enabled.
+    Feature,
+    /// `config "KEY"` — requires a config value to be present.
+    Config,
+}
+
+/// A single item in a `needs {}` block.
+#[derive(Debug, Clone)]
+pub struct NeedItem {
+    pub kind: NeedKind,
+    pub key: String,
+    pub span: Span,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// forbids {} block
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Kind of prohibition in a `forbids {}` block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ForbidKind {
+    /// `skill "Name"` — the AI must not use this skill at all.
+    Skill,
+    /// `func "Skill.fn"` — the AI must not call this specific function.
+    Func,
+}
+
+/// A single item in a `forbids {}` block.
+#[derive(Debug, Clone)]
+pub struct ForbidItem {
+    /// `Skill` or `Func`.
+    pub kind: ForbidKind,
+    /// `"Database"` for skill, `"Payment.refund"` for func.
+    pub name: String,
+    pub span: Span,
+}
+
 /// A full task declaration.
 ///
 /// ```brief
@@ -225,6 +271,10 @@ pub struct Task {
     pub extras: Option<ExtrasNode>,
     pub extras_span: Option<Span>,
     pub provides: Option<Vec<ExtrasField>>,
+    /// Prerequisites that must be met before the AI starts (`needs {}`).
+    pub needs: Vec<NeedItem>,
+    /// Capabilities the AI must never use (`forbids {}`).
+    pub forbids: Vec<ForbidItem>,
     pub step_groups: Vec<StepGroup>,
     pub steps: Vec<Step>,
     pub span: Span,

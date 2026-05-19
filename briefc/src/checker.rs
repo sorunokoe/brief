@@ -248,6 +248,163 @@ fn check_task(
             )),
         });
     }
+
+    // E420/E421: `forbids {}` block enforcement.
+    check_forbids(task, &expanded_uses, diags);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// E420 / E421 — forbids {} enforcement
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Collect all `perform Skill.fn(...)` skill names from task steps (recursive).
+fn collect_performed_skills(task: &Task) -> Vec<(String, Span)> {
+    let mut out = Vec::new();
+    for step in &task.steps {
+        for stmt in &step.body {
+            collect_performs_in_stmt(stmt, &mut out);
+        }
+    }
+    out
+}
+
+fn collect_performs_in_stmt(stmt: &Stmt, out: &mut Vec<(String, Span)>) {
+    match stmt {
+        Stmt::Let { value, .. } => collect_performs_in_expr(value, out),
+        Stmt::Expr { value, .. } => collect_performs_in_expr(value, out),
+    }
+}
+
+fn collect_performs_in_expr(expr: &Expr, out: &mut Vec<(String, Span)>) {
+    match expr {
+        Expr::Perform { skill, span, args, .. } => {
+            out.push((skill.clone(), *span));
+            for a in args { collect_performs_in_expr(a, out); }
+        }
+        Expr::Await { expr, .. } => collect_performs_in_expr(expr, out),
+        Expr::Call { args, .. } => {
+            for a in args { collect_performs_in_expr(a, out); }
+        }
+        Expr::Match { scrutinee, arms } => {
+            collect_performs_in_expr(scrutinee, out);
+            for arm in arms {
+                collect_performs_in_expr(&arm.body, out);
+            }
+        }
+        Expr::Ident { .. } | Expr::Str { .. } | Expr::Int { .. } => {}
+    }
+}
+
+/// Collect all `perform Skill.fn(...)` fully-qualified `"Skill.fn"` names.
+fn collect_performed_funcs(task: &Task) -> Vec<(String, Span)> {
+    let mut out = Vec::new();
+    for step in &task.steps {
+        for stmt in &step.body {
+            collect_func_performs_in_stmt(stmt, &mut out);
+        }
+    }
+    out
+}
+
+fn collect_func_performs_in_stmt(stmt: &Stmt, out: &mut Vec<(String, Span)>) {
+    match stmt {
+        Stmt::Let { value, .. } => collect_func_performs_in_expr(value, out),
+        Stmt::Expr { value, .. } => collect_func_performs_in_expr(value, out),
+    }
+}
+
+fn collect_func_performs_in_expr(expr: &Expr, out: &mut Vec<(String, Span)>) {
+    match expr {
+        Expr::Perform { skill, func, span, args, .. } => {
+            out.push((format!("{skill}.{func}"), *span));
+            for a in args { collect_func_performs_in_expr(a, out); }
+        }
+        Expr::Await { expr, .. } => collect_func_performs_in_expr(expr, out),
+        Expr::Call { args, .. } => {
+            for a in args { collect_func_performs_in_expr(a, out); }
+        }
+        Expr::Match { scrutinee, arms } => {
+            collect_func_performs_in_expr(scrutinee, out);
+            for arm in arms {
+                collect_func_performs_in_expr(&arm.body, out);
+            }
+        }
+        Expr::Ident { .. } | Expr::Str { .. } | Expr::Int { .. } => {}
+    }
+}
+
+/// E420/E421 checker — enforces `forbids { skill "X", func "Skill.fn" }`.
+fn check_forbids(
+    task: &Task,
+    expanded_uses: &[&str],
+    diags: &mut Vec<BriefError>,
+) {
+    if task.forbids.is_empty() { return; }
+
+    let performed_skills = collect_performed_skills(task);
+    let performed_funcs  = collect_func_performs_in_task(task);
+
+    for item in &task.forbids {
+        match item.kind {
+            ForbidKind::Skill => {
+                // E420a: forbidden skill appears directly in `uses []` (expanded).
+                if expanded_uses.contains(&item.name.as_str()) {
+                    diags.push(BriefError {
+                        code: ErrorCode::ForbiddenSkill,
+                        message: format!(
+                            "task '{}' uses skill '{}' which is explicitly forbidden",
+                            task.name, item.name
+                        ),
+                        span: item.span,
+                        hint: Some(format!(
+                            "remove '{}' from `uses []`, or remove the `forbids {{ skill \"{}\" }}` entry",
+                            item.name, item.name
+                        )),
+                    });
+                }
+                // E420b: forbidden skill is called via `perform` even if not in `uses`.
+                for (performed_skill, span) in &performed_skills {
+                    if performed_skill == &item.name {
+                        diags.push(BriefError {
+                            code: ErrorCode::ForbiddenSkill,
+                            message: format!(
+                                "task '{}' calls skill '{}' which is explicitly forbidden",
+                                task.name, item.name
+                            ),
+                            span: *span,
+                            hint: Some(format!(
+                                "remove this `perform {}.*` call, or remove the `forbids {{ skill \"{}\" }}` entry",
+                                item.name, item.name
+                            )),
+                        });
+                    }
+                }
+            }
+            ForbidKind::Func => {
+                // E421: forbidden func appears in `perform Skill.fn(...)`.
+                for (func_name, span) in &performed_funcs {
+                    if func_name == &item.name {
+                        diags.push(BriefError {
+                            code: ErrorCode::ForbiddenFunc,
+                            message: format!(
+                                "task '{}' calls '{}' which is explicitly forbidden",
+                                task.name, item.name
+                            ),
+                            span: *span,
+                            hint: Some(format!(
+                                "remove this `perform {}(...)` call, or remove the `forbids {{ func \"{}\" }}` entry",
+                                item.name, item.name
+                            )),
+                        });
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn collect_func_performs_in_task(task: &Task) -> Vec<(String, Span)> {
+    collect_performed_funcs(task)
 }
 
 fn type_ref_str(ty: &TypeRef) -> String {
@@ -2616,3 +2773,112 @@ task Pay : TaskBrief uses [Payment] { goal = "charge" }
         );
     }
 }
+
+    // ── E420 / E421 forbids tests ────────────────────────────────────────
+
+    fn check_source_no_ctx(source: &str) -> Vec<BriefError> {
+        use crate::lexer::lex;
+        use crate::parser::parse;
+        let (tokens, _) = lex(source);
+        let (program, _) = parse(&tokens, source);
+        let ctx = CheckContext {
+            file_dir: std::path::Path::new("."),
+            cwd: std::path::Path::new("."),
+            manifest: None,
+            brief_path: None,
+            allow_missing_skills: true,
+        };
+        check(&program, &ctx)
+    }
+
+    #[test]
+    fn e420_forbidden_skill_in_uses() {
+        let src = r#"
+import skill "Database"
+import skill "Cart"
+
+task Checkout : TaskBrief uses [Database, Cart] {
+    goal = "checkout"
+    forbids { skill "Database" }
+    step Run {
+        let _ = perform Cart.addItem("x")
+    }
+}
+"#;
+        let diags = check_source_no_ctx(src);
+        let e420: Vec<_> = diags.iter().filter(|d| d.code == ErrorCode::ForbiddenSkill).collect();
+        assert!(!e420.is_empty(), "expected E420 for forbidden skill in uses[]");
+    }
+
+    #[test]
+    fn e420_forbidden_skill_in_perform() {
+        let src = r#"
+import skill "Database"
+import skill "Cart"
+
+task Checkout : TaskBrief uses [Cart] {
+    goal = "checkout"
+    forbids { skill "Database" }
+    step Run {
+        let _ = perform Database.query("sql")
+    }
+}
+"#;
+        let diags = check_source_no_ctx(src);
+        let e420: Vec<_> = diags.iter().filter(|d| d.code == ErrorCode::ForbiddenSkill).collect();
+        assert!(!e420.is_empty(), "expected E420 for forbidden skill in perform call");
+    }
+
+    #[test]
+    fn e420_no_error_when_skill_not_used() {
+        let src = r#"
+import skill "Cart"
+
+task Checkout : TaskBrief uses [Cart] {
+    goal = "checkout"
+    forbids { skill "Database" }
+    step Run {
+        let _ = perform Cart.addItem("x")
+    }
+}
+"#;
+        let diags = check_source_no_ctx(src);
+        let e420: Vec<_> = diags.iter().filter(|d| d.code == ErrorCode::ForbiddenSkill).collect();
+        assert!(e420.is_empty(), "no E420 when forbidden skill is not actually used");
+    }
+
+    #[test]
+    fn e421_forbidden_func_in_perform() {
+        let src = r#"
+import skill "Payment"
+
+task Checkout : TaskBrief uses [Payment] {
+    goal = "charge customer"
+    forbids { func "Payment.refund" }
+    step Charge {
+        let _ = perform Payment.refund("user")
+    }
+}
+"#;
+        let diags = check_source_no_ctx(src);
+        let e421: Vec<_> = diags.iter().filter(|d| d.code == ErrorCode::ForbiddenFunc).collect();
+        assert!(!e421.is_empty(), "expected E421 for forbidden func");
+    }
+
+    #[test]
+    fn e421_no_error_for_allowed_func() {
+        let src = r#"
+import skill "Payment"
+
+task Checkout : TaskBrief uses [Payment] {
+    goal = "charge customer"
+    forbids { func "Payment.refund" }
+    step Charge {
+        let _ = perform Payment.charge("user")
+    }
+}
+"#;
+        let diags = check_source_no_ctx(src);
+        let e421: Vec<_> = diags.iter().filter(|d| d.code == ErrorCode::ForbiddenFunc).collect();
+        assert!(e421.is_empty(), "no E421 when only allowed func is called");
+    }

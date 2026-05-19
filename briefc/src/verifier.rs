@@ -522,3 +522,16 @@ fn call_mcp_http(base_url: &str, annotation: &str, value: &str, context: Value) 
         Err(e) => VerificationResult::fail(&e.to_string()),
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Built-in verifiers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `builtin:env` — verifies that an environment variable is set and non-empty.
+pub fn builtin_env(var_name: &str) -> VerificationResult {
+    match std::env::var(var_name) {
+        Ok(v) if !v.is_empty() => VerificationResult::ok(),
+        Ok(_) => VerificationResult::fail(&format!("env var '{var_name}' is set but empty")),
+        Err(_) => VerificationResult::fail(&format!("env var '{var_name}' is not set")),
+    }
+}

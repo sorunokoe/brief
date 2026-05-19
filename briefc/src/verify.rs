@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use colored::Colorize;
 use serde_json::json;
 
-use crate::ast::{Expr, Program};
+use crate::ast::{Expr, NeedKind, Program};
 use crate::checker;
 use crate::lexer::lex;
 use crate::lock::{self, LockFile, LockMeta, VerificationResult as LockEntry, VerifyStatus, now_rfc3339, sha256_file_hash};
@@ -80,18 +80,30 @@ pub fn run_verify(path: &Path) -> bool {
         return false;
     }
 
+    // ── 3b. Needs verification (E411) ─────────────────────────────────────
+    // Verify `needs { env "VAR", feature "FLAG" }` prerequisites.
+    let (needs_ok, needs_results) = verify_needs(&program, mf.as_ref());
+    if !needs_ok {
+        eprintln!();
+        eprintln!("{} Prerequisites not met — fix the above errors before re-running `brief verify`.",
+            "✗".red().bold());
+        return false;
+    }
+
     // ── 4. Collect verification obligations ───────────────────────────────
     let obligations = collect_obligations(&program, &ifaces);
 
     if obligations.is_empty() && capabilities.is_empty() {
         println!("{} No dynamic annotations to verify.", "✅".green().bold());
-        write_lock_with_caps(path, HashMap::new(), capabilities, skill_hashes);
+        let mut all_verified = needs_results;
+        write_lock_with_caps(path, all_verified, capabilities, skill_hashes);
         return true;
     }
 
     if obligations.is_empty() {
         // Capabilities verified; no annotation obligations — write lock and done.
-        write_lock_with_caps(path, HashMap::new(), capabilities, skill_hashes);
+        let all_verified = needs_results;
+        write_lock_with_caps(path, all_verified, capabilities, skill_hashes);
         return true;
     }
 
@@ -176,15 +188,79 @@ pub fn run_verify(path: &Path) -> bool {
     }
 
     // ── 7. Write .brief.lock ──────────────────────────────────────────────
-    write_lock_with_caps(path, verified, capabilities, skill_hashes)
+    let mut all_verified = needs_results;
+    all_verified.extend(verified);
+    write_lock_with_caps(path, all_verified, capabilities, skill_hashes)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Verify `needs { env "VAR", feature "FLAG" }` prerequisites across all tasks.
+///
+/// Returns `(all_ok, results_for_lock)`.
+/// - `env "X"` → checked via `builtin_env` (no config needed)
+/// - `feature "F"` / `config "K"` → routed to `[verifiers.feature]` / `[verifiers.config]`
+///   from `brief.toml`; if no verifier configured, this is an error (not a warning)
+fn verify_needs(
+    program:  &Program,
+    manifest: Option<&BriefManifest>,
+) -> (bool, HashMap<String, LockEntry>) {
+    let mut results = HashMap::new();
+    let mut any_fail = false;
+
+    for task in &program.tasks {
+        if task.needs.is_empty() { continue; }
+
+        println!("{} Verifying prerequisites for task '{}'...", "●".blue().bold(), task.name);
+
+        for need in &task.needs {
+            let kind_str = match need.kind {
+                NeedKind::Env     => "env",
+                NeedKind::Feature => "feature",
+                NeedKind::Config  => "config",
+            };
+            let lock_key = format!("needs:{kind_str}:{}", need.key);
+
+            // Deduplicate: skip if already checked.
+            if results.contains_key(&lock_key) { continue; }
+
+            print!("  {} {kind_str} {}... ", "→".dimmed(), need.key.cyan());
+
+            let result = match need.kind {
+                NeedKind::Env => verifier::builtin_env(&need.key),
+                NeedKind::Feature | NeedKind::Config => {
+                    match manifest.and_then(|m| m.verifiers.get(kind_str)) {
+                        Some(cfg) => verifier::dispatch(cfg, kind_str, &need.key, json!({})),
+                        None => verifier::VerificationResult::fail(&format!(
+                            "no verifier configured for '{kind_str}' in brief.toml \
+                             — add [verifiers.{kind_str}] to brief.toml"
+                        )),
+                    }
+                }
+            };
+
+            match &result.status {
+                VerifyStatus::Ok => {
+                    println!("{}", "ok".green().bold());
+                    results.insert(lock_key, LockEntry { status: VerifyStatus::Ok, message: result.message });
+                }
+                VerifyStatus::Fail => {
+                    let msg = result.message.as_deref().unwrap_or("failed");
+                    println!("{} {}", "fail".red().bold(), msg.dimmed());
+                    results.insert(lock_key, LockEntry { status: VerifyStatus::Fail, message: result.message });
+                    any_fail = true;
+                }
+            }
+        }
+    }
+
+    (!any_fail, results)
+}
+
 /// Write the `.brief.lock` file with annotation results, capability results, and skill hashes.
 fn write_lock_with_caps(
-    brief_path:  &Path,
-    verified:    HashMap<String, LockEntry>,
+    brief_path:   &Path,
+    verified:     HashMap<String, LockEntry>,
     capabilities: HashMap<String, LockEntry>,
     skill_hashes: HashMap<String, String>,
 ) -> bool {

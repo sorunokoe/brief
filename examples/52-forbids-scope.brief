@@ -1,0 +1,39 @@
+// Example 52 — forbids {} block: defining scope boundaries for the AI
+//
+// `brief check` enforces forbids statically (E420/E421).
+// `brief serve` enforces forbids at runtime — forbidden tools are
+// completely hidden from the AI's tools/list.
+//
+// Use case: the checkout flow must only charge, never refund.
+// The AI cannot even see Payment.refund in its tool list.
+
+import skill "Cart"
+import skill "Payment"
+import skill "Order"
+
+task CheckoutFlow : TaskBrief uses [Cart, Payment, Order] {
+    goal = "Complete a purchase: validate cart, charge payment, confirm order"
+
+    forbids {
+        skill "Database"          // use Cart abstraction, not raw DB access
+        skill "Auth"              // checkout uses the existing session — no re-auth
+        func "Payment.refund"     // checkout only charges; refunds are a separate task
+        func "Payment.cancel"     // same — cancellations go through CancellationFlow
+    }
+
+    step ValidateCart {
+        let cart = perform Cart.getActive(userId)?
+    }
+
+    step Charge {
+        @once let receipt = perform Payment.charge(cart.total)?
+    }
+
+    step ConfirmOrder {
+        perform Order.create(cart, receipt)?
+    }
+}
+
+// If you add `perform Payment.refund(...)` here, brief check will emit:
+//   error[E421]: task 'CheckoutFlow' calls 'Payment.refund' which is explicitly forbidden
+//   fix: remove this perform Payment.refund(...) call, or remove the forbids { func "Payment.refund" } entry

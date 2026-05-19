@@ -1,0 +1,38 @@
+// Example 51 — needs {} block: verifying prerequisites before AI starts
+//
+// `brief verify` checks every `needs {}` entry before writing the lock.
+// `brief serve` re-checks `env` entries at startup.
+//
+// Use case: the AI must not start until all required env vars and feature flags
+// are confirmed to exist. No more "it worked on my machine" failures.
+
+import skill "GraphQL"
+import skill "Storage"
+import skill "FeatureFlags"
+
+task SyncUserProfile : TaskBrief uses [GraphQL, Storage] {
+    goal = "Sync the authenticated user's profile data to the storage layer"
+
+    needs {
+        env "GRAPHQL_ENDPOINT"       // API endpoint must be configured
+        env "STORAGE_API_TOKEN"      // storage auth token must be present
+        feature "profile_v2"         // new profile schema must be enabled
+        config "sync_interval_secs"  // sync interval must be configured
+    }
+
+    step FetchProfile {
+        let profile = perform GraphQL.query(UserProfileQuery)?
+    }
+
+    step StoreProfile {
+        perform Storage.save(profile)?
+    }
+}
+
+// brief.toml needed for feature/config verifiers:
+//
+// [verifiers.feature]
+// mcp_command = ["npx", "@myapp/feature-verifier"]
+//
+// [verifiers.config]
+// mcp_url = "http://config-server:8080/mcp"

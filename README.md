@@ -168,6 +168,51 @@ Each skill includes: `.briefskill` interface, `README.md`, and a `.brief` exampl
 - **Test blocks** — spec coverage checking (E301/E302)
 - **Result propagation** — `perform Skill.fn()?`
 - **Lock gate** — E303 if `.brief.lock` missing when dynamic annotations present
+- **`needs {}` block** — declare env vars, feature flags, and config keys that must exist before the AI starts; checked by `brief verify` and re-checked by `brief serve` at startup
+- **`forbids {}` block** — declare skills and functions the AI must never use; enforced statically by `brief check` (E420/E421) and at runtime by `brief serve` (forbidden tools are hidden from `tools/list`)
+
+## The Mise en Place Guarantee
+
+Brief is a preflight system for AI agents. Before the AI touches a single line of code, all ingredients are confirmed to exist, be accessible, and be correct:
+
+```brief
+task CheckoutFlow : TaskBrief uses [Cart, Payment, Order] {
+    goal = "Complete a purchase"
+
+    needs {
+        env "PAYMENT_API_KEY"    // must be set before AI starts
+        feature "checkout_v2"    // feature flag must be enabled
+    }
+
+    forbids {
+        skill "Database"         // use Cart abstraction, not raw DB
+        func "Payment.refund"    // checkout only charges, never refunds
+    }
+
+    step Charge {
+        @once let receipt = perform Payment.charge(cart.total)?
+    }
+}
+```
+
+- `brief check` — E420 if `Database` appears in `uses []` or any `perform`; E421 if `Payment.refund` is called
+- `brief verify` — E411 if `PAYMENT_API_KEY` is unset or `checkout_v2` feature is disabled
+- `brief serve` — `Payment.refund` and all `Database.*` tools are hidden from the AI's `tools/list`
+
+## Error Codes
+
+| Code | Where | Description |
+|------|-------|-------------|
+| E107 | check | Missing `.briefskill` interface file |
+| E301 | check | `@range` boundary literal missing in test block |
+| E302 | check | `@enum` value literal missing in test block |
+| E303 | check | `.brief.lock` missing/stale/source-changed |
+| E309 | check | Dynamic annotation has no configured verifier |
+| E401 | verify | Skill function not found in live MCP server (`tools/list`) |
+| E402 | verify | Skill MCP server unreachable |
+| E411 | verify | `needs {}` prerequisite not met |
+| E420 | check | `forbids { skill "X" }` — forbidden skill used |
+| E421 | check | `forbids { func "Skill.fn" }` — forbidden function called |
 
 ## Roadmap
 
@@ -182,6 +227,8 @@ Each skill includes: `.briefskill` interface, `README.md`, and a `.brief` exampl
 - ✅ `brief test --live` — empirical type validation against real MCP servers
 - ✅ `brief gen` — LLM generation with compiler feedback loop
 - ✅ `brief skillgen` — LLM annotation extraction
+- ✅ **`needs {}` block** — prerequisite verification (env, feature, config)
+- ✅ **`forbids {}` block** — scope boundaries enforced statically and at runtime
 - 🔧 LLVM/WASM backend
 - 🔧 npm verifier packages (`@brief/local-path-verifier`, etc.)
 

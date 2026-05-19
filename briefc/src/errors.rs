@@ -45,6 +45,12 @@ pub enum ErrorCode {
     // ── Phase 2: verifier protocol errors ────────────────────────────────
     /// Dynamic annotation has no configured verifier in `brief.toml` (E309)
     UnconfiguredVerifier,
+    /// Required env/feature/config prerequisite not met at verify time (E411)
+    NeedNotMet,
+    /// `forbids { skill "X" }` — task uses a skill that is explicitly forbidden (E420)
+    ForbiddenSkill,
+    /// `forbids { func "Skill.fn" }` — task calls a function that is explicitly forbidden (E421)
+    ForbiddenFunc,
     // ── Warnings ──────────────────────────────────────────────────────────
     /// Missing `.briefskill` file — suppress with `--allow-missing-skills` (E107)
     MissingSkillInterface,
@@ -84,6 +90,9 @@ impl fmt::Display for ErrorCode {
             ErrorCode::EnumValueMissing => "E302",
             ErrorCode::LockRequired => "E303",
             ErrorCode::UnconfiguredVerifier => "E309",
+            ErrorCode::NeedNotMet => "E411",
+            ErrorCode::ForbiddenSkill => "E420",
+            ErrorCode::ForbiddenFunc => "E421",
             ErrorCode::MissingSkillInterface => "E107",
             ErrorCode::StaleSkillInterface => "W102",
             ErrorCode::DeprecatedStringExtras => "W103",
@@ -115,6 +124,9 @@ impl ErrorCode {
                 | ErrorCode::EnumValueMissing
                 | ErrorCode::LockRequired
                 | ErrorCode::UnconfiguredVerifier
+                | ErrorCode::NeedNotMet
+                | ErrorCode::ForbiddenSkill
+                | ErrorCode::ForbiddenFunc
                 | ErrorCode::MissingSkillInterface
         )
     }

@@ -875,6 +875,8 @@ impl<'a> Parser<'a> {
         let mut extras = None;
         let mut extras_span = None;
         let mut provides = None;
+        let mut needs: Vec<crate::ast::NeedItem> = Vec::new();
+        let mut forbids: Vec<crate::ast::ForbidItem> = Vec::new();
         let mut step_groups = Vec::new();
         let mut steps = Vec::new();
 
@@ -939,6 +941,16 @@ impl<'a> Parser<'a> {
                         }
                     }
                 }
+                Some(Token::Ident(ref s)) if s == "needs" => {
+                    self.advance();
+                    let parsed = self.parse_needs_block();
+                    needs.extend(parsed);
+                }
+                Some(Token::Ident(ref s)) if s == "forbids" => {
+                    self.advance();
+                    let parsed = self.parse_forbids_block();
+                    forbids.extend(parsed);
+                }
                 Some(Token::Ident(ref s)) if s == "parallel" => {
                     if let Some(group) = self.parse_parallel_group() {
                         step_groups.push(group);
@@ -966,7 +978,7 @@ impl<'a> Parser<'a> {
                         code: ErrorCode::ParseError,
                         message: format!("unexpected token `{got:?}` inside task body"),
                         span,
-                        hint: Some("expected `goal`, `effects`, `extras`, `provides`, `parallel`, `retry`, `fallback`, or `step`".to_string()),
+                        hint: Some("expected `goal`, `effects`, `extras`, `provides`, `needs`, `forbids`, `parallel`, `retry`, `fallback`, or `step`".to_string()),
                     });
                     self.advance();
                 }
@@ -989,10 +1001,80 @@ impl<'a> Parser<'a> {
             extras,
             extras_span,
             provides,
+            needs,
+            forbids,
             step_groups,
             steps,
             span: Span::new(start, end),
         })
+    }
+
+    // ── needs { env "VAR" feature "FLAG" } ───────────────────────────────
+
+    fn parse_needs_block(&mut self) -> Vec<crate::ast::NeedItem> {
+        use crate::ast::{NeedItem, NeedKind};
+        let mut items = Vec::new();
+        if self.expect(&Token::LBrace).is_none() {
+            return items;
+        }
+        while self.peek() != Some(&Token::RBrace) && !self.at_end() {
+            let span = self.current_span();
+            match self.peek().cloned() {
+                Some(Token::Ident(ref s)) if s == "env" => {
+                    self.advance();
+                    if let Some((key, _)) = self.expect_str() {
+                        items.push(NeedItem { kind: NeedKind::Env, key, span });
+                    }
+                }
+                Some(Token::Ident(ref s)) if s == "feature" => {
+                    self.advance();
+                    if let Some((key, _)) = self.expect_str() {
+                        items.push(NeedItem { kind: NeedKind::Feature, key, span });
+                    }
+                }
+                Some(Token::Ident(ref s)) if s == "config" => {
+                    self.advance();
+                    if let Some((key, _)) = self.expect_str() {
+                        items.push(NeedItem { kind: NeedKind::Config, key, span });
+                    }
+                }
+                _ => { self.advance(); }
+            }
+            if self.peek() == Some(&Token::Comma) { self.advance(); }
+        }
+        self.expect(&Token::RBrace);
+        items
+    }
+
+    // ── forbids { skill "X" func "Skill.fn" } ────────────────────────────
+
+    fn parse_forbids_block(&mut self) -> Vec<crate::ast::ForbidItem> {
+        use crate::ast::{ForbidItem, ForbidKind};
+        let mut items = Vec::new();
+        if self.expect(&Token::LBrace).is_none() {
+            return items;
+        }
+        while self.peek() != Some(&Token::RBrace) && !self.at_end() {
+            let span = self.current_span();
+            match self.peek().cloned() {
+                Some(Token::Skill) => {
+                    self.advance();
+                    if let Some((name, _)) = self.expect_str() {
+                        items.push(ForbidItem { kind: ForbidKind::Skill, name, span });
+                    }
+                }
+                Some(Token::Ident(ref s)) if s == "func" => {
+                    self.advance();
+                    if let Some((name, _)) = self.expect_str() {
+                        items.push(ForbidItem { kind: ForbidKind::Func, name, span });
+                    }
+                }
+                _ => { self.advance(); }
+            }
+            if self.peek() == Some(&Token::Comma) { self.advance(); }
+        }
+        self.expect(&Token::RBrace);
+        items
     }
 
     // ── extras = ["key": "value", ...] ───────────────────────────────────

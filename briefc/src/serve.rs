@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use colored::Colorize;
 use serde_json::{json, Value};
 
-use crate::ast::Program;
+use crate::ast::{ForbidKind, NeedKind, Program};
 use crate::checker::{self, CheckContext};
 use crate::lexer::lex;
 use crate::lock::{self, LockState};
@@ -34,6 +34,7 @@ use crate::manifest;
 use crate::mcp_schema;
 use crate::parser::parse;
 use crate::skillgen::{parse_briefskill, SkillInterface};
+use crate::verifier;
 
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -117,6 +118,15 @@ pub fn run_serve(path: &Path) -> bool {
 
     let ifaces = load_ifaces_for_uses(&program, &ctx);
 
+    // ── 4b. Collect forbidden skills/funcs from all tasks ──────────────────
+    let (forbidden_skills, forbidden_funcs) = collect_forbidden(&program);
+
+    // ── 4c. Re-check env needs at startup ──────────────────────────────────
+    // Env vars may differ between `brief verify` time and `brief serve` time.
+    if !check_env_needs_at_startup(&program) {
+        return false;
+    }
+
     // Build a flat map: "SkillName.fnName" → SkillName for routing.
     let mut tool_to_skill: HashMap<String, String> = HashMap::new();
     for (skill_name, iface) in &ifaces {
@@ -140,6 +150,11 @@ pub fn run_serve(path: &Path) -> bool {
     eprintln!("{} Skills: {}", "  ↳".dimmed(),
         ifaces.keys().cloned().collect::<Vec<_>>().join(", ")
     );
+    if !forbidden_skills.is_empty() || !forbidden_funcs.is_empty() {
+        eprintln!("{} Forbidden: {} skill(s), {} func(s)",
+            "  ↳".dimmed(), forbidden_skills.len(), forbidden_funcs.len()
+        );
+    }
 
     let stdin  = io::stdin();
     let stdout = io::stdout();
@@ -182,7 +197,7 @@ pub fn run_serve(path: &Path) -> bool {
             }
 
             "tools/list" => {
-                let tools = build_tools_list(&ifaces);
+                let tools = build_tools_list(&ifaces, &forbidden_skills, &forbidden_funcs);
                 let resp = json_response(id, json!({ "tools": tools }));
                 send_line(&mut out, &resp);
             }
@@ -191,6 +206,14 @@ pub fn run_serve(path: &Path) -> bool {
                 let params     = &msg["params"];
                 let tool_name  = params["name"].as_str().unwrap_or("");
                 let arguments  = params["arguments"].clone();
+
+                // Enforce forbids before routing.
+                if is_tool_forbidden(tool_name, &forbidden_skills, &forbidden_funcs) {
+                    let err = json_error(id, -32603,
+                        &format!("Tool '{tool_name}' is explicitly forbidden by the task contract"));
+                    send_line(&mut out, &err);
+                    continue;
+                }
 
                 // Resolve skill from tool name.
                 let skill_name = tool_to_skill.get(tool_name)
@@ -266,13 +289,25 @@ pub fn run_serve(path: &Path) -> bool {
 // ─────────────────────────────────────────────────────────────────────────────
 // Tool list generation
 
-fn build_tools_list(ifaces: &HashMap<String, SkillInterface>) -> Vec<Value> {
+fn build_tools_list(
+    ifaces: &HashMap<String, SkillInterface>,
+    forbidden_skills: &HashSet<String>,
+    forbidden_funcs:  &HashSet<String>,
+) -> Vec<Value> {
     let mut all_tools = Vec::new();
     for (skill_name, iface) in ifaces {
+        // Skip entire skill if it's forbidden.
+        if forbidden_skills.contains(skill_name) { continue; }
         let tools = mcp_schema::interface_to_mcp_tools(skill_name, iface);
         let json_tools = mcp_schema::tools_to_json(&tools);
         if let Some(arr) = json_tools.as_array() {
-            all_tools.extend(arr.iter().cloned());
+            for tool in arr {
+                // Skip individual forbidden functions.
+                let tool_name = tool["name"].as_str().unwrap_or("");
+                if !is_tool_forbidden(tool_name, forbidden_skills, forbidden_funcs) {
+                    all_tools.push(tool.clone());
+                }
+            }
         }
     }
     all_tools
@@ -507,4 +542,75 @@ fn send_line(out: &mut impl Write, msg: &Value) {
 fn write_jsonrpc(w: &mut impl Write, msg: &Value) -> std::io::Result<()> {
     let s = serde_json::to_string(msg).unwrap_or_else(|_| "{}".to_string());
     writeln!(w, "{s}")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Forbidden tool helpers
+
+/// Collect forbidden skill names and func tool names from all tasks.
+fn collect_forbidden(program: &Program) -> (HashSet<String>, HashSet<String>) {
+    let mut skills: HashSet<String> = HashSet::new();
+    let mut funcs:  HashSet<String> = HashSet::new();
+    for task in &program.tasks {
+        for item in &task.forbids {
+            match item.kind {
+                ForbidKind::Skill => { skills.insert(item.name.clone()); }
+                ForbidKind::Func  => {
+                    // "Payment.refund" → "Payment__refund" (MCP tool name format)
+                    let mcp_name = item.name.replacen('.', "__", 1);
+                    funcs.insert(mcp_name);
+                    // Also store the dot form for tools/call that use dot format.
+                    funcs.insert(item.name.clone());
+                }
+            }
+        }
+    }
+    (skills, funcs)
+}
+
+/// Returns `true` if `tool_name` is forbidden by the contract.
+///
+/// Tool names may arrive as `"Payment__refund"` or `"Payment.refund"`.
+fn is_tool_forbidden(
+    tool_name:        &str,
+    forbidden_skills: &HashSet<String>,
+    forbidden_funcs:  &HashSet<String>,
+) -> bool {
+    // Check if the whole skill is forbidden (tool_name starts with "Skill__")
+    if let Some((skill, _)) = tool_name.split_once("__") {
+        if forbidden_skills.contains(skill) { return true; }
+    }
+    // Check by dot-qualified name (e.g. from tools/call "name" field).
+    if let Some((skill, _)) = tool_name.split_once('.') {
+        if forbidden_skills.contains(skill) { return true; }
+    }
+    // Check specific func prohibition.
+    forbidden_funcs.contains(tool_name)
+}
+
+/// Re-check `needs { env "VAR" }` at `brief serve` startup.
+///
+/// Env vars may have changed since `brief verify` was run.
+/// Returns `true` if all env prerequisites are met, `false` (+ error message) otherwise.
+fn check_env_needs_at_startup(program: &Program) -> bool {
+    let mut all_ok = true;
+    for task in &program.tasks {
+        for need in &task.needs {
+            if need.kind != NeedKind::Env { continue; }
+            let result = verifier::builtin_env(&need.key);
+            if !result.is_ok() {
+                eprintln!("{}: needs {{ env \"{}\" }} — {}",
+                    "error".red().bold(), need.key,
+                    result.message.as_deref().unwrap_or("not set")
+                );
+                all_ok = false;
+            }
+        }
+    }
+    if !all_ok {
+        eprintln!();
+        eprintln!("{} Prerequisites not met. Set the required env vars and run `brief serve` again.",
+            "✗".red().bold());
+    }
+    all_ok
 }
