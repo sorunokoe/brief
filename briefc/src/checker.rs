@@ -13,6 +13,7 @@ use crate::ast::*;
 use crate::errors::{BriefError, ErrorCode};
 use crate::lock::{check_lock, lock_path, read_lock, LockState};
 use crate::manifest::BriefManifest;
+use crate::skill_loader::{load_skill, requires_abi_verification, SkillLoadError};
 use crate::skillgen::{parse_briefskill, SkillInterface, StaticConstraint};
 use crate::typeck::TypeEnv;
 
@@ -79,8 +80,9 @@ pub fn check(program: &Program, ctx: &CheckContext<'_>) -> Vec<BriefError> {
         check_type_alias(alias, &mut diags);
     }
 
-    let skill_ifaces = load_skill_interfaces(program, ctx);
     let type_env = TypeEnv::from_program(program);
+    let known_skill_types = collect_known_skill_types(program);
+    let skill_ifaces = load_skill_interfaces(program, ctx, &known_skill_types, &mut diags);
 
     // 4. Validate each task (with group expansion and linear binding tracking).
     for task in &program.tasks {
@@ -107,10 +109,141 @@ pub fn check(program: &Program, ctx: &CheckContext<'_>) -> Vec<BriefError> {
     // 7. E309: dynamic annotations without a configured verifier.
     check_unconfigured_verifiers(program, &skill_ifaces, ctx, &mut diags);
 
+    // 8. W105: opaque types declared but never referenced.
+    warn_unused_opaque_types(program, &mut diags);
+
     diags
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+
+fn collect_known_skill_types(program: &Program) -> HashSet<String> {
+    let mut known = HashSet::new();
+    for opaque in &program.opaque_types {
+        known.insert(opaque.name.clone());
+    }
+    for sealed in &program.types {
+        known.insert(sealed.name.clone());
+    }
+    known
+}
+
+fn warn_unused_opaque_types(program: &Program, diags: &mut Vec<BriefError>) {
+    let mut used = HashSet::new();
+
+    for alias in &program.type_aliases {
+        collect_opaque_type_usage(&alias.base, &mut used);
+    }
+    for sealed in &program.types {
+        for variant in &sealed.variants {
+            for field in &variant.fields {
+                collect_opaque_type_usage(field, &mut used);
+            }
+        }
+    }
+    for strukt in &program.structs {
+        for field in &strukt.fields {
+            collect_opaque_type_usage(&field.ty, &mut used);
+        }
+    }
+    for protocol in &program.protocols {
+        for method in &protocol.methods {
+            collect_fn_sig_opaque_usage(method, &mut used);
+        }
+    }
+    for effect in &program.effects {
+        for function in &effect.fns {
+            collect_fn_sig_opaque_usage(function, &mut used);
+        }
+    }
+    for task in &program.tasks {
+        if let Some(ExtrasNode::TypedRecord(fields)) = &task.extras {
+            for field in fields {
+                collect_opaque_type_usage(&field.type_ref, &mut used);
+            }
+        }
+        if let Some(fields) = &task.provides {
+            for field in fields {
+                collect_opaque_type_usage(&field.type_ref, &mut used);
+            }
+        }
+    }
+
+    for opaque in &program.opaque_types {
+        if used.contains(&opaque.name) {
+            continue;
+        }
+        diags.push(BriefError {
+            code: ErrorCode::OpaqueTypeUnused,
+            message: format!("opaque type '{}' is declared but never used", opaque.name),
+            span: opaque.span,
+            hint: Some(format!(
+                "reference '{}' in a sealed type, effect signature, or task extras",
+                opaque.name
+            )),
+        });
+    }
+}
+
+fn collect_fn_sig_opaque_usage(sig: &FnSignature, used: &mut HashSet<String>) {
+    for param in &sig.params {
+        collect_opaque_type_usage(&param.ty, used);
+    }
+    collect_opaque_type_usage(&sig.ret, used);
+}
+
+fn collect_opaque_type_usage(ty: &TypeRef, used: &mut HashSet<String>) {
+    used.insert(ty.name.clone());
+    for arg in &ty.args {
+        collect_opaque_type_usage(arg, used);
+    }
+}
+
+fn skill_load_error_to_diag(import: &SkillImport, span: Span, err: SkillLoadError) -> BriefError {
+    match err {
+        SkillLoadError::FileNotFound(_) => BriefError {
+            code: ErrorCode::MissingSkillInterface,
+            message: format!("skill '{}' has no interface file", import.name),
+            span,
+            hint: Some(format!(
+                "{} not found — run: brief skillgen .claude/skills/{}/",
+                skill_interface_path_display(&import.name),
+                import.name
+            )),
+        },
+        SkillLoadError::AbiVersionMismatch { expected, found } => BriefError {
+            code: ErrorCode::SkillAbiVersionMismatch,
+            message: format!(
+                "skill '{}' requires ABI version '{}', found '{}'",
+                import.name, expected, found
+            ),
+            span,
+            hint: Some(format!(
+                "update {} to declare // abi_version: \"{}\"",
+                skill_interface_path_display(&import.name),
+                expected
+            )),
+        },
+        SkillLoadError::UnknownType { fn_name, type_name } => BriefError {
+            code: ErrorCode::SkillAbiUnknownType,
+            message: format!(
+                "skill '{}' fn '{}' references unknown type '{}'",
+                import.name, fn_name, type_name
+            ),
+            span,
+            hint: Some(format!(
+                "declare '{}' as an opaque or sealed type in the .briefskill interface",
+                type_name
+            )),
+        },
+        SkillLoadError::ParseError(msg) => BriefError {
+            code: ErrorCode::ParseError,
+            message: format!("failed to parse skill '{}': {}", import.name, msg),
+            span,
+            hint: None,
+        },
+    }
+}
 
 fn check_skill_import(import: &SkillImport, ctx: &CheckContext<'_>, diags: &mut Vec<BriefError>) {
     if find_skill_interface(&import.name, ctx).is_none() {
@@ -840,7 +973,27 @@ fn check_expr_semantics(
                 diags,
             );
         }
-        Expr::Call { args, .. } => {
+        Expr::Call { receiver, func, args, span } => {
+            if args.is_empty() {
+                if let Some(receiver) = receiver {
+                    if let Some(receiver_ty) = locals.get(receiver) {
+                        if env.is_opaque_type(&receiver_ty.name) {
+                            diags.push(BriefError {
+                                code: ErrorCode::OpaqueTypeFieldAccess,
+                                message: format!(
+                                    "field access on opaque type '{}'",
+                                    receiver_ty.name
+                                ),
+                                span: *span,
+                                hint: Some(format!(
+                                    "opaque type '{}' may only be passed around, not dereferenced via '.{}'",
+                                    receiver_ty.name, func
+                                )),
+                            });
+                        }
+                    }
+                }
+            }
             for arg in args {
                 check_expr_semantics(
                     arg,
@@ -1052,11 +1205,19 @@ fn skill_interface_path_display(name: &str) -> String {
 fn load_skill_interfaces(
     program: &Program,
     ctx: &CheckContext<'_>,
+    known_types: &HashSet<String>,
+    diags: &mut Vec<BriefError>,
 ) -> HashMap<String, SkillInterface> {
     let mut map = HashMap::new();
     for import in &program.imports {
         if let Some(path) = find_skill_interface(&import.name, ctx) {
             if let Ok(content) = std::fs::read_to_string(&path) {
+                if requires_abi_verification(&content) {
+                    if let Err(err) = load_skill(&path, known_types) {
+                        diags.push(skill_load_error_to_diag(import, import.span, err));
+                        continue;
+                    }
+                }
                 if let Some(iface) = parse_briefskill(&content) {
                     map.insert(import.name.clone(), iface);
                 }
@@ -1524,6 +1685,84 @@ mod tests {
     fn no_errors_on_minimal_task() {
         let diags = check_src(r#"task Hello : TaskBrief { goal = "hi" }"#);
         assert!(diags.iter().all(|d| !d.is_error()), "{diags:?}");
+    }
+
+    #[test]
+    fn test_opaque_type_accepted_as_return() {
+        let diags = check_all_src(
+            r#"
+            opaque type TokenStream
+            effect Lexer { fn tokenize(source: String) -> TokenStream }
+            task Lex : TaskBrief { goal = "lex" }
+        "#,
+        );
+        let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    }
+
+    #[test]
+    fn test_opaque_type_accepted_as_arg() {
+        let diags = check_all_src(
+            r#"
+            opaque type TokenStream
+            effect Lexer { fn classify(tokens: TokenStream) -> Bool }
+            task Lex : TaskBrief { goal = "classify" }
+        "#,
+        );
+        let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    }
+
+    #[test]
+    fn test_opaque_type_in_sealed_variant() {
+        let diags = check_all_src(
+            r#"
+            opaque type TokenStream
+            opaque type DiagnosticSet
+            sealed type LexOutcome = Lexed(TokenStream) | LexFailed(DiagnosticSet)
+            task Lex : TaskBrief { goal = "lex" }
+        "#,
+        );
+        let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    }
+
+    #[test]
+    fn test_opaque_type_field_access_rejected() {
+        let diags = check_src(
+            r#"
+            opaque type TokenStream
+            task Lex : TaskBrief {
+                goal = "inspect"
+                extras { tokens: TokenStream }
+                step Run {
+                    let field = tokens.count;
+                }
+            }
+        "#,
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == ErrorCode::OpaqueTypeFieldAccess),
+            "expected E211: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn opaque_type_unused_emits_warning() {
+        let diags = check_src(
+            r#"
+            opaque type TokenStream
+            task Lex : TaskBrief { goal = "lex" }
+        "#,
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == ErrorCode::OpaqueTypeUnused && d.is_warning()),
+            "expected W105: {diags:?}"
+        );
     }
 
     #[test]

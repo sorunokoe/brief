@@ -1,0 +1,24 @@
+// Auto-generated skill interface for Stage 1 Mediated Self-Description
+// abi_version: "1.0"
+// Source: briefc/src/fmt.rs
+// Regenerate: brief skillgen compiler/skills/FormatterPrimitives/
+
+interface FormatterPrimitives {
+    opaque type Ast
+    opaque type DiagnosticSet
+    
+    // FormatRecovered means formatting succeeded but comment trivia was lost
+    sealed type FormatOutcome = Formatted | FormatRecovered | FormatFailed(DiagnosticSet)
+
+    // Format entire AST to canonical Brief style; returns formatted source
+    fn formatFull(ast: Ast) -> FormatOutcome
+    
+    // Format a single task node 
+    fn formatTask(ast: Ast) -> FormatOutcome
+    
+    // Check if source matches canonical format (returns Formatted if yes, FormatFailed if not)
+    fn checkFormat(ast: Ast, originalSource: String) -> FormatOutcome
+    
+    // Extract formatted source text from a successful FormatOutcome
+    fn extractFormatted(outcome: FormatOutcome) -> String
+}

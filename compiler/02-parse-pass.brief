@@ -1,0 +1,55 @@
+// Stage 1 Mediated Self-Description — Parser pass
+// Skill backend: compiler/skills/ParserPrimitives/ParserPrimitives.briefskill
+// Rust implementation: briefc/src/parser.rs
+
+import skill "ParserPrimitives"
+
+opaque type TokenStream
+opaque type Ast
+opaque type DiagnosticSet
+
+sealed type ParseOutcome = Parsed(Ast) | ParseFailed(DiagnosticSet)
+
+@BriefBuilder
+task ParsePass : TaskBrief uses [ParserPrimitives] {
+    goal = "Parse a token stream into a validated abstract syntax tree"
+
+    effects [cpu, memory]
+
+    extras {
+        tokens: TokenStream
+        strict: Bool
+    }
+
+    provides {
+        ast: Ast
+        taskCount: Int
+    }
+
+    step ParseSource {
+        pre { tokens.isValidated }
+        post { parseResult.isReady }
+
+        let parseResult = perform ParserPrimitives.parseSource(tokens)?;
+    }
+
+    step ExtractAst {
+        pre { parseResult.isReady }
+        post { ast.isStructured }
+
+        let ast = match parseResult {
+            Parsed(a)      => a
+            ParseFailed(d) => d
+        };
+        let taskCount = perform ParserPrimitives.taskCount(ast)?;
+    }
+
+}
+
+test "parse from valid tokens" {
+    assert tokens.isValidated
+}
+
+test "extracted ast has task count" {
+    assert taskCount >= 0
+}

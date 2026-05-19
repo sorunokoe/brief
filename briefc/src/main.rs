@@ -18,7 +18,10 @@ mod registry;
 mod repl;
 mod runner;
 mod serve;
+mod skill_backends;
+mod skill_loader;
 mod skillgen;
+mod selfhosting;
 mod tester;
 mod typeck;
 mod verify;
@@ -190,8 +193,32 @@ enum Commands {
         shell: clap_complete::Shell,
     },
 
+    /// Validate and inspect the Brief-defined compiler pipeline
+    SelfHosting {
+        #[command(subcommand)]
+        command: Option<SelfHostingCommand>,
+    },
+
     /// Run all checks listed in brief.toml [ci] examples
     Ci,
+}
+
+#[derive(Subcommand)]
+enum SelfHostingCommand {
+    /// Type-check all compiler pass Brief files
+    Check,
+
+    /// Show the Stage 1 self-hosting execution plan for a source file
+    Run {
+        /// Path to the source .brief file
+        file: PathBuf,
+    },
+
+    /// Compare Rust-native vs Brief-mediated pipeline behavior for a file
+    Compare {
+        /// Path to the source .brief file
+        file: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -327,6 +354,16 @@ fn main() -> std::process::ExitCode {
         Commands::Completions { shell } => {
             generate(shell, &mut Cli::command(), "brief", &mut std::io::stdout());
             std::process::ExitCode::SUCCESS
+        }
+
+        Commands::SelfHosting { command } => {
+            print_brief_banner();
+            let ok = match command.unwrap_or(SelfHostingCommand::Check) {
+                SelfHostingCommand::Check => selfhosting::cmd_check(),
+                SelfHostingCommand::Run { file } => selfhosting::cmd_run(&file),
+                SelfHostingCommand::Compare { file } => selfhosting::cmd_compare(&file),
+            };
+            if ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::FAILURE }
         }
 
         Commands::Ci => {

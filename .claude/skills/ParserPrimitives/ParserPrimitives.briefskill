@@ -1,0 +1,24 @@
+// Auto-generated skill interface for Stage 1 Mediated Self-Description  
+// abi_version: "1.0"
+// Source: briefc/src/parser.rs
+// Regenerate: brief skillgen compiler/skills/ParserPrimitives/
+
+interface ParserPrimitives {
+    opaque type TokenStream
+    opaque type Ast
+    opaque type DiagnosticSet
+    
+    sealed type ParseOutcome = Parsed(Ast) | ParseFailed(DiagnosticSet)
+
+    // Parse a complete Brief source file from token stream
+    fn parseSource(tokens: TokenStream) -> ParseOutcome
+    
+    // Parse a single task declaration
+    fn parseTask(tokens: TokenStream) -> ParseOutcome
+    
+    // Format parse errors as human-readable strings
+    fn formatErrors(diagnostics: DiagnosticSet) -> String
+    
+    // Count task declarations in AST
+    fn taskCount(ast: Ast) -> Int
+}

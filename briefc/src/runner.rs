@@ -14,6 +14,7 @@ use crate::lexer::lex;
 use crate::manifest;
 use crate::parser::parse;
 use crate::serve;
+use crate::skill_backends::{self, SkillValue};
 use crate::skillgen;
 use crate::typeck;
 
@@ -318,10 +319,11 @@ fn execute_task(
     ifaces: &HashMap<String, skillgen::SkillInterface>,
 ) {
     println!("{} Running task: {}", "●".blue().bold(), task.name.bold());
+    let mut bindings = HashMap::new();
 
     for step in &task.steps {
         println!("  {} step {}…", "→".dimmed(), step.name.bold());
-        execute_step(step, mf, ifaces);
+        execute_step(step, mf, ifaces, &mut bindings);
     }
 
     println!("{} Complete.", "✅".green().bold());
@@ -331,30 +333,43 @@ fn execute_step(
     step: &Step,
     mf: Option<&manifest::BriefManifest>,
     ifaces: &HashMap<String, skillgen::SkillInterface>,
+    bindings: &mut HashMap<String, SkillValue>,
 ) {
     for stmt in &step.body {
-        let expr = match stmt {
-            crate::ast::Stmt::Let { value, .. } => value,
-            crate::ast::Stmt::Expr { value, .. } => value,
-        };
-        execute_expr(expr, mf, ifaces);
+        execute_stmt(stmt, mf, ifaces, bindings);
     }
 }
 
-fn execute_expr(
+fn execute_stmt(
+    stmt: &crate::ast::Stmt,
+    mf: Option<&manifest::BriefManifest>,
+    ifaces: &HashMap<String, skillgen::SkillInterface>,
+    bindings: &mut HashMap<String, SkillValue>,
+) {
+    match stmt {
+        crate::ast::Stmt::Let { name, value, .. } => {
+            if let Some(result) = eval_expr(value, mf, ifaces, bindings) {
+                bindings.insert(name.clone(), result);
+            }
+        }
+        crate::ast::Stmt::Expr { value, .. } => {
+            let _ = eval_expr(value, mf, ifaces, bindings);
+        }
+    }
+}
+
+fn eval_expr(
     expr: &Expr,
     mf: Option<&manifest::BriefManifest>,
     ifaces: &HashMap<String, skillgen::SkillInterface>,
-) {
+    bindings: &HashMap<String, SkillValue>,
+) -> Option<SkillValue> {
     match expr {
-        Expr::Perform {
-            skill, func, args, ..
-        } => {
-            let arg_vals: Vec<serde_json::Value> = args.iter().map(|a| expr_to_json(a)).collect();
-
-            // Build named arguments by matching positional args to param names from .briefskill.
-            // Falls back to positional keys ("0", "1", ...) if interface is unavailable.
-            let arguments = build_named_arguments(skill, func, &arg_vals, ifaces);
+        Expr::Perform { skill, func, args, .. } => {
+            let arg_vals: Vec<SkillValue> = args
+                .iter()
+                .filter_map(|arg| eval_expr(arg, mf, ifaces, bindings))
+                .collect();
 
             print!("     {} {}.{}(", "perform".cyan(), skill, func);
             if !arg_vals.is_empty() {
@@ -362,13 +377,20 @@ fn execute_expr(
                     "{}",
                     arg_vals
                         .iter()
-                        .map(|v| v.to_string())
+                        .map(skill_backends::display_value)
                         .collect::<Vec<_>>()
                         .join(", ")
                 );
             }
             print!(") … ");
 
+            if let Some(result) = skill_backends::dispatch(skill, func, &arg_vals) {
+                println!("{} {}", "✓".green(), skill_backends::display_value(&result).dimmed());
+                return Some(result);
+            }
+
+            let json_args: Vec<serde_json::Value> = arg_vals.iter().map(skill_backends::to_json).collect();
+            let arguments = build_named_arguments(skill, func, &json_args, ifaces);
             match serve::call_skill_tool(skill, func, arguments, mf) {
                 Ok(result) => {
                     let display = if result.is_null() {
@@ -377,14 +399,64 @@ fn execute_expr(
                         result.to_string().chars().take(120).collect::<String>()
                     };
                     println!("{} {}", "✓".green(), display.dimmed());
+                    Some(skill_backends::from_json(&result))
                 }
                 Err(e) => {
                     println!("{} {}", "✗".red(), e.red());
+                    None
                 }
             }
         }
-        Expr::Await { expr: inner, .. } => execute_expr(inner, mf, ifaces),
-        _ => {}
+        Expr::Await { expr: inner, .. } => eval_expr(inner, mf, ifaces, bindings),
+        Expr::Match { scrutinee, arms } => {
+            let value = eval_expr(scrutinee, mf, ifaces, bindings)?;
+            for arm in arms {
+                if let Some(matched) = eval_match_arm(arm, &value, mf, ifaces, bindings) {
+                    return Some(matched);
+                }
+            }
+            None
+        }
+        Expr::Ident { name, .. } => bindings
+            .get(name)
+            .cloned()
+            .or_else(|| Some(SkillValue::Str(name.clone()))),
+        Expr::Str { value, .. } => Some(SkillValue::Str(value.clone())),
+        Expr::Int { value, .. } => Some(SkillValue::Int(*value)),
+        Expr::Call { receiver, func, args, .. } => {
+            if receiver.is_none() && func == "true" && args.is_empty() {
+                Some(SkillValue::Bool(true))
+            } else if receiver.is_none() && func == "false" && args.is_empty() {
+                Some(SkillValue::Bool(false))
+            } else {
+                None
+            }
+        }
+    }
+}
+
+fn eval_match_arm(
+    arm: &crate::ast::MatchArm,
+    value: &SkillValue,
+    mf: Option<&manifest::BriefManifest>,
+    ifaces: &HashMap<String, skillgen::SkillInterface>,
+    bindings: &HashMap<String, SkillValue>,
+) -> Option<SkillValue> {
+    match &arm.pattern {
+        crate::ast::Pattern::Wildcard => eval_expr(&arm.body, mf, ifaces, bindings),
+        crate::ast::Pattern::Variant(expected) => {
+            let (variant, _) = skill_backends::match_outcome(value)?;
+            (variant == *expected).then(|| eval_expr(&arm.body, mf, ifaces, bindings)).flatten()
+        }
+        crate::ast::Pattern::Variant1(expected, binding_name) => {
+            let (variant, payload) = skill_backends::match_outcome(value)?;
+            if variant != *expected {
+                return None;
+            }
+            let mut local_bindings = bindings.clone();
+            local_bindings.insert(binding_name.clone(), payload.unwrap_or(SkillValue::Unit));
+            eval_expr(&arm.body, mf, ifaces, &local_bindings)
+        }
     }
 }
 
@@ -418,11 +490,3 @@ fn build_named_arguments(
     serde_json::Value::Object(obj)
 }
 
-fn expr_to_json(expr: &Expr) -> serde_json::Value {
-    match expr {
-        Expr::Str { value, .. } => serde_json::Value::String(value.clone()),
-        Expr::Int { value, .. } => serde_json::json!(value),
-        Expr::Ident { name, .. } => serde_json::Value::String(name.clone()),
-        _ => serde_json::Value::Null,
-    }
-}

@@ -1,0 +1,22 @@
+// Auto-generated skill interface for Stage 1 Mediated Self-Description
+// abi_version: "1.0"
+// Source: briefc/src/lexer.rs
+// Regenerate: brief skillgen compiler/skills/LexerPrimitives/
+
+interface LexerPrimitives {
+    // Opaque compiler artifact types
+    opaque type TokenStream
+    opaque type DiagnosticSet
+    
+    // Result type
+    sealed type LexOutcome = Lexed(TokenStream) | LexFailed(DiagnosticSet)
+
+    // Tokenize source text into a token stream
+    fn tokenize(source: String, filePath: String) -> LexOutcome
+
+    // Classify and validate token stream (checks for illegal chars, unclosed strings)
+    fn classify(tokens: TokenStream) -> LexOutcome
+    
+    // Count total tokens in stream (useful for pre/post contracts)
+    fn tokenCount(tokens: TokenStream) -> Int
+}

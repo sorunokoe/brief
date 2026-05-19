@@ -81,6 +81,7 @@ fn collect_type_names(ty: &TypeRef, local_generics: &[String], out: &mut HashSet
 
 /// The type environment built from a Program's declarations.
 pub struct TypeEnv<'a> {
+    opaque_types: HashMap<&'a str, &'a OpaqueTypeDecl>,
     sealed_types: HashMap<&'a str, &'a SealedTypeDecl>,
     structs: HashMap<&'a str, &'a StructDecl>,
     protocols: HashMap<&'a str, &'a ProtocolDecl>,
@@ -101,11 +102,15 @@ impl<'a> TypeEnv<'a> {
         program: &'a Program,
         skill_ifaces: HashMap<String, SkillInterface>,
     ) -> Self {
+        let mut opaque_types = HashMap::new();
         let mut sealed_types = HashMap::new();
         let mut structs = HashMap::new();
         let mut protocols = HashMap::new();
         let mut effects = HashMap::new();
 
+        for t in &program.opaque_types {
+            opaque_types.insert(t.name.as_str(), t);
+        }
         for t in &program.types {
             sealed_types.insert(t.name.as_str(), t);
         }
@@ -129,6 +134,7 @@ impl<'a> TypeEnv<'a> {
         }
 
         Self {
+            opaque_types,
             sealed_types,
             structs,
             protocols,
@@ -139,7 +145,8 @@ impl<'a> TypeEnv<'a> {
     }
 
     fn declared_type_exists(&self, name: &str) -> bool {
-        self.sealed_types.contains_key(name)
+        self.opaque_types.contains_key(name)
+            || self.sealed_types.contains_key(name)
             || self.structs.contains_key(name)
             || self.protocols.contains_key(name)
             || self.effect_ret_types.contains(name)
@@ -194,6 +201,10 @@ impl<'a> TypeEnv<'a> {
 
     pub fn sealed_type(&self, name: &str) -> Option<&'a SealedTypeDecl> {
         self.sealed_types.get(name).copied()
+    }
+
+    pub fn is_opaque_type(&self, name: &str) -> bool {
+        self.opaque_types.contains_key(name)
     }
 
     pub fn sealed_variant_field_type(

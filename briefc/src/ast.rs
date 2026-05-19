@@ -31,6 +31,7 @@ impl Span {
 #[derive(Debug, Clone)]
 pub struct Program {
     pub imports: Vec<SkillImport>,
+    pub opaque_types: Vec<OpaqueTypeDecl>,
     pub types: Vec<SealedTypeDecl>,
     pub type_aliases: Vec<TypeAliasDecl>,
     pub effect_groups: Vec<EffectGroupDecl>,
@@ -90,6 +91,13 @@ pub struct TypeAliasDecl {
 pub struct EffectGroupDecl {
     pub name: String,
     pub members: Vec<String>,
+    pub span: Span,
+}
+
+/// `opaque type TokenStream`
+#[derive(Debug, Clone)]
+pub struct OpaqueTypeDecl {
+    pub name: String,
     pub span: Span,
 }
 

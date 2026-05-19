@@ -60,12 +60,20 @@ pub enum ErrorCode {
     DeprecatedStringExtras,
     /// `@BriefBuilder` task is missing a `provides { ... }` block (W104)
     BriefBuilderProvidesMissing,
+    /// `opaque type` declaration is never referenced (W105)
+    OpaqueTypeUnused,
     /// Typed `extras` field references an unknown type (E208)
     UnknownExtrasField,
     /// Task performs a skill whose effects are not declared in `effects [...]` (E209)
     EffectContractViolation,
     /// Workflow combinator references a step that is not declared in the task (E210)
     UndeclaredStepInCombinator,
+    /// Field access on an opaque type (E211)
+    OpaqueTypeFieldAccess,
+    /// Skill ABI version header is missing or incompatible (E212)
+    SkillAbiVersionMismatch,
+    /// Skill ABI references a type the checker cannot resolve (E213)
+    SkillAbiUnknownType,
 }
 
 impl fmt::Display for ErrorCode {
@@ -86,6 +94,9 @@ impl fmt::Display for ErrorCode {
             ErrorCode::UnknownExtrasField => "E208",
             ErrorCode::EffectContractViolation => "E209",
             ErrorCode::UndeclaredStepInCombinator => "E210",
+            ErrorCode::OpaqueTypeFieldAccess => "E211",
+            ErrorCode::SkillAbiVersionMismatch => "E212",
+            ErrorCode::SkillAbiUnknownType => "E213",
             ErrorCode::RangeBoundaryMissing => "E301",
             ErrorCode::EnumValueMissing => "E302",
             ErrorCode::LockRequired => "E303",
@@ -97,6 +108,7 @@ impl fmt::Display for ErrorCode {
             ErrorCode::StaleSkillInterface => "W102",
             ErrorCode::DeprecatedStringExtras => "W103",
             ErrorCode::BriefBuilderProvidesMissing => "W104",
+            ErrorCode::OpaqueTypeUnused => "W105",
         };
         write!(f, "{code}")
     }
@@ -120,6 +132,9 @@ impl ErrorCode {
                 | ErrorCode::UnknownExtrasField
                 | ErrorCode::EffectContractViolation
                 | ErrorCode::UndeclaredStepInCombinator
+                | ErrorCode::OpaqueTypeFieldAccess
+                | ErrorCode::SkillAbiVersionMismatch
+                | ErrorCode::SkillAbiUnknownType
                 | ErrorCode::RangeBoundaryMissing
                 | ErrorCode::EnumValueMissing
                 | ErrorCode::LockRequired

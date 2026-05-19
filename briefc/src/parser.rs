@@ -222,6 +222,7 @@ pub fn parse(tokens: &[Spanned], source: &str) -> (Program, Vec<BriefError>) {
 impl<'a> Parser<'a> {
     fn parse_program(&mut self) -> Program {
         let mut imports = Vec::new();
+        let mut opaque_types = Vec::new();
         let mut types = Vec::new();
         let mut type_aliases = Vec::new();
         let mut effect_groups = Vec::new();
@@ -236,6 +237,11 @@ impl<'a> Parser<'a> {
                 Some(Token::Import) => {
                     if let Some(i) = self.parse_import() {
                         imports.push(i);
+                    }
+                }
+                Some(Token::Opaque) => {
+                    if let Some(t) = self.parse_opaque_type() {
+                        opaque_types.push(t);
                     }
                 }
                 Some(Token::Sealed) => {
@@ -282,7 +288,7 @@ impl<'a> Parser<'a> {
                         code:    ErrorCode::ParseError,
                         message: format!("unexpected token `{got:?}` at top level"),
                         span,
-                        hint:    Some("expected `import skill`, `type`, `sealed type`, `struct`, `protocol`, `effect`, `task`, or `test`".to_string()),
+                        hint:    Some("expected `import skill`, `opaque type`, `type`, `sealed type`, `struct`, `protocol`, `effect`, `task`, or `test`".to_string()),
                     });
                     self.advance();
                 }
@@ -291,6 +297,7 @@ impl<'a> Parser<'a> {
 
         Program {
             imports,
+            opaque_types,
             types,
             type_aliases,
             effect_groups,
@@ -578,6 +585,19 @@ impl<'a> Parser<'a> {
             attrs,
             ty,
             span: Span::new(start, end),
+        })
+    }
+
+    // ── opaque type ──────────────────────────────────────────────────────
+
+    fn parse_opaque_type(&mut self) -> Option<OpaqueTypeDecl> {
+        let start = self.current_span().start;
+        self.expect(&Token::Opaque)?;
+        self.expect(&Token::Type)?;
+        let (name, name_span) = self.expect_ident()?;
+        Some(OpaqueTypeDecl {
+            name,
+            span: Span::new(start, name_span.end),
         })
     }
 
@@ -1691,6 +1711,15 @@ mod tests {
         assert_eq!(prog.types.len(), 1);
         assert_eq!(prog.types[0].name, "Platform");
         assert_eq!(prog.types[0].variants.len(), 3);
+    }
+
+    #[test]
+    fn parse_opaque_type_decl() {
+        let src = "opaque type TokenStream";
+        let (prog, errs) = parse_src(src);
+        assert!(errs.is_empty(), "{errs:?}");
+        assert_eq!(prog.opaque_types.len(), 1);
+        assert_eq!(prog.opaque_types[0].name, "TokenStream");
     }
 
     #[test]

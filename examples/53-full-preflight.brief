@@ -37,19 +37,19 @@ task RegisterUser : TaskBrief uses [UserDB, Email, Analytics, AuditLog] {
 
     // ── Steps ───────────────────────────────────────────────────────────────
     step ValidateInput {
-        let user = perform UserDB.findByEmail(email)?
+        let user = perform UserDB.findByEmail(email)?;
     }
 
     step PersistUser {
-        @once let userId = perform UserDB.create(email, hashedPassword)?
+        @once let userId = perform UserDB.create(email, hashedPassword)?;
     }
 
     step NotifyUser {
-        perform Email.sendWelcome(email, userId)?
+        perform Email.sendWelcome(email, userId)?;
     }
 
     step RecordEvent {
-        perform Analytics.track("user_registered", userId)?
-        perform AuditLog.append("registration", userId)?
+        perform Analytics.track("user_registered", userId)?;
+        perform AuditLog.append("registration", userId)?;
     }
 }

@@ -21,11 +21,11 @@ task SyncUserProfile : TaskBrief uses [GraphQL, Storage] {
     }
 
     step FetchProfile {
-        let profile = perform GraphQL.query(UserProfileQuery)?
+        let profile = perform GraphQL.query(UserProfileQuery)?;
     }
 
     step StoreProfile {
-        perform Storage.save(profile)?
+        perform Storage.save(profile)?;
     }
 }
 

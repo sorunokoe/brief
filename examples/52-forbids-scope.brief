@@ -22,15 +22,15 @@ task CheckoutFlow : TaskBrief uses [Cart, Payment, Order] {
     }
 
     step ValidateCart {
-        let cart = perform Cart.getActive(userId)?
+        let cart = perform Cart.getActive(userId)?;
     }
 
     step Charge {
-        @once let receipt = perform Payment.charge(cart.total)?
+        @once let receipt = perform Payment.charge(cart.total)?;
     }
 
     step ConfirmOrder {
-        perform Order.create(cart, receipt)?
+        perform Order.create(cart, receipt)?;
     }
 }
 

@@ -37,6 +37,7 @@ pub enum Token {
     #[token("perform")]  Perform,
     #[token("let")]      Let,
     #[token("sealed")]   Sealed,
+    #[token("opaque")]   Opaque,
     #[token("type")]     Type,
     #[token("struct")]   Struct,
     #[token("protocol")] Protocol,
@@ -155,6 +156,16 @@ mod tests {
         assert_eq!(toks[1].token, Token::Type);
         assert!(matches!(&toks[2].token, Token::Ident(s) if s == "Platform"));
         assert!(toks.iter().any(|t| t.token == Token::Pipe));
+    }
+
+    #[test]
+    fn lex_opaque_type() {
+        let src = "opaque type TokenStream";
+        let (toks, errs) = lex(src);
+        assert!(errs.is_empty(), "unexpected lex errors: {:?}", errs);
+        assert_eq!(toks[0].token, Token::Opaque);
+        assert_eq!(toks[1].token, Token::Type);
+        assert!(matches!(&toks[2].token, Token::Ident(s) if s == "TokenStream"));
     }
 
     #[test]
