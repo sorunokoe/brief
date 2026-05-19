@@ -127,12 +127,16 @@ pub fn run_serve(path: &Path) -> bool {
         return false;
     }
 
-    // Build a flat map: "SkillName.fnName" → SkillName for routing.
+    // Build a flat map: tool_name → SkillName for routing.
+    // Registers both MCP dot-format ("SkillName.fn") and legacy double-underscore ("SkillName__fn").
     let mut tool_to_skill: HashMap<String, String> = HashMap::new();
     for (skill_name, iface) in &ifaces {
         for f in &iface.funcs {
+            // Primary: dot format — matches what mcp_schema produces for tools/list names.
+            tool_to_skill.insert(format!("{skill_name}.{}", f.name), skill_name.clone());
+            // Legacy: double-underscore format for backward compatibility.
             tool_to_skill.insert(format!("{skill_name}__{}", f.name), skill_name.clone());
-            // Also register unqualified for convenience.
+            // Unqualified fallback (last-writer wins on collision).
             tool_to_skill.entry(f.name.clone()).or_insert_with(|| skill_name.clone());
         }
     }
@@ -230,7 +234,9 @@ pub fn run_serve(path: &Path) -> bool {
                     }
                     Some(sn) => {
                         let sn = sn.clone();
+                        // Extract bare function name from either "Skill.fn" or "Skill__fn".
                         let fn_name = tool_name.split_once("__")
+                            .or_else(|| tool_name.split_once('.'))
                             .map(|(_, f)| f)
                             .unwrap_or(tool_name);
 
