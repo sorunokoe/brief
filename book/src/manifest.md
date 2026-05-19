@@ -4,6 +4,8 @@ Every Brief project can have a `brief.toml` at its root. The manifest lets you:
 
 - Name and version your project
 - Override skill resolution paths
+- Configure verifiers for dynamic annotations
+- Control lock freshness policy
 - List example files for CI
 
 `brief check` walks up from the `.brief` file to find the nearest `brief.toml` automatically.
@@ -21,6 +23,21 @@ authors = ["Your Name <you@example.com>"]
 GraphQL  = ".claude/skills/GraphQL"
 Auth     = ".claude/skills/Auth"
 Payments = ".claude/skills/Payments"
+
+# Verifiers: annotation → verifier config
+[verifiers."@url"]
+skill = "builtin:url"          # ships with Brief
+
+[verifiers."@github-repo"]
+mcp_command = ["npx", "-y", "@brief/github-verifier"]
+
+[verifiers."@local-path"]
+mcp_command = ["npx", "-y", "@brief/filesystem-verifier"]
+
+# Verification policy
+[verify]
+max_lock_age_hours = 24  # 0 = never expire (offline / air-gapped)
+require_lock       = true
 
 # CI: which files to type-check in CI
 [ci]
@@ -52,6 +69,47 @@ When a `.brief` file does `import skill "GraphQL"`, `brief check` looks for:
 [skills]
 GraphQL  = "infra/skills/GraphQL"
 Auth     = "infra/skills/Auth"
+```
+
+### `[verifiers."@annotation"]`
+
+Routes a dynamic annotation to a verifier. Each entry is keyed by the annotation name (including the `@`).
+
+| Field | Description |
+|-------|-------------|
+| `skill` | Built-in verifier name. Only `"builtin:url"` ships with Brief. |
+| `mcp_command` | Shell command to spawn a verifier MCP server. |
+| `mcp_url` | URL of an already-running verifier MCP server. |
+
+Exactly one of `skill`, `mcp_command`, or `mcp_url` should be present.
+
+**`builtin:url` — the built-in URL verifier**
+
+Sends an HTTP HEAD (falling back to GET) to verify the URL is reachable. For security, it **blocks private and reserved addresses**: RFC-1918 ranges (10.x, 172.16–31.x, 192.168.x), loopback (127.x), link-local / cloud metadata (169.254.x), and equivalent IPv6 ranges. Redirects are also disabled to prevent redirect-based bypass. An `@url` annotation on a private URL will fail verification — this is intentional.
+
+```toml
+[verifiers."@url"]
+skill = "builtin:url"
+
+[verifiers."@github-repo"]
+mcp_command = ["npx", "-y", "@brief/github-verifier"]
+```
+
+### `[verify]`
+
+Controls lock freshness enforcement for `brief serve` and `brief check`.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `max_lock_age_hours` | `24` | How old a `.brief.lock` may be before `brief serve` refuses to start and `brief check` emits E303. Set to `0` to disable expiry. |
+| `require_lock` | `true` | Whether `brief check` requires a lock file when dynamic annotations are present. |
+
+```toml
+[verify]
+max_lock_age_hours = 48   # allow up to 48h old locks
+
+# Disable expiry for offline / air-gapped environments:
+# max_lock_age_hours = 0
 ```
 
 ### `[ci]`

@@ -150,7 +150,7 @@ verified_at = "2026-05-18T10:00:00Z"
 
 `brief serve` refuses to start if:
 - The lock is missing (run `brief verify` first)
-- The lock is older than `max_lock_age_hours` (default: 24h)
+- The lock is older than `max_lock_age_hours` (default: 24h, configurable in `[verify]` in `brief.toml`)
 - The `.brief` source has changed since the last verify
 
 This means the AI always operates in a verified context — not a hopeful template.

@@ -233,10 +233,10 @@ BRIEF_LLM_API_KEY=sk-... brief skillgen .claude/skills/GitHub/
 | `@range(1, 100)` | `brief check` | Integer must be in [1, 100] |
 | `@enum("a","b")` | `brief check` | Must be one of the listed values |
 | `@matches("regex")` | `brief check` | String must match pattern |
-| `@url` | `brief verify` | URL must be reachable (HTTP) |
+| `@url` | `brief verify` | URL must be reachable (HTTP HEAD/GET). The built-in `builtin:url` verifier blocks private/internal IPs (RFC-1918, 169.254.x, loopback). |
 | `@local-path` | `brief verify` | File/directory must exist |
 | `@github-repo` | `brief verify` | GitHub repo must be accessible |
-| `@once` | `brief serve` | Handle can be used exactly once (linear type) |
+| `@once` | `brief serve` | Handle identity tracked at runtime — the same handle value cannot be produced twice in a session (linear type) |
 
 Static annotations (`@nonEmpty`, `@range`, `@enum`, `@matches`) are checked instantly. Dynamic annotations (`@url`, `@local-path`, etc.) require a configured verifier in `brief.toml` and are checked by `brief verify`.
 
