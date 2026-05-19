@@ -16,7 +16,7 @@ use colored::Colorize;
 use serde_json::{json, Value};
 
 use crate::lock::VerifyStatus;
-use crate::manifest::VerifierConfig;
+use crate::manifest::{SkillConfig, VerifierConfig};
 
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -66,6 +66,145 @@ pub fn dispatch(
         return call_mcp_http(url, annotation, value, context);
     }
     VerificationResult::fail("verifier config has no skill, mcp_command, or mcp_url")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Capability listing: tools/list
+
+/// Connect to a skill MCP server and return its tool names via `tools/list`.
+///
+/// Returns qualified names where possible (`"SkillName.funcName"`), but also
+/// accepts bare names (`"funcName"`) emitted by third-party servers.
+///
+/// On error (server unreachable, protocol failure) returns `Err(message)`.
+pub fn list_skill_tools(config: &SkillConfig, skill_name: &str) -> Result<Vec<String>, String> {
+    if let Some(cmd) = &config.mcp_command {
+        if cmd.is_empty() {
+            return Err("mcp_command is empty".to_string());
+        }
+        let mut child = Command::new(&cmd[0])
+            .args(&cmd[1..])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(|e| format!("spawn '{}' failed: {e}", cmd[0]))?;
+
+        let result = {
+            let stdin  = child.stdin.take().unwrap();
+            let stdout = child.stdout.take().unwrap();
+            let reader = BufReader::new(stdout);
+            run_mcp_list_session(stdin, reader, skill_name)
+        };
+
+        let exited = child.try_wait().map_or(false, |s| s.is_some());
+        if !exited {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        return result;
+    }
+    if let Some(url) = &config.mcp_url {
+        return list_mcp_http_tools(url, skill_name);
+    }
+    Err("skill config has no mcp_command or mcp_url".to_string())
+}
+
+/// Drive an MCP session: initialize → tools/list → return tool names.
+fn run_mcp_list_session<W: Write, R: BufRead>(
+    mut stdin:  W,
+    mut reader: R,
+    skill_name: &str,
+) -> Result<Vec<String>, String> {
+    let init_req = json!({
+        "jsonrpc": "2.0",
+        "id":      1,
+        "method":  "initialize",
+        "params": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": { "name": "brief", "version": env!("CARGO_PKG_VERSION") }
+        }
+    });
+    let s = serde_json::to_string(&init_req).unwrap();
+    writeln!(stdin, "{s}").map_err(|e| format!("write error: {e}"))?;
+
+    let mut buf = String::new();
+    reader.read_line(&mut buf).map_err(|e| format!("read initialize response: {e}"))?;
+
+    let notif = json!({ "jsonrpc": "2.0", "method": "notifications/initialized" });
+    let s = serde_json::to_string(&notif).unwrap();
+    writeln!(stdin, "{s}").map_err(|e| format!("write error: {e}"))?;
+
+    let list_req = json!({
+        "jsonrpc": "2.0",
+        "id":      2,
+        "method":  "tools/list"
+    });
+    let s = serde_json::to_string(&list_req).unwrap();
+    writeln!(stdin, "{s}").map_err(|e| format!("write error: {e}"))?;
+    drop(stdin); // Signal EOF.
+
+    buf.clear();
+    reader.read_line(&mut buf).map_err(|e| format!("read tools/list response: {e}"))?;
+
+    parse_tools_list_response(&buf, skill_name)
+}
+
+/// Parse a `tools/list` response and return tool names.
+/// Normalises bare names (`"funcName"`) to qualified (`"SkillName.funcName"`).
+fn parse_tools_list_response(line: &str, skill_name: &str) -> Result<Vec<String>, String> {
+    let v: Value = serde_json::from_str(line.trim())
+        .map_err(|e| format!("invalid JSON in tools/list response: {e}"))?;
+
+    if let Some(err) = v.get("error") {
+        let msg = err["message"].as_str().unwrap_or("MCP error");
+        return Err(msg.to_string());
+    }
+
+    let tools = v["result"]["tools"]
+        .as_array()
+        .ok_or_else(|| "tools/list response missing 'result.tools' array".to_string())?;
+
+    let prefix = format!("{skill_name}.");
+    let names: Vec<String> = tools.iter()
+        .filter_map(|t| t["name"].as_str())
+        .map(|raw_name| {
+            if raw_name.contains('.') {
+                raw_name.to_string()          // already qualified
+            } else {
+                format!("{prefix}{raw_name}") // bare → qualified
+            }
+        })
+        .collect();
+
+    Ok(names)
+}
+
+/// `tools/list` via HTTP MCP server.
+fn list_mcp_http_tools(base_url: &str, skill_name: &str) -> Result<Vec<String>, String> {
+    let list_req = json!({
+        "jsonrpc": "2.0",
+        "id":      1,
+        "method":  "tools/list"
+    });
+
+    let result = ureq::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .post(base_url)
+        .set("Content-Type", "application/json")
+        .send_json(&list_req);
+
+    match result {
+        Ok(resp) => {
+            use std::io::Read;
+            let mut body = String::new();
+            let _ = resp.into_reader().take(64 * 1024).read_to_string(&mut body);
+            parse_tools_list_response(&body, skill_name)
+        }
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -2,12 +2,14 @@
 ///
 /// Steps:
 /// 1. Parse `.brief` file + load `.briefskill` interfaces
-/// 2. Collect `(annotation, value)` pairs from `perform Skill.fn(arg)` call sites
+/// 2. Verify skill capabilities: connect to each skill MCP server, call `tools/list`,
+///    confirm every function in `.briefskill` exists in the server (E401/E402)
+/// 3. Collect `(annotation, value)` pairs from `perform Skill.fn(arg)` call sites
 ///    where the matching skill param has a dynamic annotation
-/// 3. Look up each annotation in `[verifiers.*]`; report E309 if unconfigured
-/// 4. Call each verifier via the MCP protocol client
-/// 5. On all ok: write `.brief.lock`
-/// 6. On any fail: print errors, exit 1 without writing lock
+/// 4. Look up each annotation in `[verifiers.*]`; report E309 if unconfigured
+/// 5. Call each verifier via the MCP protocol client
+/// 6. On all ok: write `.brief.lock` (with capability results + skill hashes)
+/// 7. On any fail: print errors, exit 1 without writing lock
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -19,7 +21,7 @@ use crate::ast::{Expr, Program};
 use crate::checker;
 use crate::lexer::lex;
 use crate::lock::{self, LockFile, LockMeta, VerificationResult as LockEntry, VerifyStatus, now_rfc3339, sha256_file_hash};
-use crate::manifest::{self};
+use crate::manifest::{self, BriefManifest};
 use crate::parser::parse;
 use crate::skillgen::{self, SkillInterface};
 use crate::verifier::{self};
@@ -61,18 +63,39 @@ pub fn run_verify(path: &Path) -> bool {
         allow_missing_skills: false,
     };
 
-    let ifaces = load_skill_interfaces(&program, &ctx);
+    let ifaces      = load_skill_interfaces(&program, &ctx);
+    let iface_paths = load_skill_paths(&program, &ctx);
 
-    // ── 3. Collect verification obligations ───────────────────────────────
+    // Compute hashes of all loaded .briefskill files for the lock.
+    let skill_hashes = compute_skill_hashes(&iface_paths);
+
+    // ── 3. Capability verification (E401 / E402) ──────────────────────────
+    // For each skill that has MCP config, confirm every .briefskill function
+    // actually exists in the real server's tools/list.
+    let (caps_ok, capabilities) = verify_skill_capabilities(&program, &ifaces, mf.as_ref());
+    if !caps_ok {
+        eprintln!();
+        eprintln!("{} Capability verification failed — fix the above errors before re-running `brief verify`.",
+            "✗".red().bold());
+        return false;
+    }
+
+    // ── 4. Collect verification obligations ───────────────────────────────
     let obligations = collect_obligations(&program, &ifaces);
 
-    if obligations.is_empty() {
+    if obligations.is_empty() && capabilities.is_empty() {
         println!("{} No dynamic annotations to verify.", "✅".green().bold());
-        write_empty_lock(path);
+        write_lock_with_caps(path, HashMap::new(), capabilities, skill_hashes);
         return true;
     }
 
-    // ── 4. Check for unconfigured annotations (E309-equivalent) ──────────
+    if obligations.is_empty() {
+        // Capabilities verified; no annotation obligations — write lock and done.
+        write_lock_with_caps(path, HashMap::new(), capabilities, skill_hashes);
+        return true;
+    }
+
+    // ── 5. Check for unconfigured annotations (E309-equivalent) ──────────
     let verifiers = mf.as_ref().map(|m| &m.verifiers).cloned().unwrap_or_default();
     let mut missing_verifiers: Vec<String> = Vec::new();
 
@@ -97,7 +120,7 @@ pub fn run_verify(path: &Path) -> bool {
         return false;
     }
 
-    // ── 5. Call each verifier ─────────────────────────────────────────────
+    // ── 6. Call each verifier ─────────────────────────────────────────────
     println!("{} Verifying {} annotation{}...",
         "●".blue().bold(), obligations.len(),
         if obligations.len() == 1 { "" } else { "s" }
@@ -152,15 +175,28 @@ pub fn run_verify(path: &Path) -> bool {
         return false;
     }
 
-    // ── 6. Write .brief.lock ──────────────────────────────────────────────
-    let lock_path = lock::lock_path(path);
-    let source_hash = std::fs::read(path)
+    // ── 7. Write .brief.lock ──────────────────────────────────────────────
+    write_lock_with_caps(path, verified, capabilities, skill_hashes)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Write the `.brief.lock` file with annotation results, capability results, and skill hashes.
+fn write_lock_with_caps(
+    brief_path:  &Path,
+    verified:    HashMap<String, LockEntry>,
+    capabilities: HashMap<String, LockEntry>,
+    skill_hashes: HashMap<String, String>,
+) -> bool {
+    let lock_path = lock::lock_path(brief_path);
+    let source_hash = std::fs::read(brief_path)
         .map(|b| sha256_file_hash(&b))
         .unwrap_or_else(|_| "unknown".into());
 
     let lock_file = LockFile {
-        meta:     LockMeta { brief_hash: source_hash, verified_at: now_rfc3339() },
-        verified: verified,
+        meta:         LockMeta { brief_hash: source_hash, verified_at: now_rfc3339(), skill_hashes },
+        verified,
+        capabilities,
     };
 
     match lock::write_lock(&lock_path, &lock_file) {
@@ -194,6 +230,144 @@ fn load_skill_interfaces(
         }
     }
     map
+}
+
+/// Load the filesystem paths of `.briefskill` files for each imported skill.
+fn load_skill_paths(
+    program: &Program,
+    ctx:     &checker::CheckContext<'_>,
+) -> HashMap<String, PathBuf> {
+    program.imports.iter()
+        .filter_map(|import| {
+            let path = checker::find_skill_interface(&import.name, ctx)?;
+            Some((import.name.clone(), path))
+        })
+        .collect()
+}
+
+/// Compute `sha256:<hex>` hashes for each `.briefskill` file.
+fn compute_skill_hashes(paths: &HashMap<String, PathBuf>) -> HashMap<String, String> {
+    paths.iter()
+        .filter_map(|(name, path)| {
+            let bytes = std::fs::read(path).ok()?;
+            Some((name.clone(), sha256_file_hash(&bytes)))
+        })
+        .collect()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Capability verification (E401 / E402)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// For each skill that has MCP config in `brief.toml [skills.*]`, connect to the
+/// skill server, call `tools/list`, and verify every function in `.briefskill`
+/// appears in the server's tool list.
+///
+/// - Skills with no MCP config (path-only) are skipped silently.
+/// - Returns `(all_ok, capabilities_map)` where `capabilities_map` maps
+///   `"SkillName.funcName"` → `VerificationResult`.
+fn verify_skill_capabilities(
+    program: &Program,
+    ifaces:  &HashMap<String, SkillInterface>,
+    mf:      Option<&BriefManifest>,
+) -> (bool, HashMap<String, LockEntry>) {
+    // Collect the skills actually used in perform calls.
+    let used_skills: std::collections::HashSet<&str> = program.tasks.iter()
+        .flat_map(|t| t.steps.iter())
+        .flat_map(|s| s.body.iter())
+        .filter_map(|stmt| {
+            let expr = match stmt {
+                crate::ast::Stmt::Expr { value, .. } | crate::ast::Stmt::Let { value, .. } => value,
+            };
+            if let Expr::Perform { skill, .. } = expr { Some(skill.as_str()) } else { None }
+        })
+        .collect();
+
+    let skills_map = mf.map(|m| &m.skills);
+    let mut capabilities: HashMap<String, LockEntry> = HashMap::new();
+    let mut all_ok = true;
+    let mut any_checked = false;
+
+    for (skill_name, iface) in ifaces {
+        let config = skills_map
+            .and_then(|m| m.get(skill_name))
+            .map(|e| e.as_config());
+
+        let config = match config {
+            Some(c) if c.has_mcp() => c,
+            _ => {
+                // No MCP config — skip capability check for this skill.
+                // Warn if the skill is actually used in perform calls.
+                if used_skills.contains(skill_name.as_str()) {
+                    eprintln!(
+                        "{}: skill '{}' is used in perform calls but has no mcp_command/mcp_url in brief.toml — \
+                         add [skills.{}] to enable capability verification",
+                        "warning".yellow().bold(), skill_name.cyan(), skill_name
+                    );
+                }
+                continue;
+            }
+        };
+
+        any_checked = true;
+        print!("{} Checking capabilities: {}... ", "●".blue().bold(), skill_name.cyan());
+
+        match verifier::list_skill_tools(&config, skill_name) {
+            Err(e) => {
+                println!("{}", "unreachable".red().bold());
+                eprintln!(
+                    "  {}: skill server for '{}' is unreachable: {e}",
+                    "error[E402]".red().bold(), skill_name.cyan()
+                );
+                // Mark all functions for this skill as failed.
+                for func in &iface.funcs {
+                    let key = format!("{skill_name}.{}", func.name);
+                    capabilities.insert(key, LockEntry {
+                        status:  VerifyStatus::Fail,
+                        message: Some(format!("server unreachable: {e}")),
+                    });
+                }
+                all_ok = false;
+            }
+            Ok(server_tools) => {
+                let mut skill_ok = true;
+                for func in &iface.funcs {
+                    let qualified = format!("{skill_name}.{}", func.name);
+                    // Accept both qualified ("SkillName.funcName") and bare ("funcName").
+                    let found = server_tools.contains(&qualified)
+                        || server_tools.contains(&format!("{skill_name}.{}", func.name))
+                        || server_tools.iter().any(|t| {
+                            t == &func.name || t.ends_with(&format!(".{}", func.name))
+                        });
+                    if found {
+                        capabilities.insert(qualified, LockEntry { status: VerifyStatus::Ok, message: None });
+                    } else {
+                        capabilities.insert(qualified.clone(), LockEntry {
+                            status:  VerifyStatus::Fail,
+                            message: Some("not found in skill server".to_string()),
+                        });
+                        eprintln!(
+                            "\n  {}: function '{}' declared in {}.briefskill but not found in skill server",
+                            "error[E401]".red().bold(), func.name.cyan(), skill_name
+                        );
+                        skill_ok = false;
+                        all_ok   = false;
+                    }
+                }
+                if skill_ok {
+                    println!("{} ({} function{})",
+                        "ok".green().bold(), iface.funcs.len(),
+                        if iface.funcs.len() == 1 { "" } else { "s" });
+                }
+            }
+        }
+    }
+
+    if any_checked && all_ok {
+        println!();
+    }
+
+    (all_ok, capabilities)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -289,20 +463,4 @@ fn expr_literal_str(expr: &Expr) -> Option<String> {
 
 fn strip_at(annotation: &str) -> &str {
     annotation.strip_prefix('@').unwrap_or(annotation)
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-
-fn write_empty_lock(brief_path: &Path) {
-    let lock_path = lock::lock_path(brief_path);
-    let source_hash = std::fs::read(brief_path)
-        .map(|b| sha256_file_hash(&b))
-        .unwrap_or_else(|_| "unknown".into());
-    let lf = LockFile {
-        meta:     LockMeta { brief_hash: source_hash, verified_at: now_rfc3339() },
-        verified: HashMap::new(),
-    };
-    if lock::write_lock(&lock_path, &lf).is_err() {
-        eprintln!("warn: could not write lock file {}", lock_path.display());
-    }
 }

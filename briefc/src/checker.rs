@@ -1177,6 +1177,7 @@ fn check_lock_gate(
                 span: program.imports.first().map(|i| i.span).unwrap_or_default(),
                 hint: Some("run: brief verify to re-seal the contract".to_string()),
             });
+            return;
         }
         LockState::Stale => {
             diags.push(BriefError {
@@ -1187,6 +1188,34 @@ fn check_lock_gate(
                 ),
                 span: program.imports.first().map(|i| i.span).unwrap_or_default(),
                 hint: Some("run: brief verify to refresh the verification seal".to_string()),
+            });
+            return;
+        }
+    }
+
+    // Also check that .briefskill files haven't changed since the lock was written.
+    // (If skill_hashes is empty, this is an old-format lock — skip the check.)
+    if !lock.meta.skill_hashes.is_empty() {
+        let current_hashes: HashMap<String, String> = program.imports.iter()
+            .filter_map(|import| {
+                let path = find_skill_interface(&import.name, ctx)?;
+                let bytes = std::fs::read(&path).ok()?;
+                Some((import.name.clone(), crate::lock::sha256_file_hash(&bytes)))
+            })
+            .collect();
+
+        let changed = crate::lock::changed_skill_hashes(&lock, &current_hashes);
+        for skill_name in changed {
+            diags.push(BriefError {
+                code: ErrorCode::LockRequired,
+                message: format!(
+                    "skill interface '{skill_name}.briefskill' has changed since last verify — lock is stale"
+                ),
+                span: program.imports.iter()
+                    .find(|i| i.name == skill_name)
+                    .map(|i| i.span)
+                    .unwrap_or_else(|| program.imports.first().map(|i| i.span).unwrap_or_default()),
+                hint: Some("run: brief verify to re-seal the contract".to_string()),
             });
         }
     }

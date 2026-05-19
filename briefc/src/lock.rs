@@ -55,6 +55,10 @@ pub struct LockMeta {
     pub brief_hash:  String,
     /// RFC-3339 UTC string, e.g. `"2026-05-30T10:00:00Z"`.
     pub verified_at: String,
+    /// SHA-256 hashes of `.briefskill` files at verify time.
+    /// Maps skill name → `"sha256:<hex>"`. If any `.briefskill` changes, the lock is stale.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub skill_hashes: HashMap<String, String>,
 }
 
 /// Parsed `.brief.lock` file.
@@ -64,6 +68,11 @@ pub struct LockFile {
     /// Maps `"<annotation>:<value>"` → `VerificationResult`.
     #[serde(default)]
     pub verified: HashMap<String, VerificationResult>,
+    /// Capability verification results from `brief verify`.
+    /// Maps `"SkillName.funcName"` → result. Informational — capability failures
+    /// prevent lock from being written entirely.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub capabilities: HashMap<String, VerificationResult>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -201,6 +210,21 @@ pub fn check_lock(lock: &LockFile, brief_source: &[u8], max_age_hours: u64) -> L
     LockState::Fresh
 }
 
+/// Returns skill names whose `.briefskill` hash has changed since the lock was written.
+/// Only checks skills that appear in the lock's `skill_hashes` map.
+/// Returns an empty vec if lock has no `skill_hashes` (old format — skip the check).
+pub fn changed_skill_hashes(
+    lock:    &LockFile,
+    current: &HashMap<String, String>,
+) -> Vec<String> {
+    lock.meta.skill_hashes.iter()
+        .filter_map(|(name, locked_hash)| {
+            let live_hash = current.get(name)?;
+            if live_hash != locked_hash { Some(name.clone()) } else { None }
+        })
+        .collect()
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Calendar helpers (no external deps)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -295,6 +319,7 @@ mod tests {
             meta: LockMeta {
                 brief_hash:  "sha256:abc".to_string(),
                 verified_at: "2026-05-30T10:00:00Z".to_string(),
+                skill_hashes: HashMap::new(),
             },
             verified: {
                 let mut m = HashMap::new();
@@ -304,6 +329,7 @@ mod tests {
                 });
                 m
             },
+            capabilities: HashMap::new(),
         };
         write_lock(&path, &lock).expect("write failed");
         let loaded = read_lock(&path).expect("read failed");
@@ -327,8 +353,10 @@ mod tests {
             meta: LockMeta {
                 brief_hash:  hash,
                 verified_at: now_rfc3339(), // just now
+                skill_hashes: HashMap::new(),
             },
             verified: HashMap::new(),
+            capabilities: HashMap::new(),
         };
         assert_eq!(check_lock(&lock, source, 24), LockState::Fresh);
     }
@@ -340,8 +368,10 @@ mod tests {
             meta: LockMeta {
                 brief_hash:  "sha256:aaaa".to_string(), // wrong hash
                 verified_at: now_rfc3339(),
+                skill_hashes: HashMap::new(),
             },
             verified: HashMap::new(),
+            capabilities: HashMap::new(),
         };
         assert_eq!(check_lock(&lock, source, 24), LockState::SourceChanged);
     }
@@ -354,8 +384,10 @@ mod tests {
             meta: LockMeta {
                 brief_hash:  hash,
                 verified_at: "2020-01-01T00:00:00Z".to_string(), // ancient
+                skill_hashes: HashMap::new(),
             },
             verified: HashMap::new(),
+            capabilities: HashMap::new(),
         };
         assert_eq!(check_lock(&lock, source, 24), LockState::Stale);
     }
@@ -368,11 +400,83 @@ mod tests {
             meta: LockMeta {
                 brief_hash:  hash,
                 verified_at: "2020-01-01T00:00:00Z".to_string(), // ancient
+                skill_hashes: HashMap::new(),
             },
             verified: HashMap::new(),
+            capabilities: HashMap::new(),
         };
         // max_age_hours=0 means never expire — should still be Fresh if hash matches
         assert_eq!(check_lock(&lock, source, 0), LockState::Fresh);
+    }
+
+    #[test]
+    fn changed_skill_hashes_detects_changed_skill() {
+        let lock = LockFile {
+            meta: LockMeta {
+                brief_hash:   "sha256:abc".to_string(),
+                verified_at:  "2026-01-01T00:00:00Z".to_string(),
+                skill_hashes: {
+                    let mut m = HashMap::new();
+                    m.insert("DesignSystem".to_string(), "sha256:old-hash".to_string());
+                    m.insert("GraphQL".to_string(),      "sha256:same".to_string());
+                    m
+                },
+            },
+            verified:     HashMap::new(),
+            capabilities: HashMap::new(),
+        };
+        let current = {
+            let mut m = HashMap::new();
+            m.insert("DesignSystem".to_string(), "sha256:new-hash".to_string()); // changed
+            m.insert("GraphQL".to_string(),      "sha256:same".to_string());     // unchanged
+            m
+        };
+        let changed = changed_skill_hashes(&lock, &current);
+        assert_eq!(changed, vec!["DesignSystem"]);
+    }
+
+    #[test]
+    fn changed_skill_hashes_empty_when_all_match() {
+        let lock = LockFile {
+            meta: LockMeta {
+                brief_hash:   "sha256:abc".to_string(),
+                verified_at:  "2026-01-01T00:00:00Z".to_string(),
+                skill_hashes: {
+                    let mut m = HashMap::new();
+                    m.insert("Auth".to_string(), "sha256:stable".to_string());
+                    m
+                },
+            },
+            verified:     HashMap::new(),
+            capabilities: HashMap::new(),
+        };
+        let current = {
+            let mut m = HashMap::new();
+            m.insert("Auth".to_string(), "sha256:stable".to_string());
+            m
+        };
+        assert!(changed_skill_hashes(&lock, &current).is_empty());
+    }
+
+    #[test]
+    fn changed_skill_hashes_empty_when_lock_has_no_hashes() {
+        // Old lock format (no skill_hashes) — skip the check.
+        let lock = LockFile {
+            meta: LockMeta {
+                brief_hash:   "sha256:abc".to_string(),
+                verified_at:  "2026-01-01T00:00:00Z".to_string(),
+                skill_hashes: HashMap::new(),
+            },
+            verified:     HashMap::new(),
+            capabilities: HashMap::new(),
+        };
+        let current = {
+            let mut m = HashMap::new();
+            m.insert("Auth".to_string(), "sha256:anything".to_string());
+            m
+        };
+        // Should return empty — old format locks skip skill hash checking.
+        assert!(changed_skill_hashes(&lock, &current).is_empty());
     }
 
     #[test]
