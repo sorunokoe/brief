@@ -188,7 +188,8 @@ pub fn check_lock(lock: &LockFile, brief_source: &[u8], max_age_hours: u64) -> L
 
     if let Some(lock_ts) = rfc3339_to_unix(&lock.meta.verified_at) {
         let age_secs = now.saturating_sub(lock_ts);
-        if age_secs > max_age_hours * 3600 {
+        let max_age_secs = max_age_hours.checked_mul(3600).unwrap_or(u64::MAX);
+        if age_secs > max_age_secs {
             return LockState::Stale;
         }
     }
