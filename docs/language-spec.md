@@ -870,3 +870,33 @@ This document describes Brief v1.0. The language is stable.
 - OnceLock-based builtin type sets
 - 117 compiler tests
 - 46 verified examples
+
+## §12 Stage 1 Mediated Self-Description (v0.5)
+
+As of v0.5, the Brief compiler describes its own compilation pipeline as a set of
+type-checked Brief tasks in `compiler/`. This is **Stage 1** of self-hosting:
+Brief is the authoritative description of pass structure; Rust skill backends
+provide execution.
+
+### New language features enabling Stage 1
+
+**`opaque type Name`** — declares a named type whose internals are unknown to Brief.
+Opaque types pass all type checks and cannot have fields accessed. Used for compiler
+artifacts (`TokenStream`, `Ast`, `HirModule`) at skill boundaries.
+
+**ABI-versioned skill interfaces** — `.briefskill` files carry `abi_version: "1.0"`.
+Mismatches between the interface declaration and the Rust backend are caught at
+load time (E212 `SkillAbiVersionMismatch`).
+
+**New error/warning codes:**
+- `E211` — `OpaqueTypeFieldAccess`: field access on opaque type
+- `E212` — `SkillAbiVersionMismatch`: skill ABI version mismatch
+- `E213` — `SkillAbiUnknownType`: skill fn references unknown type
+- `W105` — `OpaqueTypeUnused`: declared opaque type never used
+
+### CLI
+```bash
+brief self-hosting check              # validate all compiler pass Brief files
+brief self-hosting run <file>         # execute Brief-mediated pipeline
+brief self-hosting compare <file>     # diff Rust vs Brief-mediated outputs
+```

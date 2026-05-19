@@ -61,6 +61,11 @@ pub fn cmd_run(source_file: &Path) -> bool {
         return false;
     }
 
+    println!("{} validating {}", "self-hosting:".bold(), display_repo_relative(&source_file));
+    if !validate_source_file(&source_file) {
+        return false;
+    }
+
     let Some(task) = load_pipeline_task(&pipeline_path) else {
         eprintln!("{} could not load CompilerPipeline task", "error:".red().bold());
         return false;
@@ -180,6 +185,10 @@ fn display_repo_relative(path: &Path) -> String {
         .unwrap_or(path)
         .display()
         .to_string()
+}
+
+fn validate_source_file(source_file: &Path) -> bool {
+    runner::run_file(source_file, RunMode::Check { allow_missing_skills: false })
 }
 
 fn load_pipeline_task(path: &Path) -> Option<Task> {
@@ -341,4 +350,82 @@ fn run_cli(args: &[&str]) -> Option<CommandReport> {
 
 fn count_diagnostics(output: &str, marker: &str) -> usize {
     output.lines().filter(|line| line.starts_with(marker)).count()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT_FILE_ID: AtomicUsize = AtomicUsize::new(0);
+
+    struct TestFile {
+        path: PathBuf,
+    }
+
+    impl TestFile {
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TestFile {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+
+    fn example_path(name: &str) -> PathBuf {
+        repo_root().join("examples").join(name)
+    }
+
+    fn write_test_file(stem: &str, source: &str) -> TestFile {
+        let dir = repo_root().join("target/selfhosting-tests");
+        fs::create_dir_all(&dir).expect("create selfhosting test dir");
+
+        let id = NEXT_FILE_ID.fetch_add(1, Ordering::Relaxed);
+        let path = dir.join(format!("{stem}-{id}.brief"));
+        fs::write(&path, source).expect("write selfhosting test source");
+
+        TestFile { path }
+    }
+
+    #[test]
+    fn test_all_compiler_passes_check() {
+        assert!(cmd_check());
+    }
+
+    #[test]
+    fn test_compare_clean_file_matches() {
+        let requested = example_path("01-book-flight.brief");
+        let (resolved, _) = resolve_existing_source_path(&requested).expect("resolve 01-* example");
+
+        assert!(validate_source_file(&resolved));
+        assert!(cmd_run(&requested));
+    }
+
+    #[test]
+    fn test_compare_broken_file_both_fail() {
+        let bad_file = write_test_file("brief-test-bad", "task Broken {\n  ???\n}\n");
+
+        assert!(!validate_source_file(bad_file.path()));
+        assert!(!cmd_run(bad_file.path()));
+    }
+
+    #[test]
+    fn test_format_recovered_is_degraded() {
+        assert_eq!(COMPILER_BRIEFS.len(), 6);
+
+        let fmt_pass = fs::read_to_string(repo_root().join("compiler/04-fmt-pass.brief"))
+            .expect("read formatter pass spec");
+        assert!(fmt_pass.contains("FormatRecovered = comment trivia lost"));
+        assert!(fmt_pass.contains("degraded, not green"));
+    }
+
+    #[test]
+    fn test_run_mode_does_not_panic() {
+        let path = example_path("50-full-v05-showcase.brief");
+        assert!(path.exists(), "expected showcase example to exist");
+        assert!(cmd_run(&path));
+    }
 }
