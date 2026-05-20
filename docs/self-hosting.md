@@ -18,7 +18,7 @@ Resolution via **P10 Preliminary Action + P24 Mediator**:
 
 ## Architecture
 
-```
+```text
 ┌─────────────────────────────────────────────────────┐
 │                compiler/*.brief                      │
 │   01-lex  02-parse  03-check  04-fmt  05-hir         │
@@ -95,7 +95,7 @@ brief self-hosting compare examples/01-book-flight.brief
 ## Verification
 
 ```bash
-cargo run --bin brief -- ci                                    # 59/59
+cargo run --bin brief -- ci                                    # 60/60
 cargo run --bin brief -- self-hosting check                    # 6/6 compiler passes valid
 cargo run --bin brief -- self-hosting compare examples/01-*.brief  # MATCH
 cargo test -q                                                  # all tests pass

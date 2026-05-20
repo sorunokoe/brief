@@ -108,6 +108,21 @@ sealed type TaskStatus = Pending | Running | Done(String) | Failed(String)
 
 Sealed types are closed — the compiler knows all variants. They form the foundation of the effect row system.
 
+### Opaque Types
+
+`opaque type Name` declares a named type whose internals are unknown to Brief. Opaque types:
+- Pass all type checks — compatible as any argument or return type
+- Cannot have fields accessed (emits `E211`)
+- May appear as variants in sealed types: `sealed type LexResult = Ok(TokenStream) | Err(DiagSet)`
+- Are typically provided by skills at compiler artifact boundaries
+
+```brief
+opaque type TokenStream
+opaque type DiagnosticSet
+
+sealed type LexResult = Lexed(TokenStream) | LexFailed(DiagnosticSet)
+```
+
 ### 4.4 Structs
 
 ```brief
@@ -647,6 +662,9 @@ warning[W102]: skill interface 'DesignSystem' is stale
 | `E208` | `UnknownExtrasField` | Typed `extras { field: Type }` references an unknown type |
 | `E209` | `EffectContractViolation` | Skill effect is not declared in the task `effects [...]` block |
 | `E210` | `UndeclaredStepInCombinator` | `parallel`, `retry`, or `fallback` references a step not declared in the task |
+| `E211` | `OpaqueTypeFieldAccess` | Field access on an opaque type — opaque types are fully abstract |
+| `E212` | `SkillAbiVersionMismatch` | Skill ABI version in `.briefskill` does not match the expected version |
+| `E213` | `SkillAbiUnknownType` | Skill fn signature references a type not declared as opaque, sealed, or primitive |
 
 ### Warnings (non-fatal — task may still be handed to AI)
 
@@ -657,6 +675,7 @@ warning[W102]: skill interface 'DesignSystem' is stale
 | `W102` | `StaleSkillInterface` | Skill interface file checksum does not match current `README.md` |
 | `W103` | `DeprecatedStringExtras` | Legacy `extras = ["key": "value"]` syntax is deprecated in favor of typed `extras { ... }` |
 | `W104` | `BriefBuilderProvidesMissing` | `@BriefBuilder` task omits the recommended `provides { ... }` block |
+| `W105` | `OpaqueTypeUnused` | An `opaque type` is declared but never referenced in any sealed type variant, extras field, or step |
 
 ### Diagnostic format
 
@@ -719,13 +738,14 @@ effect Async {
 
 ```ebnf
 program        ::= top_decl*
-top_decl       ::= import_decl | sealed_type_decl | type_alias_decl
+top_decl       ::= import_decl | sealed_type_decl | opaque_type_decl | type_alias_decl
                  | effect_group_decl | struct_decl
                  | protocol_decl | effect_decl | task_decl | test_decl
 
 import_decl    ::= 'import' 'skill' STRING
 
 sealed_type_decl  ::= 'sealed' 'type' Ident type_params? '=' type_variant ('|' type_variant)*
+opaque_type_decl  ::= 'opaque' 'type' Ident
 type_variant      ::= Ident ( '(' type_ref (',' type_ref)* ')' )?
 
 type_alias_decl   ::= 'type' Ident '=' attribute+ type_ref
@@ -858,6 +878,10 @@ This document describes Brief v1.0. The language is stable.
 - Phase contracts: `pre { } / post { }` on steps
 - Effect contracts: `effects [...]` on tasks (E209)
 - Workflow combinators: `parallel`, `retry(n)`, `fallback` (E210)
+- `opaque type Name` declarations — abstract compiler artifact types at skill boundaries
+- ABI-versioned `.briefskill` interfaces (`abi_version: "1.0"`) with load-time verification
+- `brief self-hosting check|run|compare` — mediated self-description CLI
+- Stage 1 Mediated Self-Description: 6 compiler passes described as Brief tasks in `compiler/`
 
 ### v1.0
 - Stability: cross-step `@once` linear type tracking (E104/E105 across steps)
@@ -868,10 +892,10 @@ This document describes Brief v1.0. The language is stable.
 - `ExitCode` API (no `process::exit` in library modules)
 - StringPool O(1) dedup
 - OnceLock-based builtin type sets
-- 117 compiler tests
-- 46 verified examples
+- 226 compiler tests
+- 59 verified examples
 
-## §12 Stage 1 Mediated Self-Description (v0.5)
+## 17. Stage 1 Mediated Self-Description
 
 As of v0.5, the Brief compiler describes its own compilation pipeline as a set of
 type-checked Brief tasks in `compiler/`. This is **Stage 1** of self-hosting:

@@ -65,6 +65,47 @@ task ReviewPR : TaskBrief {
 
 `extras { ... }` gives the compiler a schema it can validate. The old `extras = ["key": "value"]` form still parses, but it emits W103.
 
+### Opaque Types
+
+Use `opaque type` when a skill returns a value that Brief shouldn't inspect — typically compiler artifacts, SDK handles, or database cursors:
+
+```brief
+import skill "DatabasePrimitives"
+
+opaque type Connection
+opaque type QueryResult
+
+sealed type DbOutcome = Connected(Connection) | ConnectionFailed(String)
+
+@BriefBuilder
+task QueryUsers : TaskBrief uses [DatabasePrimitives] {
+    goal = "Open a database connection and run a user query"
+
+    effects [network]
+
+    provides {
+        rowCount: Int
+    }
+
+    step Connect {
+        let outcome = perform DatabasePrimitives.connect("postgres://localhost/app")?;
+        let conn = match outcome {
+            Connected(c)          => c
+            ConnectionFailed(msg) => msg
+        };
+    }
+
+    step RunQuery {
+        pre { conn.isReady }
+
+        let result = perform DatabasePrimitives.query(conn, "SELECT id FROM users")?;
+        let rowCount = perform DatabasePrimitives.rowCount(result)?;
+    }
+}
+```
+
+Brief type-checks the entire task — `conn: Connection` and `result: QueryResult` are fully tracked — without needing to know the internal structure of either type.
+
 ### Match Expressions
 
 Use `match` to branch on sealed type variants:
@@ -315,6 +356,18 @@ brief test review-pr.brief --live
   run: brief fmt --check tasks/*.brief
 ```
 
+### Compiler Self-Hosting CI
+
+Brief's own compiler pipeline is described as type-checked Brief tasks. Validate them:
+
+```bash
+# Validate all 6 compiler pass Brief files
+brief self-hosting check
+
+# Compare Rust and Brief-mediated pipelines
+brief self-hosting compare examples/01-book-flight.brief
+```
+
 `brief.toml`:
 ```toml
 [ci]
@@ -353,6 +406,8 @@ Copy `examples/skills/brief.toml` as a starting point for your project.
 | `E103` | `perform` calls skill not in `uses` | Add skill to `uses [...]` |
 | `E107` | No `.briefskill` file found | Run `brief skillgen .claude/skills/<Name>/` |
 | `E207` | Match on a sealed type is not exhaustive | Add the missing variants or a trailing `_` arm |
+| `E211` | Field access on opaque type | Remove the field access — opaque types are abstract |
+| `W105` | `opaque type` declared but never used | Reference it in a sealed type or task extras |
 | `E301` | `@range` boundary not in test block | Add `perform` calls with min/max values in a `test` block |
 | `E302` | `@enum` value not in test block | Add `perform` calls for each enum value in a `test` block |
 | `E303` | `.brief.lock` missing or stale | Run `brief verify` |

@@ -1,0 +1,73 @@
+// Example 54 — opaque types: type-safe handles without exposing internals
+//
+// `opaque type` declares a named type whose structure Brief cannot inspect.
+// Use it for: database connections, file handles, SDK session objects,
+// cryptographic keys — anything that should be passed around but not peeked into.
+//
+// Brief still fully type-checks the task. The opaque values flow through
+// `extras`, `provides`, sealed type variants, and step bindings — Brief just
+// doesn't try to inspect their fields.
+
+import skill "VaultService"
+import skill "AuditLog"
+
+opaque type VaultToken
+opaque type EncryptedPayload
+
+sealed type VaultOutcome = Opened(VaultToken) | VaultDenied(String)
+sealed type EncryptResult = Encrypted(EncryptedPayload) | EncryptFailed(String)
+
+@BriefBuilder
+task SecurePaymentVault : TaskBrief uses [VaultService, AuditLog] {
+    goal = "Open a vault session and encrypt a payment payload for secure storage"
+
+    effects [network, storage]
+
+    extras {
+        vaultPath: String
+        rawPayload: String
+        requestId: String
+    }
+
+    provides {
+        encryptedRef: String
+        auditTrail: String
+    }
+
+    step OpenVault {
+        pre { vaultPath.isNotEmpty }
+        post { vaultToken.isReady }
+
+        let outcome = perform VaultService.open(vaultPath)?;
+        let vaultToken = match outcome {
+            Opened(t)      => t
+            VaultDenied(r) => r
+        };
+    }
+
+    step EncryptPayload {
+        pre { vaultToken.isReady, rawPayload.isNotEmpty }
+        post { encryptResult.isSealed }
+
+        let encryptResult = perform VaultService.encrypt(vaultToken, rawPayload)?;
+    }
+
+    step StoreAndAudit {
+        pre { encryptResult.isSealed }
+        post { encryptedRef.isSet, auditTrail.isSet }
+
+        let encryptedRef = match encryptResult {
+            Encrypted(p)       => perform VaultService.store(p)?
+            EncryptFailed(msg) => msg
+        };
+        let auditTrail = perform AuditLog.record(requestId, encryptedRef)?;
+    }
+}
+
+test "vault path must not be empty" {
+    assert vaultPath.isNotEmpty
+}
+
+test "encrypted ref is set after successful vault operation" {
+    assert encryptedRef.isSet
+}
