@@ -17,8 +17,8 @@ brief serve  YourTask.brief     # start MCP server for AI (requires valid lock)
 mcp_command = ["npx", "-y", "@brief/shell-skill"]
 
 [verifiers."@shell-command"]
-# 🔧 Replace with a verifier that checks commands exist in PATH
-mcp_command = ["npx", "-y", "@brief/shell-verifier"]
+# ✅ Ships with Brief — checks that a command exists in PATH
+skill = "builtin:shell-command"
 ```
 
 ## Interface

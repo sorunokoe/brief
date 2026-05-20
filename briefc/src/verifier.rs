@@ -49,7 +49,10 @@ pub fn dispatch(
 ) -> VerificationResult {
     if let Some(builtin) = &config.skill {
         return match builtin.as_str() {
-            "builtin:url" => builtin_url(value),
+            "builtin:url"           => builtin_url(value),
+            "builtin:local-path"    => builtin_local_path(value),
+            "builtin:shell-command" => builtin_shell_command(value),
+            "builtin:github-repo"   => builtin_github_repo(value),
             other => {
                 eprintln!(
                     "  {} unknown builtin verifier '{}' for @{}",
@@ -533,5 +536,97 @@ pub fn builtin_env(var_name: &str) -> VerificationResult {
         Ok(v) if !v.is_empty() => VerificationResult::ok(),
         Ok(_) => VerificationResult::fail(&format!("env var '{var_name}' is set but empty")),
         Err(_) => VerificationResult::fail(&format!("env var '{var_name}' is not set")),
+    }
+}
+
+/// `builtin:local-path` — verifies that a file or directory exists on the local filesystem.
+fn builtin_local_path(value: &str) -> VerificationResult {
+    if value.is_empty() {
+        return VerificationResult::fail("path is empty");
+    }
+    let p = std::path::Path::new(value);
+    if p.exists() {
+        VerificationResult::ok()
+    } else {
+        VerificationResult::fail(&format!("path does not exist: {value}"))
+    }
+}
+
+/// `builtin:shell-command` — verifies that a command (or the first token of a command string)
+/// is available in PATH.
+fn builtin_shell_command(value: &str) -> VerificationResult {
+    let cmd = value.split_whitespace().next().unwrap_or(value).trim();
+    if cmd.is_empty() {
+        return VerificationResult::fail("command is empty");
+    }
+    // Use `which`-style PATH search via std::process.
+    let result = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("command -v {}", shell_escape(cmd)))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    match result {
+        Ok(s) if s.success() => VerificationResult::ok(),
+        _ => VerificationResult::fail(&format!("command not found in PATH: {cmd}")),
+    }
+}
+
+/// Minimal shell escaping — wraps value in single quotes and escapes embedded single quotes.
+fn shell_escape(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// `builtin:github-repo` — verifies that a GitHub repository is accessible.
+///
+/// Accepts `owner/repo` or a full `https://github.com/owner/repo` URL.
+/// Uses `GITHUB_TOKEN` env var for authentication if set.
+fn builtin_github_repo(value: &str) -> VerificationResult {
+    // Normalise to `owner/repo`.
+    let slug = if let Some(rest) = value.strip_prefix("https://github.com/") {
+        rest.trim_end_matches('/').trim_end_matches(".git")
+    } else if let Some(rest) = value.strip_prefix("github.com/") {
+        rest.trim_end_matches('/').trim_end_matches(".git")
+    } else {
+        value.trim()
+    };
+
+    if slug.is_empty() || !slug.contains('/') {
+        return VerificationResult::fail(&format!(
+            "invalid GitHub repo: expected 'owner/repo', got '{value}'"
+        ));
+    }
+
+    let url = format!("https://api.github.com/repos/{slug}");
+
+    let mut req = ureq::builder()
+        .timeout(Duration::from_secs(10))
+        .redirects(0)
+        .build()
+        .get(&url)
+        .set("Accept", "application/vnd.github+json")
+        .set("User-Agent", &format!("brief/{}", env!("CARGO_PKG_VERSION")));
+
+    if let Ok(token) = std::env::var("GITHUB_TOKEN").or_else(|_| std::env::var("GITHUB_PERSONAL_ACCESS_TOKEN")) {
+        if !token.is_empty() {
+            req = req.set("Authorization", &format!("Bearer {token}"));
+        }
+    }
+
+    match req.call() {
+        Ok(resp) if resp.status() < 400 => VerificationResult::ok(),
+        Ok(resp) if resp.status() == 404 => {
+            VerificationResult::fail(&format!("GitHub repo not found or not accessible: {slug}"))
+        }
+        Ok(resp) if resp.status() == 401 || resp.status() == 403 => {
+            VerificationResult::fail(&format!(
+                "GitHub repo access denied (HTTP {}): set GITHUB_TOKEN to authenticate",
+                resp.status()
+            ))
+        }
+        Ok(resp) => {
+            VerificationResult::fail(&format!("GitHub API returned HTTP {}", resp.status()))
+        }
+        Err(e) => VerificationResult::fail(&format!("GitHub API request failed: {e}")),
     }
 }

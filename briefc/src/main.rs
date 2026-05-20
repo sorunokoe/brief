@@ -67,6 +67,12 @@ enum Commands {
     Serve {
         /// Path to the .brief file
         file: PathBuf,
+
+        /// Start without requiring a verified .brief.lock (exploratory mode).
+        /// Still enforces uses[], forbids{}, and needs{} env vars.
+        /// Dynamic annotations (@url, @local-path, etc.) are NOT verified in draft mode.
+        #[arg(long)]
+        draft: bool,
     },
 
     /// Compile and execute a .brief file
@@ -252,9 +258,9 @@ fn main() -> std::process::ExitCode {
             if ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::FAILURE }
         }
 
-        Commands::Serve { file } => {
+        Commands::Serve { file, draft } => {
             // No banner — MCP protocol on stdio.
-            let ok = serve::run_serve(&file);
+            let ok = serve::run_serve(&file, draft);
             if ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::FAILURE }
         }
 

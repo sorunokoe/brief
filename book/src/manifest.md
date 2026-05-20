@@ -29,10 +29,10 @@ Payments = ".claude/skills/Payments"
 skill = "builtin:url"          # ships with Brief
 
 [verifiers."@github-repo"]
-mcp_command = ["npx", "-y", "@brief/github-verifier"]
+skill = "builtin:github-repo"  # ships with Brief — uses GITHUB_TOKEN if set
 
 [verifiers."@local-path"]
-mcp_command = ["npx", "-y", "@brief/filesystem-verifier"]
+skill = "builtin:local-path"   # ships with Brief — checks path exists
 
 # Verification policy
 [verify]
@@ -77,22 +77,33 @@ Routes a dynamic annotation to a verifier. Each entry is keyed by the annotation
 
 | Field | Description |
 |-------|-------------|
-| `skill` | Built-in verifier name. Only `"builtin:url"` ships with Brief. |
+| `skill` | Built-in verifier name. `"builtin:url"`, `"builtin:local-path"`, `"builtin:github-repo"`, and `"builtin:shell-command"` ship with Brief. |
 | `mcp_command` | Shell command to spawn a verifier MCP server. |
 | `mcp_url` | URL of an already-running verifier MCP server. |
 
 Exactly one of `skill`, `mcp_command`, or `mcp_url` should be present.
 
-**`builtin:url` — the built-in URL verifier**
+**Built-in verifiers (no npm required)**
 
-Sends an HTTP HEAD (falling back to GET) to verify the URL is reachable. For security, it **blocks private and reserved addresses**: RFC-1918 ranges (10.x, 172.16–31.x, 192.168.x), loopback (127.x), link-local / cloud metadata (169.254.x), and equivalent IPv6 ranges. Redirects are also disabled to prevent redirect-based bypass. An `@url` annotation on a private URL will fail verification — this is intentional.
+| Builtin | What it checks |
+|---------|----------------|
+| `builtin:url` | URL is reachable via HTTP HEAD/GET. Blocks private IPs (SSRF guard). |
+| `builtin:local-path` | File or directory exists on the local filesystem. |
+| `builtin:github-repo` | GitHub repo is accessible via the GitHub API. Uses `GITHUB_TOKEN` env var if set. |
+| `builtin:shell-command` | Command (or first token) is available in `PATH`. |
 
 ```toml
 [verifiers."@url"]
 skill = "builtin:url"
 
 [verifiers."@github-repo"]
-mcp_command = ["npx", "-y", "@brief/github-verifier"]
+skill = "builtin:github-repo"
+
+[verifiers."@local-path"]
+skill = "builtin:local-path"
+
+[verifiers."@shell-command"]
+skill = "builtin:shell-command"
 ```
 
 ### `[verify]`

@@ -57,10 +57,10 @@ mcp_command = ["npx", "-y", "@modelcontextprotocol/server-github"]
 mcp_command = ["npx", "-y", "@brief/filesystem-skill"]
 
 [verifiers."@github-repo"]
-mcp_command = ["npx", "-y", "@brief/github-verifier"]
+skill = "builtin:github-repo"  # ships with Brief — uses GITHUB_TOKEN if set
 
 [verifiers."@local-path"]
-mcp_command = ["npx", "-y", "@brief/local-path-verifier"]
+skill = "builtin:local-path"   # ships with Brief — checks path exists
 ```
 
 ### 3. Check and verify

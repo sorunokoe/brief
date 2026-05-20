@@ -44,7 +44,7 @@ fn fresh_id() -> u64 { NEXT_ID.fetch_add(1, Ordering::Relaxed) }
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-pub fn run_serve(path: &Path) -> bool {
+pub fn run_serve(path: &Path, draft: bool) -> bool {
     // ── 1. Read + parse source ──────────────────────────────────────────────
     let source = match std::fs::read_to_string(path) {
         Ok(s)  => s,
@@ -74,9 +74,20 @@ pub fn run_serve(path: &Path) -> bool {
     let mf = manifest::load_manifest(file_dir);
     let max_lock_age = mf.as_ref().map_or(24, |m| m.verify.max_lock_age_hours);
 
-    // ── 3. Validate .brief.lock ─────────────────────────────────────────────
+    // ── 3. Validate .brief.lock (skipped in draft mode) ────────────────────
     let lock_path = lock::lock_path(path);
-    match lock::read_lock(&lock_path) {
+    if draft {
+        // Draft mode: skip lock gate. Warn on stderr (safe — not part of MCP JSON-RPC).
+        eprintln!("{} {} brief serve --draft",
+            "⚠".yellow().bold(),
+            "Draft mode — dynamic annotations not verified. Run `brief verify` to seal the contract."
+                .yellow()
+        );
+        eprintln!("{} scope enforcement (uses[], forbids{{}}, needs{{}}) is still active.",
+            "  ↳".dimmed()
+        );
+    } else {
+        match lock::read_lock(&lock_path) {
         None => {
             eprintln!("{}", "✗ Contract unsealed.".red().bold());
             eprintln!("  Run {} first to seal the contract.", "`brief verify`".cyan());
@@ -103,8 +114,9 @@ pub fn run_serve(path: &Path) -> bool {
                     return false;
                 }
             }
+            }
         }
-    }
+    } // end lock check
 
     // ── 4. Load interfaces ──────────────────────────────────────────────────
 
@@ -148,9 +160,17 @@ pub fn run_serve(path: &Path) -> bool {
     let mut consumed_handles: HashSet<String> = HashSet::new();
 
     // ── 5. MCP server loop ──────────────────────────────────────────────────
-    eprintln!("{} Brief MCP server ready (contract sealed: {})",
-        "●".green().bold(), path.display()
-    );
+    if draft {
+        eprintln!("{} Brief MCP server ready {} ({})",
+            "●".yellow().bold(),
+            "[DRAFT — unverified]".yellow(),
+            path.display()
+        );
+    } else {
+        eprintln!("{} Brief MCP server ready (contract sealed: {})",
+            "●".green().bold(), path.display()
+        );
+    }
     eprintln!("{} Skills: {}", "  ↳".dimmed(),
         ifaces.keys().cloned().collect::<Vec<_>>().join(", ")
     );

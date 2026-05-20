@@ -1,9 +1,10 @@
-// Example brief.toml for a project using the reference skills.
-// Copy to your project root as brief.toml and adjust the mcp_command entries.
-//
-// Package availability:
-//   ✅ @modelcontextprotocol/server-* — official packages from Anthropic, installable today
-//   🔧 @brief/* — reference package names; substitute your own MCP server for now
+# Example brief.toml for a project using the reference skills.
+# Copy to your project root as brief.toml and adjust the mcp_command entries.
+#
+# Package availability:
+#   ✅ @modelcontextprotocol/server-* — official packages from Anthropic, installable today
+#   ✅ builtin:*                       — ships with Brief, no npm install required
+#   🔧 @brief/*                        — reference package names; substitute your own MCP server for now
 
 [project]
 name    = "my-brief-project"
@@ -45,18 +46,17 @@ mcp_command = ["npx", "-y", "@brief/shell-skill"]
 skill = "builtin:url"
 
 [verifiers."@local-path"]
-# 🔧 Placeholder — replace with a verifier that checks file paths exist
-# Simple alternative: mcp_command = ["node", "./verify-local-path.js"]
-mcp_command = ["npx", "-y", "@brief/local-path-verifier"]
+# ✅ Ships with Brief — checks that a file or directory exists on the local filesystem
+skill = "builtin:local-path"
 
 [verifiers."@github-repo"]
-# 🔧 Placeholder — replace with a verifier that checks GitHub repo access
-# Uses GITHUB_TOKEN if set
-mcp_command = ["npx", "-y", "@brief/github-verifier"]
+# ✅ Ships with Brief — checks GitHub repo accessibility via the GitHub API
+# Uses GITHUB_TOKEN env var if set (required for private repos, recommended for rate-limits)
+skill = "builtin:github-repo"
 
 [verifiers."@shell-command"]
-# 🔧 Placeholder — replace with a verifier that checks commands exist in PATH
-mcp_command = ["npx", "-y", "@brief/shell-verifier"]
+# ✅ Ships with Brief — checks that a command exists in PATH
+skill = "builtin:shell-command"
 
 # ── Verification settings ─────────────────────────────────────────────────────
 [verify]

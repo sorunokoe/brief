@@ -195,7 +195,7 @@ mcp_command = ["npx", "-y", "@brief/filesystem-skill"]
 skill = "builtin:url"          # ships with Brief
 
 [verifiers."@github-repo"]
-mcp_command = ["npx", "-y", "@brief/github-verifier"]
+skill = "builtin:github-repo"  # ships with Brief — uses GITHUB_TOKEN if set
 ```
 
 ### Step 5 — Verify (seal the contract)

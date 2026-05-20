@@ -99,6 +99,7 @@ mcp_command = ["npx", "-y", "@figma/brief-verifier"]
 | `brief check <file>` | ✅ works | Type-check — fast, no network, CI-safe |
 | `brief verify <file>` | ✅ works | Seal the contract → writes `.brief.lock` |
 | `brief serve <file>` | ✅ works | Start MCP server (requires valid lock) |
+| `brief serve <file> --draft` | ✅ works | Start MCP server without a lock — enforces scope but skips dynamic annotation verification |
 | `brief run <file>` | ✅ works | Execute `.brief` against real MCP skill servers |
 | `brief test <file>` | ✅ works | Run `test { }` blocks with mock skill system |
 | `brief test <file> --live` | ✅ works | Same, but make real MCP calls instead of mocks |
@@ -110,7 +111,6 @@ mcp_command = ["npx", "-y", "@figma/brief-verifier"]
 | `brief init <name>` | ✅ works | Scaffold a new Brief project |
 | `brief ci` | ✅ works | Check all `[ci] examples` from `brief.toml` |
 | `brief lsp` | ✅ works | LSP server for editor integration |
-| `brief build <file>` | 🔧 roadmap | Compile to native binary via LLVM |
 
 ## Composable Verification
 
@@ -119,14 +119,15 @@ Brief's compiler knows zero domain logic. Everything is a plugin:
 ```
 Brief Core (small, stable)
 ├── Static: @range, @enum, @matches, @nonEmpty  (compiler, always)
-├── builtin:url (ships with Brief — just HTTP GET)
+├── builtin:url           (ships with Brief — HTTP HEAD/GET)
+├── builtin:local-path    (ships with Brief — path exists check)
+├── builtin:github-repo   (ships with Brief — GitHub API, uses GITHUB_TOKEN)
+├── builtin:shell-command (ships with Brief — command in PATH check)
 └── Verifier protocol: dispatch(annotation, value, context) → VerificationResult
 
-Verifier Bricks (same MCP format as skill bricks)
-├── @brief/local-path-verifier   → npm install + brief verify
-├── @brief/github-verifier       → npm install + brief verify
-├── @brief/shell-verifier        → npm install + brief verify
-└── mcp_command = ["python", "./my-verify.py"]  → user-written
+Custom Verifiers (MCP format — bring your own)
+├── mcp_command = ["python", "./my-verify.py"]   → user-written
+└── mcp_command = ["npx", "@figma/brief-verifier"] → community-built
 
 Routing (brief.toml — your composition layer)
 [verifiers."@url"]    skill = "builtin:url"
@@ -229,8 +230,10 @@ task CheckoutFlow : TaskBrief uses [Cart, Payment, Order] {
 - ✅ `brief skillgen` — LLM annotation extraction
 - ✅ **`needs {}` block** — prerequisite verification (env, feature, config)
 - ✅ **`forbids {}` block** — scope boundaries enforced statically and at runtime
-- 🔧 LLVM/WASM backend
-- 🔧 npm verifier packages (`@brief/local-path-verifier`, etc.)
+- ✅ **`brief serve --draft`** — start MCP server without a lock (scope enforcement active; dynamic annotations unverified)
+- ✅ **`builtin:local-path`** — path existence verifier (no npm required)
+- ✅ **`builtin:github-repo`** — GitHub repo access verifier (no npm required)
+- ✅ **`builtin:shell-command`** — command-in-PATH verifier (no npm required)
 
 ## Contributing
 
