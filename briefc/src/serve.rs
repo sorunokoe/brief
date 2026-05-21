@@ -178,6 +178,10 @@ pub fn run_serve(path: &Path, draft: bool, record: Option<&Path>, record_mode: R
     let once_fns = collect_once_fns(&ifaces, &program);
     let mut consumed_handles: HashSet<String> = HashSet::new();
 
+    // Collect sensitive env values for trace redaction.
+    // These are the actual runtime values of all needs{env "X"} variables.
+    let sensitive_env_values = collect_sensitive_env_values(&program);
+
     // ── 5. Open trace writer (if --record) ─────────────────────────────────
     let mut trace_writer: Option<std::io::BufWriter<std::fs::File>> = None;
     if let Some(trace_path) = record {
@@ -337,7 +341,7 @@ pub fn run_serve(path: &Path, draft: bool, record: Option<&Path>, record_mode: R
                             if let Some(tw) = trace_writer.as_mut() {
                                 write_call_trace(tw, &sn, fn_name, &arguments,
                                     false, Some(reason), 0, None, false,
-                                    record_mode, &[]);
+                                    record_mode, &sensitive_env_values);
                             }
                             send_line(&mut out, &err_obj);
                             eprintln!("{} E422 blocked: {sn}.{fn_name} — {reason}",
@@ -355,7 +359,7 @@ pub fn run_serve(path: &Path, draft: bool, record: Option<&Path>, record_mode: R
                                         .map(|s| s.len()).unwrap_or(0);
                                     write_call_trace(tw, &sn, fn_name, &arguments,
                                         true, None, elapsed, Some(result_size), false,
-                                        record_mode, &[]);
+                                        record_mode, &sensitive_env_values);
                                 }
                                 // @once enforcement: check the response content hash.
                                 // We hash the RESPONSE (not the call args) so that two
@@ -382,7 +386,7 @@ pub fn run_serve(path: &Path, draft: bool, record: Option<&Path>, record_mode: R
                                 if let Some(tw) = trace_writer.as_mut() {
                                     write_call_trace(tw, &sn, fn_name, &arguments,
                                         true, None, elapsed, Some(0), true,
-                                        record_mode, &[]);
+                                        record_mode, &sensitive_env_values);
                                 }
                                 json_error(id, -32603, &msg)
                             },
@@ -755,6 +759,23 @@ fn check_env_needs_at_startup(program: &Program) -> bool {
             "✗".red().bold());
     }
     all_ok
+}
+
+/// Collect the runtime values of all `needs { env "X" }` variables.
+/// These are used to redact secret values from JSONL traces.
+fn collect_sensitive_env_values(program: &Program) -> Vec<String> {
+    let mut vals = Vec::new();
+    for task in &program.tasks {
+        for need in &task.needs {
+            if need.kind != NeedKind::Env { continue; }
+            if let Ok(val) = std::env::var(&need.key) {
+                if !val.is_empty() {
+                    vals.push(val);
+                }
+            }
+        }
+    }
+    vals
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

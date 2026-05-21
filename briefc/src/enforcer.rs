@@ -121,9 +121,10 @@ fn arg_pattern_matches(pat: &ArgPattern, actual: Option<&serde_json::Value>) -> 
 
         ArgPattern::Glob(glob_str) => match actual {
             Some(serde_json::Value::String(s)) => {
-                let normalized = normalize_path(s);
-                glob::Pattern::new(glob_str)
-                    .map(|p| p.matches(&normalized))
+                let normalized_path = normalize_path(s);
+                let normalized_glob = normalize_path(glob_str);
+                glob::Pattern::new(&normalized_glob)
+                    .map(|p| p.matches(&normalized_path))
                     .unwrap_or(false)
             }
             _ => false,
@@ -160,34 +161,38 @@ fn normalize_path(path: &str) -> String {
         p.truncate(p.len() - 2);
     }
 
-    // Resolve segment/.. — iterate until stable.
-    loop {
-        let resolved = resolve_dotdot(&p);
-        if resolved == p {
-            break;
-        }
-        p = resolved;
-    }
+    // Resolve .. segments (clamped at root).
+    p = resolve_dotdot(&p);
 
     p
 }
 
-/// Single-pass resolution of `non-dotdot-segment/..` pairs.
+/// Resolve all `..` segments using a stack-based approach.
+/// Paths that try to ascend above root are clamped (e.g. `/../x` → `/x`).
+/// This prevents `/../etc/passwd` from escaping a `/tmp/**` allow pattern.
 fn resolve_dotdot(path: &str) -> String {
-    let mut parts: Vec<&str> = path.split('/').collect();
-    let mut i = 1;
-    while i < parts.len() {
-        if parts[i] == ".." && !parts[i - 1].is_empty() && parts[i - 1] != ".." {
-            parts.remove(i);
-            parts.remove(i - 1);
-            if i > 1 {
-                i -= 1;
+    let is_absolute = path.starts_with('/');
+    let mut stack: Vec<&str> = Vec::new();
+
+    for segment in path.split('/') {
+        match segment {
+            "" | "." => {}  // skip empty / self-reference
+            ".." => {
+                if stack.is_empty() {
+                    // Clamp: cannot ascend above root (or current dir for relative paths).
+                } else {
+                    stack.pop();
+                }
             }
-        } else {
-            i += 1;
+            s => stack.push(s),
         }
     }
-    parts.join("/")
+
+    if is_absolute {
+        format!("/{}", stack.join("/"))
+    } else {
+        stack.join("/")
+    }
 }
 
 /// Format arg patterns for display in blocked reason strings.
@@ -449,5 +454,45 @@ mod tests {
             }
             _ => panic!("expected Blocked"),
         }
+    }
+
+    // ── Path normalization / traversal security ──────────────────────────────
+
+    #[test]
+    fn path_traversal_above_root_clamped() {
+        // `/../etc/passwd` must normalize to `/etc/passwd`, not stay as `/../etc/passwd`.
+        assert_eq!(normalize_path("/../etc/passwd"), "/etc/passwd");
+    }
+
+    #[test]
+    fn path_traversal_multiple_ascents_clamped() {
+        // `/a/b/../../../c` — extra `..` beyond root is clamped.
+        assert_eq!(normalize_path("/a/b/../../../c"), "/c");
+    }
+
+    #[test]
+    fn path_dotdot_root_alone_clamped() {
+        // `/..` should normalize to `/`.
+        assert_eq!(normalize_path("/.."), "/");
+    }
+
+    #[test]
+    fn path_traversal_cannot_bypass_tmp_allow() {
+        // Allow only /tmp/**; path /tmp/../../etc/passwd must NOT match.
+        let allow = vec![pat("FS", Some("read_file"), vec![("path", glob("/tmp/**"))])];
+        let args = json!({"path": "/tmp/../../etc/passwd"});
+        // Normalized to /etc/passwd — does NOT match /tmp/**
+        let decision = check_call("FS", "read_file", &args, &allow, &[]);
+        assert!(
+            matches!(decision, CallDecision::Blocked { .. }),
+            "traversal path must be blocked when allow is /tmp/**"
+        );
+    }
+
+    #[test]
+    fn path_normal_resolution_still_works() {
+        assert_eq!(normalize_path("/a/b/../c"), "/a/c");
+        assert_eq!(normalize_path("/a/./b"), "/a/b");
+        assert_eq!(normalize_path("//a//b//"), "/a/b");
     }
 }

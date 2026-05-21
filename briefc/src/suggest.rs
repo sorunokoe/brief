@@ -225,52 +225,55 @@ pub fn run_suggest(trace: &Path, file: Option<&Path>, apply: bool) -> bool {
 
 /// Apply safe (W501, W503) patches to the .brief file.
 /// Only adds `uses [X]` entries and `needs { env "X" }` entries.
+///
+/// Strategy: collect all (byte_offset, old_text, new_text) replacements first,
+/// then apply them in reverse byte order so that earlier offsets remain valid.
 fn apply_safe_patches(
     path: &Path,
     src: &str,
     suggestions: &[Suggestion],
 ) -> Result<(), String> {
-    let mut patched = src.to_string();
+    // Each entry: (byte_start, byte_end, replacement_text)
+    let mut replacements: Vec<(usize, usize, String)> = Vec::new();
+
+    let mut working = src.to_string();
 
     for s in suggestions {
         if s.severity != SuggestionKind::Safe { continue; }
         match s.code {
             "W501" => {
-                // Add skill to uses[] in the first task.
-                // Find `uses [` and insert before the `]`.
+                // Add skill to uses[] in the first task block.
                 if let Some(patch_skill) = s.patch.as_ref()
                     .and_then(|p| p.trim().strip_prefix("uses [... "))
                     .map(|p| p.trim_end_matches(']').trim())
                 {
-                    if let Some(pos) = patched.find("uses [") {
-                        if let Some(close) = patched[pos..].find(']') {
-                            let insert_at = pos + close;
-                            let existing = &patched[pos..insert_at + 1];
-                            // Only add if not already present.
+                    if let Some(pos) = working.find("uses [") {
+                        if let Some(close_rel) = working[pos..].find(']') {
+                            let insert_at = pos + close_rel;
+                            let existing = &working[pos..insert_at + 1];
                             if !existing.contains(patch_skill) {
-                                let new_uses = if existing.trim_end_matches(']').trim().ends_with('[') {
+                                let new_text = if existing.trim_end_matches(']').trim().ends_with('[') {
                                     format!("{patch_skill}]")
                                 } else {
                                     format!(", {patch_skill}]")
                                 };
-                                patched.replace_range(insert_at..insert_at + 1, &new_uses);
+                                replacements.push((insert_at, insert_at + 1, new_text));
                             }
                         }
                     }
                 }
             }
             "W503" => {
-                // Add `needs { env "X" }` before the first `step` or `goal =`.
+                // Add `needs { env "X" }` after the `goal =` line.
                 if let Some(key) = s.patch.as_ref()
                     .and_then(|p| p.trim().strip_prefix("needs { env \""))
                     .map(|p| p.trim_end_matches("\" }").trim())
                 {
                     let insertion = format!("    needs {{ env \"{key}\" }}\n");
-                    // Insert after the `goal =` line.
-                    if let Some(pos) = patched.find("goal =") {
-                        if let Some(eol) = patched[pos..].find('\n') {
+                    if let Some(pos) = working.find("goal =") {
+                        if let Some(eol) = working[pos..].find('\n') {
                             let insert_at = pos + eol + 1;
-                            patched.insert_str(insert_at, &insertion);
+                            replacements.push((insert_at, insert_at, insertion));
                         }
                     }
                 }
@@ -279,7 +282,13 @@ fn apply_safe_patches(
         }
     }
 
-    std::fs::write(path, &patched).map_err(|e| e.to_string())
+    // Apply in reverse byte order so earlier offsets stay valid.
+    replacements.sort_by(|a, b| b.0.cmp(&a.0));
+    for (start, end, text) in replacements {
+        working.replace_range(start..end, &text);
+    }
+
+    std::fs::write(path, &working).map_err(|e| e.to_string())
 }
 
 fn find_brief_file() -> Option<PathBuf> {
