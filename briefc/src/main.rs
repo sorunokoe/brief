@@ -26,6 +26,7 @@ mod skill_loader;
 mod skillgen;
 mod skillsync;
 mod selfhosting;
+mod suggest;
 mod tester;
 mod typeck;
 mod verify;
@@ -255,6 +256,20 @@ enum Commands {
         #[arg(long, short = 'y')]
         yes: bool,
     },
+
+    /// Read a trace file and suggest spec improvements
+    Suggest {
+        /// Path to the JSONL trace file (from `brief serve --record`)
+        trace: PathBuf,
+
+        /// Path to the .brief file (defaults to auto-detecting in current directory)
+        #[arg(long)]
+        file: Option<PathBuf>,
+
+        /// Auto-apply safe additions (missing uses[], needs{}) — never applies allow{} changes
+        #[arg(long)]
+        apply: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -444,6 +459,12 @@ fn main() -> std::process::ExitCode {
             print_brief_banner();
             let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             let ok = skillsync::run_skillsync(&cwd, yes);
+            if ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::FAILURE }
+        }
+
+        Commands::Suggest { trace, file, apply } => {
+            print_brief_banner();
+            let ok = suggest::run_suggest(&trace, file.as_deref(), apply);
             if ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::FAILURE }
         }
     }
