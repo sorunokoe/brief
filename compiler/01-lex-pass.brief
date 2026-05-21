@@ -1,0 +1,55 @@
+// Stage 1 Mediated Self-Description — Lexer pass
+// Skill backend: compiler/skills/LexerPrimitives/LexerPrimitives.briefskill
+// Rust implementation: briefc/src/lexer.rs
+
+import skill "LexerPrimitives"
+
+opaque type TokenStream
+opaque type DiagnosticSet
+
+sealed type LexOutcome = Lexed(TokenStream) | LexFailed(DiagnosticSet)
+
+@BriefBuilder
+task LexPass : TaskBrief uses [LexerPrimitives] {
+    goal = "Tokenize and classify source text into a validated token stream"
+
+    effects [cpu, memory]
+
+    extras {
+        sourceText: String
+        filePath: String
+    }
+
+    provides {
+        tokens: TokenStream
+        tokenCount: Int
+    }
+
+    step Tokenize {
+        pre { sourceText.isNotEmpty }
+        post { lexResult.isReady }
+
+        let lexResult = perform LexerPrimitives.tokenize(sourceText, filePath)?;
+    }
+
+    step Classify {
+        pre { lexResult.isReady }
+        post { tokens.isValidated }
+
+        let classified = perform LexerPrimitives.classify(lexResult)?;
+        let tokens = match classified {
+            Lexed(ts)   => ts
+            LexFailed(d) => d
+        };
+        let tokenCount = perform LexerPrimitives.tokenCount(tokens)?;
+    }
+
+}
+
+test "tokenize non-empty source" {
+    assert sourceText.isNotEmpty
+}
+
+test "classify produces validated tokens" {
+    assert tokens.isValidated
+}

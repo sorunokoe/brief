@@ -10,8 +10,8 @@ build-dir = "_book"
 
 [output.html]
 site-url         = "/"
-git-repository-url = "https://github.com/yourusername/brief"
-edit-url-template = "https://github.com/yourusername/brief/edit/main/book/src/{path}"
+git-repository-url = "https://github.com/sorunokoe/brief"
+edit-url-template = "https://github.com/sorunokoe/brief/edit/main/book/src/{path}"
 no-section-label = false
 fold.enable      = true
 fold.level       = 1

@@ -1,0 +1,24 @@
+// Auto-generated skill interface for Stage 1 Mediated Self-Description
+// abi_version: "1.0"
+// Source: briefc/src/hir.rs
+// Regenerate: brief skillgen compiler/skills/HirPrimitives/
+
+interface HirPrimitives {
+    opaque type TypedAst
+    opaque type HirModule
+    opaque type DiagnosticSet
+    
+    sealed type HirOutcome = Lowered(HirModule) | HirFailed(DiagnosticSet)
+
+    // Lower entire typed AST to HIR module (runs after check passes)
+    fn lowerModule(ast: TypedAst) -> HirOutcome
+    
+    // Lower a single task declaration to HIR
+    fn lowerTask(ast: TypedAst) -> HirOutcome
+    
+    // Count HIR tasks in module
+    fn taskCount(hir: HirModule) -> Int
+    
+    // Validate HIR invariants (type annotations present on all nodes)
+    fn validateHir(hir: HirModule) -> HirOutcome
+}

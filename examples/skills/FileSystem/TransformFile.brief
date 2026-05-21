@@ -1,0 +1,29 @@
+// Example: read a file, transform its content, and write it back.
+// Uses: FileSystem skill
+// Verify: @local-path annotations require a verifier configured in brief.toml.
+
+import skill "FileSystem"
+
+task TransformFile : TaskBrief uses [FileSystem] {
+    goal = "Read a source file, transform its content, and write the result to an output file"
+
+    step ReadSource {
+        let content = perform FileSystem.read_file("/workspace/input.txt")?;
+    }
+
+    step Transform {
+        let info = perform FileSystem.get_file_info("/workspace/output.txt")?;
+    }
+
+    step WriteResult {
+        let _ = perform FileSystem.write_file("/workspace/output.txt", "transformed content")?;
+    }
+}
+
+test "FileSystem boundary coverage" {
+    // @nonEmpty implied — all paths must be non-empty strings
+    // @local-path requires brief verify to confirm path is accessible
+
+    let listing = perform FileSystem.list_directory("/workspace")?;
+    let info    = perform FileSystem.get_file_info("/workspace/input.txt")?;
+}

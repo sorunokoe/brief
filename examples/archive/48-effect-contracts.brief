@@ -1,0 +1,18 @@
+import skill "NetworkService"
+import skill "CacheService"
+
+task FetchWithCache : TaskBrief uses [NetworkService, CacheService] {
+    goal = "Fetch data with a local cache layer"
+    effects [network, cache-read]
+
+    step CheckCache {
+        let cached = perform CacheService.get("user-data")?;
+    }
+
+    step FetchRemote {
+        let fresh = perform NetworkService.fetch("https://api.example.com/data")?;
+    }
+}
+
+test "effects declared" {
+}

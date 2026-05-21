@@ -8,7 +8,6 @@
 ///
 /// This is a structural type checker — not full HM inference. Full HM with
 /// generics is deferred to v0.2.
-
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
@@ -20,33 +19,47 @@ use crate::skillgen::SkillInterface;
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Domain-specific built-in types that are always in scope.
-/// Separate from generic placeholders (T, E, U …) for clarity.
 fn builtin_types() -> &'static HashSet<&'static str> {
     use std::sync::OnceLock;
     static SET: OnceLock<HashSet<&'static str>> = OnceLock::new();
     SET.get_or_init(|| {
         [
-            "String", "Bool", "Int", "Float", "Unit",
-            "Result", "Option",
-            "Component", "Theme", "Color", "Schema", "Operation", "Mutation",
-            "Handle", "IOError", "AsyncError", "QueryError", "MutationError",
-            "DesignError", "TokenError", "FetchError", "ButtonStyle", "User",
+            "String",
+            "Bool",
+            "Int",
+            "Float",
+            "Unit",
+            "Result",
+            "Option",
+            "Component",
+            "Theme",
+            "Color",
+            "Schema",
+            "Operation",
+            "Mutation",
+            "Handle",
+            "IOError",
+            "AsyncError",
+            "QueryError",
+            "MutationError",
+            "DesignError",
+            "TokenError",
+            "FetchError",
+            "ButtonStyle",
+            "User",
             "UserProfile",
-        ].into_iter().collect()
+        ]
+        .into_iter()
+        .collect()
     })
 }
 
-/// Single-letter unconstrained generic type parameters.
-/// Kept separate from domain builtins so callers can distinguish "real" types.
-fn generic_placeholders() -> &'static HashSet<&'static str> {
-    use std::sync::OnceLock;
-    static SET: OnceLock<HashSet<&'static str>> = OnceLock::new();
-    SET.get_or_init(|| ["T", "E", "U", "V", "A", "B"].into_iter().collect())
+fn is_builtin_type(name: &str) -> bool {
+    builtin_types().contains(name)
 }
 
-/// Return true if `name` is a built-in domain type or a generic placeholder.
-fn is_builtin_or_generic(name: &str) -> bool {
-    builtin_types().contains(name) || generic_placeholders().contains(name)
+fn is_local_generic(name: &str, local_generics: &[String]) -> bool {
+    local_generics.iter().any(|generic| generic == name)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -54,26 +67,29 @@ fn is_builtin_or_generic(name: &str) -> bool {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Recursively collect all named types from a `TypeRef` tree.
-fn collect_type_names(ty: &TypeRef, out: &mut HashSet<String>) {
-    // Skip built-in/generic single-letter names and known builtins
-    if !ty.name.is_empty() && !is_builtin_or_generic(&ty.name) {
+fn collect_type_names(ty: &TypeRef, local_generics: &[String], out: &mut HashSet<String>) {
+    if !ty.name.is_empty()
+        && !is_builtin_type(&ty.name)
+        && !is_local_generic(&ty.name, local_generics)
+    {
         out.insert(ty.name.clone());
     }
     for arg in &ty.args {
-        collect_type_names(arg, out);
+        collect_type_names(arg, local_generics, out);
     }
 }
 
 /// The type environment built from a Program's declarations.
 pub struct TypeEnv<'a> {
-    sealed_types:      HashMap<&'a str, &'a SealedTypeDecl>,
-    structs:           HashMap<&'a str, &'a StructDecl>,
-    protocols:         HashMap<&'a str, &'a ProtocolDecl>,
-    effects:           HashMap<&'a str, &'a EffectDecl>,
-    skill_ifaces:      HashMap<String, SkillInterface>,
+    opaque_types: HashMap<&'a str, &'a OpaqueTypeDecl>,
+    sealed_types: HashMap<&'a str, &'a SealedTypeDecl>,
+    structs: HashMap<&'a str, &'a StructDecl>,
+    protocols: HashMap<&'a str, &'a ProtocolDecl>,
+    effects: HashMap<&'a str, &'a EffectDecl>,
+    skill_ifaces: HashMap<String, SkillInterface>,
     /// Opaque types declared as return types of inline `effect` fn signatures.
     /// These don't need explicit struct/sealed type declarations.
-    effect_ret_types:  HashSet<String>,
+    effect_ret_types: HashSet<String>,
 }
 
 impl<'a> TypeEnv<'a> {
@@ -82,35 +98,75 @@ impl<'a> TypeEnv<'a> {
         Self::from_program_with_skills(program, HashMap::new())
     }
 
-    pub fn from_program_with_skills(program: &'a Program, skill_ifaces: HashMap<String, SkillInterface>) -> Self {
+    pub fn from_program_with_skills(
+        program: &'a Program,
+        skill_ifaces: HashMap<String, SkillInterface>,
+    ) -> Self {
+        let mut opaque_types = HashMap::new();
         let mut sealed_types = HashMap::new();
-        let mut structs      = HashMap::new();
-        let mut protocols    = HashMap::new();
-        let mut effects      = HashMap::new();
+        let mut structs = HashMap::new();
+        let mut protocols = HashMap::new();
+        let mut effects = HashMap::new();
 
-        for t in &program.types     { sealed_types.insert(t.name.as_str(), t); }
-        for s in &program.structs   { structs.insert(s.name.as_str(), s); }
-        for p in &program.protocols { protocols.insert(p.name.as_str(), p); }
-        for e in &program.effects   { effects.insert(e.name.as_str(), e); }
+        for t in &program.opaque_types {
+            opaque_types.insert(t.name.as_str(), t);
+        }
+        for t in &program.types {
+            sealed_types.insert(t.name.as_str(), t);
+        }
+        for s in &program.structs {
+            structs.insert(s.name.as_str(), s);
+        }
+        for p in &program.protocols {
+            protocols.insert(p.name.as_str(), p);
+        }
+        for e in &program.effects {
+            effects.insert(e.name.as_str(), e);
+        }
 
         // Collect all type names from effect return types — treated as opaque.
         let mut effect_ret_types = HashSet::new();
         for e in &program.effects {
             for f in &e.fns {
-                collect_type_names(&f.ret, &mut effect_ret_types);
+                let local_generics = merged_generics(&e.params, &f.type_params);
+                collect_type_names(&f.ret, &local_generics, &mut effect_ret_types);
             }
         }
 
-        Self { sealed_types, structs, protocols, effects, skill_ifaces, effect_ret_types }
+        Self {
+            opaque_types,
+            sealed_types,
+            structs,
+            protocols,
+            effects,
+            skill_ifaces,
+            effect_ret_types,
+        }
     }
 
-    /// Check whether a type name is declared (built-in or user-defined).
-    pub fn type_exists(&self, name: &str) -> bool {
-        is_builtin_or_generic(name)
+    fn declared_type_exists(&self, name: &str) -> bool {
+        self.opaque_types.contains_key(name)
             || self.sealed_types.contains_key(name)
             || self.structs.contains_key(name)
             || self.protocols.contains_key(name)
             || self.effect_ret_types.contains(name)
+    }
+
+    fn shadowed_type_description(&self, name: &str) -> Option<String> {
+        if is_builtin_type(name) {
+            Some(format!("the built-in type '{name}'"))
+        } else if self.declared_type_exists(name) {
+            Some(format!("the declared type '{name}'"))
+        } else {
+            None
+        }
+    }
+
+    /// Check whether a type name is declared (built-in, scoped generic, or user-defined).
+    pub fn type_exists(&self, name: &str, local_generics: &[String]) -> bool {
+        is_local_generic(name, local_generics)
+            || is_builtin_type(name)
+            || self.declared_type_exists(name)
     }
 
     /// Look up a function in a named effect (inline declarations or skill interfaces).
@@ -132,7 +188,8 @@ impl<'a> TypeEnv<'a> {
 
     /// Look up a function in a named inline effect declaration.
     pub fn effect_fn(&self, effect_name: &str, fn_name: &str) -> Option<&FnSignature> {
-        self.effects.get(effect_name)
+        self.effects
+            .get(effect_name)
             .and_then(|e| e.fns.iter().find(|f| f.name == fn_name))
     }
 
@@ -140,6 +197,29 @@ impl<'a> TypeEnv<'a> {
     #[allow(dead_code)]
     pub fn effect(&self, name: &str) -> Option<&&'a EffectDecl> {
         self.effects.get(name)
+    }
+
+    pub fn sealed_type(&self, name: &str) -> Option<&'a SealedTypeDecl> {
+        self.sealed_types.get(name).copied()
+    }
+
+    pub fn is_opaque_type(&self, name: &str) -> bool {
+        self.opaque_types.contains_key(name)
+    }
+
+    pub fn sealed_variant_field_type(
+        &self,
+        type_name: &str,
+        variant_name: &str,
+    ) -> Option<TypeRef> {
+        self.sealed_type(type_name)
+            .and_then(|sealed| {
+                sealed
+                    .variants
+                    .iter()
+                    .find(|variant| variant.name == variant_name)
+            })
+            .and_then(|variant| variant.fields.first().cloned())
     }
 }
 
@@ -152,7 +232,10 @@ pub fn type_check(program: &Program) -> Vec<BriefError> {
     type_check_with_skills(program, HashMap::new())
 }
 
-pub fn type_check_with_skills(program: &Program, skill_ifaces: HashMap<String, SkillInterface>) -> Vec<BriefError> {
+pub fn type_check_with_skills(
+    program: &Program,
+    skill_ifaces: HashMap<String, SkillInterface>,
+) -> Vec<BriefError> {
     let env = TypeEnv::from_program_with_skills(program, skill_ifaces);
     let mut diags = Vec::new();
 
@@ -188,17 +271,58 @@ pub fn type_check_with_skills(program: &Program, skill_ifaces: HashMap<String, S
 // Declaration checkers
 // ─────────────────────────────────────────────────────────────────────────────
 
+fn merged_generics(outer: &[String], inner: &[String]) -> Vec<String> {
+    let mut generics = Vec::with_capacity(outer.len() + inner.len());
+    generics.extend(outer.iter().cloned());
+    generics.extend(inner.iter().cloned());
+    generics
+}
+
+fn generic_param_hint(name: &str) -> String {
+    let short = name
+        .chars()
+        .next()
+        .map(|c| c.to_ascii_uppercase().to_string())
+        .unwrap_or_else(|| "T".to_string());
+    let alt: String = if name.len() <= 3 {
+        format!("{name}T")
+    } else {
+        name.chars().take(3).collect()
+    };
+    format!("rename the type parameter to avoid shadowing (e.g., '{short}' or '{alt}')")
+}
+
+fn check_generic_param_conflicts(
+    params: &[String],
+    env: &TypeEnv<'_>,
+    span: Span,
+    diags: &mut Vec<BriefError>,
+) {
+    for param in params {
+        if let Some(shadowed) = env.shadowed_type_description(param) {
+            diags.push(BriefError {
+                code: ErrorCode::ScopedGenericConflict,
+                message: format!("generic type parameter '{param}' shadows {shadowed}"),
+                span,
+                hint: Some(generic_param_hint(param)),
+            });
+        }
+    }
+}
+
 fn check_sealed_type(t: &SealedTypeDecl, env: &TypeEnv<'_>, diags: &mut Vec<BriefError>) {
+    check_generic_param_conflicts(&t.params, env, t.span, diags);
     for variant in &t.variants {
         for field_ty in &variant.fields {
-            check_type_ref(field_ty, env, diags);
+            check_type_ref(field_ty, env, &t.params, diags);
         }
     }
 }
 
 fn check_struct(s: &StructDecl, env: &TypeEnv<'_>, diags: &mut Vec<BriefError>) {
+    check_generic_param_conflicts(&s.params, env, s.span, diags);
     for field in &s.fields {
-        check_type_ref(&field.ty, env, diags);
+        check_type_ref(&field.ty, env, &s.params, diags);
         for attr in &field.attrs {
             check_attribute_constraint(attr, &field.ty, diags);
         }
@@ -206,77 +330,217 @@ fn check_struct(s: &StructDecl, env: &TypeEnv<'_>, diags: &mut Vec<BriefError>) 
 }
 
 fn check_protocol(p: &ProtocolDecl, env: &TypeEnv<'_>, diags: &mut Vec<BriefError>) {
+    check_generic_param_conflicts(&p.params, env, p.span, diags);
     for method in &p.methods {
-        check_fn_sig(method, env, diags);
+        let local_generics = merged_generics(&p.params, &method.type_params);
+        check_fn_sig(method, env, &local_generics, diags);
     }
 }
 
 fn check_effect(e: &EffectDecl, env: &TypeEnv<'_>, diags: &mut Vec<BriefError>) {
+    check_generic_param_conflicts(&e.params, env, e.span, diags);
     for f in &e.fns {
-        check_fn_sig(f, env, diags);
+        let local_generics = merged_generics(&e.params, &f.type_params);
+        check_fn_sig(f, env, &local_generics, diags);
     }
 }
 
-fn check_fn_sig(f: &FnSignature, env: &TypeEnv<'_>, diags: &mut Vec<BriefError>) {
+fn check_fn_sig(
+    f: &FnSignature,
+    env: &TypeEnv<'_>,
+    local_generics: &[String],
+    diags: &mut Vec<BriefError>,
+) {
+    check_generic_param_conflicts(&f.type_params, env, f.span, diags);
     for param in &f.params {
-        check_type_ref(&param.ty, env, diags);
+        check_type_ref(&param.ty, env, local_generics, diags);
     }
-    check_type_ref(&f.ret, env, diags);
+    check_type_ref(&f.ret, env, local_generics, diags);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Task type checking
 // ─────────────────────────────────────────────────────────────────────────────
 
+type LocalTypes = HashMap<String, TypeRef>;
+
 fn check_task_types(task: &Task, env: &TypeEnv<'_>, diags: &mut Vec<BriefError>) {
+    let base_locals = task_base_locals(task);
     for step in &task.steps {
-        check_step_types(step, env, diags);
+        check_step_types(step, env, &base_locals, diags);
     }
 }
 
-fn check_step_types(step: &Step, env: &TypeEnv<'_>, diags: &mut Vec<BriefError>) {
+fn task_base_locals(task: &Task) -> LocalTypes {
+    let mut locals = HashMap::new();
+    if let Some(ExtrasNode::TypedRecord(fields)) = &task.extras {
+        for field in fields {
+            locals.insert(field.name.clone(), field.type_ref.clone());
+        }
+    }
+    locals
+}
+
+fn check_step_types(
+    step: &Step,
+    env: &TypeEnv<'_>,
+    base_locals: &LocalTypes,
+    diags: &mut Vec<BriefError>,
+) {
+    let mut locals = base_locals.clone();
     for stmt in &step.body {
         let expr = match stmt {
-            Stmt::Let  { value, .. } => value,
+            Stmt::Let { value, .. } => value,
             Stmt::Expr { value, .. } => value,
         };
-        check_expr_types(expr, env, diags);
+        check_expr_types(expr, env, &locals, diags);
+
+        if let Stmt::Let { name, value, .. } = stmt {
+            if let Some(ty) = infer_expr_type(value, env, &locals) {
+                locals.insert(name.clone(), ty);
+            }
+        }
     }
 }
 
-fn check_expr_types(expr: &Expr, env: &TypeEnv<'_>, diags: &mut Vec<BriefError>) {
+fn check_expr_types(
+    expr: &Expr,
+    env: &TypeEnv<'_>,
+    locals: &LocalTypes,
+    diags: &mut Vec<BriefError>,
+) {
     match expr {
-        Expr::Perform { skill, func, args, span, .. } => {
+        Expr::Perform {
+            skill,
+            func,
+            args,
+            span,
+            ..
+        } => {
             // Check arg count against inline effect or .briefskill interface.
             if let Some(expected) = env.effect_fn_arg_count(skill, func) {
                 let got = args.len();
                 if expected != got {
                     // Build a human-readable hint from inline sig if available.
-                    let hint = env.effect_fn(skill, func).map(|sig| format!(
-                        "signature: fn {}({}) -> {}",
-                        sig.name,
-                        sig.params.iter().map(|p| format!("{}: {}", p.name, p.ty.name)).collect::<Vec<_>>().join(", "),
-                        sig.ret.name
-                    )).or_else(|| Some(format!("expected {expected} argument(s)")));
+                    let hint = env
+                        .effect_fn(skill, func)
+                        .map(|sig| {
+                            format!(
+                                "signature: fn {}({}) -> {}",
+                                sig.name,
+                                sig.params
+                                    .iter()
+                                    .map(|p| format!("{}: {}", p.name, p.ty.name))
+                                    .collect::<Vec<_>>()
+                                    .join(", "),
+                                sig.ret.name
+                            )
+                        })
+                        .or_else(|| Some(format!("expected {expected} argument(s)")));
 
                     diags.push(BriefError {
-                        code:    ErrorCode::WrongArgCount,
+                        code: ErrorCode::WrongArgCount,
                         message: format!(
                             "{skill}.{func}() expects {expected} argument(s), got {got}"
                         ),
-                        span:    *span,
+                        span: *span,
                         hint,
                     });
                 }
             }
             // Recurse into args.
-            for arg in args { check_expr_types(arg, env, diags); }
+            for arg in args {
+                check_expr_types(arg, env, locals, diags);
+            }
         }
-        Expr::Await { expr: inner, .. } => check_expr_types(inner, env, diags),
-        Expr::Call  { args, .. }         => {
-            for arg in args { check_expr_types(arg, env, diags); }
+        Expr::Await { expr: inner, .. } => check_expr_types(inner, env, locals, diags),
+        Expr::Call { args, .. } => {
+            for arg in args {
+                check_expr_types(arg, env, locals, diags);
+            }
         }
-        Expr::Ident { .. } | Expr::Str { .. } => {}
+        Expr::Match { scrutinee, arms } => {
+            check_expr_types(scrutinee, env, locals, diags);
+            let scrutinee_ty = infer_expr_type(scrutinee, env, locals);
+            for arm in arms {
+                let mut arm_locals = locals.clone();
+                if let Some((binding, binding_ty)) =
+                    match_pattern_binding(&arm.pattern, scrutinee_ty.as_ref(), env, arm.span)
+                {
+                    arm_locals.insert(binding, binding_ty);
+                }
+                check_expr_types(&arm.body, env, &arm_locals, diags);
+            }
+        }
+        Expr::Ident { .. } | Expr::Str { .. } | Expr::Int { .. } => {}
+    }
+}
+
+fn infer_expr_type(expr: &Expr, env: &TypeEnv<'_>, locals: &LocalTypes) -> Option<TypeRef> {
+    match expr {
+        Expr::Ident { name, .. } => locals.get(name).cloned(),
+        Expr::Str { span, .. } => Some(TypeRef {
+            name: "String".to_string(),
+            args: Vec::new(),
+            optional: false,
+            span: *span,
+        }),
+        Expr::Int { span, .. } => Some(TypeRef {
+            name: "Int".to_string(),
+            args: Vec::new(),
+            optional: false,
+            span: *span,
+        }),
+        Expr::Perform { skill, func, .. } => env.effect_fn(skill, func).map(|sig| sig.ret.clone()),
+        Expr::Await { expr: inner, .. } => infer_expr_type(inner, env, locals),
+        Expr::Call { .. } | Expr::Match { .. } => None,
+    }
+}
+
+fn match_pattern_binding(
+    pattern: &Pattern,
+    scrutinee_ty: Option<&TypeRef>,
+    env: &TypeEnv<'_>,
+    span: Span,
+) -> Option<(String, TypeRef)> {
+    match pattern {
+        Pattern::Variant1(variant, binding) => Some((
+            binding.clone(),
+            pattern_binding_type(variant, scrutinee_ty, env, span),
+        )),
+        Pattern::Variant(_) | Pattern::Wildcard => None,
+    }
+}
+
+fn pattern_binding_type(
+    variant_name: &str,
+    scrutinee_ty: Option<&TypeRef>,
+    env: &TypeEnv<'_>,
+    span: Span,
+) -> TypeRef {
+    scrutinee_ty
+        .and_then(|ty| builtin_variant_binding_type(ty, variant_name))
+        .or_else(|| {
+            scrutinee_ty.and_then(|ty| env.sealed_variant_field_type(&ty.name, variant_name))
+        })
+        .unwrap_or_else(|| default_binding_type(span))
+}
+
+fn builtin_variant_binding_type(scrutinee_ty: &TypeRef, variant_name: &str) -> Option<TypeRef> {
+    match (scrutinee_ty.name.as_str(), variant_name) {
+        ("Result", "Ok") if !scrutinee_ty.args.is_empty() => Some(scrutinee_ty.args[0].clone()),
+        ("Result", "Err") if scrutinee_ty.args.len() >= 2 => Some(scrutinee_ty.args[1].clone()),
+        ("Option", "Some") if !scrutinee_ty.args.is_empty() => Some(scrutinee_ty.args[0].clone()),
+        _ => None,
+    }
+}
+
+fn default_binding_type(span: Span) -> TypeRef {
+    TypeRef {
+        name: "String".to_string(),
+        args: Vec::new(),
+        optional: false,
+        span,
     }
 }
 
@@ -284,13 +548,18 @@ fn check_expr_types(expr: &Expr, env: &TypeEnv<'_>, diags: &mut Vec<BriefError>)
 // Type reference resolution
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn check_type_ref(ty: &TypeRef, env: &TypeEnv<'_>, diags: &mut Vec<BriefError>) {
-    if !env.type_exists(&ty.name) {
+fn check_type_ref(
+    ty: &TypeRef,
+    env: &TypeEnv<'_>,
+    local_generics: &[String],
+    diags: &mut Vec<BriefError>,
+) {
+    if !env.type_exists(&ty.name, local_generics) {
         diags.push(BriefError {
-            code:    ErrorCode::UnknownType,
+            code: ErrorCode::UnknownType,
             message: format!("unknown type `{}`", ty.name),
-            span:    ty.span,
-            hint:    Some(format!(
+            span: ty.span,
+            hint: Some(format!(
                 "declare it with `sealed type {}` or `struct {}`",
                 ty.name, ty.name
             )),
@@ -298,7 +567,7 @@ fn check_type_ref(ty: &TypeRef, env: &TypeEnv<'_>, diags: &mut Vec<BriefError>) 
     }
     // Recurse into generic arguments.
     for arg in &ty.args {
-        check_type_ref(arg, env, diags);
+        check_type_ref(arg, env, local_generics, diags);
     }
 }
 
@@ -312,13 +581,13 @@ fn check_attribute_constraint(attr: &Attribute, ty: &TypeRef, diags: &mut Vec<Br
             // These attributes are only valid on String fields.
             if ty.name != "String" {
                 diags.push(BriefError {
-                    code:    ErrorCode::AttributeConstraint,
+                    code: ErrorCode::AttributeConstraint,
                     message: format!(
                         "@{} can only be applied to `String` fields, not `{}`",
                         attr.name, ty.name
                     ),
-                    span:    attr.span,
-                    hint:    Some(format!("change the field type to `String`")),
+                    span: attr.span,
+                    hint: Some(format!("change the field type to `String`")),
                 });
             }
         }
@@ -344,49 +613,66 @@ mod tests {
 
     #[test]
     fn no_errors_on_builtin_types() {
-        let diags = typeck_src(r#"
+        let diags = typeck_src(
+            r#"
             struct Profile {
                 name: @nonEmpty String
                 email: @matches(".*@.*") String
             }
-        "#);
+        "#,
+        );
         assert!(diags.is_empty(), "{diags:?}");
     }
 
     #[test]
     fn error_on_unknown_type() {
-        let diags = typeck_src(r#"
+        let diags = typeck_src(
+            r#"
             struct Foo {
                 x: NonexistentType
             }
-        "#);
-        assert!(diags.iter().any(|d| d.code == ErrorCode::UnknownType), "{diags:?}");
+        "#,
+        );
+        assert!(
+            diags.iter().any(|d| d.code == ErrorCode::UnknownType),
+            "{diags:?}"
+        );
     }
 
     #[test]
     fn no_error_on_declared_type() {
-        let diags = typeck_src(r#"
+        let diags = typeck_src(
+            r#"
             sealed type Status = Active | Done
             struct Item {
                 status: Status
             }
-        "#);
+        "#,
+        );
         assert!(diags.is_empty(), "{diags:?}");
     }
 
     #[test]
     fn error_on_attribute_wrong_type() {
-        let diags = typeck_src(r#"
+        let diags = typeck_src(
+            r#"
             struct Foo {
                 count: @nonEmpty Int
             }
-        "#);
-        assert!(diags.iter().any(|d| d.code == ErrorCode::AttributeConstraint), "{diags:?}");
+        "#,
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == ErrorCode::AttributeConstraint),
+            "{diags:?}"
+        );
     }
 
     #[test]
     fn error_on_wrong_arg_count() {
-        let diags = typeck_src(r#"
+        let diags = typeck_src(
+            r#"
             effect MyEffect {
                 fn doSomething(a: String, b: String) -> String
             }
@@ -397,13 +683,18 @@ mod tests {
                     let r = perform MyEffect.doSomething(onlyOneArg)?;
                 }
             }
-        "#);
-        assert!(diags.iter().any(|d| d.code == ErrorCode::WrongArgCount), "{diags:?}");
+        "#,
+        );
+        assert!(
+            diags.iter().any(|d| d.code == ErrorCode::WrongArgCount),
+            "{diags:?}"
+        );
     }
 
     #[test]
     fn no_error_on_correct_arg_count() {
-        let diags = typeck_src(r#"
+        let diags = typeck_src(
+            r#"
             effect MyEffect {
                 fn doSomething(a: String, b: String) -> String
             }
@@ -414,28 +705,37 @@ mod tests {
                     let r = perform MyEffect.doSomething(arg1, arg2)?;
                 }
             }
-        "#);
+        "#,
+        );
         // Only possible diag is W101 (missing .briefskill) — no type errors.
-        assert!(diags.iter().all(|d| !d.is_error() || d.code != ErrorCode::WrongArgCount),
-            "{diags:?}");
+        assert!(
+            diags
+                .iter()
+                .all(|d| !d.is_error() || d.code != ErrorCode::WrongArgCount),
+            "{diags:?}"
+        );
     }
 
     #[test]
     fn no_errors_on_sealed_type_variants() {
-        let diags = typeck_src(r#"
+        let diags = typeck_src(
+            r#"
             sealed type Platform = iOS | Android | Web
-        "#);
+        "#,
+        );
         assert!(diags.is_empty(), "{diags:?}");
     }
 
     #[test]
     fn no_errors_on_effect_with_builtins() {
-        let diags = typeck_src(r#"
+        let diags = typeck_src(
+            r#"
             effect GraphQL {
                 fn query(op: Operation) -> Result
                 fn schema(name: String) -> Schema
             }
-        "#);
+        "#,
+        );
         assert!(diags.is_empty(), "{diags:?}");
     }
 }

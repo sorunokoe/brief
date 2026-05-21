@@ -1,0 +1,27 @@
+// Auto-generated skill interface for Stage 1 Mediated Self-Description
+// abi_version: "1.0"
+// Source: briefc/src/main.rs + briefc/src/runner.rs
+// Regenerate: brief skillgen compiler/skills/CompilerDriver/
+
+interface CompilerDriver {
+    opaque type PassSpec
+    opaque type PassResult
+    opaque type DiagnosticSet
+
+    sealed type RunOutcome = PassSuccess(PassResult) | PassFailed(DiagnosticSet)
+
+    // Run a single named compiler pass on a source file
+    fn runPass(spec: PassSpec, sourceFile: String) -> RunOutcome
+    
+    // Emit diagnostics as formatted terminal output
+    fn emitDiagnostics(diagnostics: DiagnosticSet) -> String
+    
+    // Build a PassSpec for the given pass name and options
+    fn buildPassSpec(passName: String, strict: Bool) -> PassSpec
+    
+    // Check if a RunOutcome indicates clean success (no errors or warnings)
+    fn isClean(result: RunOutcome) -> Bool
+    
+    // Return exit code integer from RunOutcome (0 = success, 1 = errors)
+    fn exitCode(result: RunOutcome) -> Int
+}

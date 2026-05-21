@@ -10,6 +10,8 @@
 ///
 /// No LLVM required — the REPL uses the existing tree-walking runner.
 
+use std::collections::HashMap;
+use std::fmt;
 use std::io::{self, Write};
 
 use colored::Colorize;
@@ -183,6 +185,140 @@ fn brace_depth_via_lexer(src: &str) -> i32 {
 // Evaluation
 // ─────────────────────────────────────────────────────────────────────────────
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Value {
+    Unit,
+    String(String),
+    Int(i64),
+    Variant(String, Option<Box<Value>>),
+}
+
+impl fmt::Display for Value {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Value::Unit => write!(f, "()"),
+            Value::String(value) => write!(f, "\"{value}\""),
+            Value::Int(value) => write!(f, "{value}"),
+            Value::Variant(name, Some(inner)) => write!(f, "{name}({inner})"),
+            Value::Variant(name, None) => write!(f, "{name}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ReplError {
+    Parse(String),
+    UnsupportedExpr(&'static str),
+    NoMatchingArm(String),
+}
+
+impl fmt::Display for ReplError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ReplError::Parse(message) => write!(f, "{message}"),
+            ReplError::UnsupportedExpr(kind) => write!(f, "unsupported expression in REPL evaluator: {kind}"),
+            ReplError::NoMatchingArm(value) => write!(f, "no match arm for {value}"),
+        }
+    }
+}
+
+type ReplEnv = HashMap<String, Value>;
+
+#[derive(Default)]
+struct ReplEvaluator;
+
+impl ReplEvaluator {
+    fn eval_expr(&self, expr: &crate::ast::Expr, env: &ReplEnv) -> Result<Value, ReplError> {
+        match expr {
+            crate::ast::Expr::Str { value, .. } => Ok(Value::String(value.clone())),
+            crate::ast::Expr::Int { value, .. } => Ok(Value::Int(*value)),
+            crate::ast::Expr::Ident { name, .. } => Ok(env.get(name).cloned().unwrap_or_else(|| Value::Variant(name.clone(), None))),
+            crate::ast::Expr::Call { receiver, func, args, .. } => self.eval_call(receiver.as_deref(), func, args, env),
+            crate::ast::Expr::Match { scrutinee, arms } => {
+                let scrutinee_val = self.eval_expr(scrutinee, env)?;
+
+                for arm in arms {
+                    if Self::pattern_matches(&arm.pattern, &scrutinee_val) {
+                        let mut arm_env = env.clone();
+                        if let crate::ast::Pattern::Variant1(_, binding) = &arm.pattern {
+                            arm_env.insert(binding.clone(), Self::binding_value(&scrutinee_val));
+                        }
+                        return self.eval_expr(&arm.body, &arm_env);
+                    }
+                }
+
+                Err(ReplError::NoMatchingArm(scrutinee_val.to_string()))
+            }
+            crate::ast::Expr::Await { .. } => Err(ReplError::UnsupportedExpr("await")),
+            crate::ast::Expr::Perform { .. } => Err(ReplError::UnsupportedExpr("perform")),
+        }
+    }
+
+    fn eval_call(&self, receiver: Option<&str>, func: &str, args: &[crate::ast::Expr], env: &ReplEnv) -> Result<Value, ReplError> {
+        if receiver.is_some() {
+            return Err(ReplError::UnsupportedExpr("field access"));
+        }
+
+        match args {
+            [] => Ok(Value::Variant(func.to_string(), None)),
+            [arg] => Ok(Value::Variant(func.to_string(), Some(Box::new(self.eval_expr(arg, env)?)))),
+            _ => Err(ReplError::UnsupportedExpr("multi-argument call")),
+        }
+    }
+
+    fn pattern_matches(pattern: &crate::ast::Pattern, value: &Value) -> bool {
+        match (pattern, value) {
+            (crate::ast::Pattern::Wildcard, _) => true,
+            (crate::ast::Pattern::Variant(name), Value::Variant(variant, _)) => name == variant,
+            (crate::ast::Pattern::Variant(name), Value::String(value)) => name == value,
+            (crate::ast::Pattern::Variant1(name, _), Value::Variant(variant, _)) => name == variant,
+            (crate::ast::Pattern::Variant1(name, _), Value::String(value)) => name == value,
+            _ => false,
+        }
+    }
+
+    fn binding_value(value: &Value) -> Value {
+        match value {
+            Value::Variant(_, Some(inner)) => inner.as_ref().clone(),
+            Value::Variant(_, None) => Value::Unit,
+            other => other.clone(),
+        }
+    }
+}
+
+fn parse_repl_expr(src: &str) -> Result<crate::ast::Expr, ReplError> {
+    let expr_src = src.trim().trim_end_matches(';');
+    let wrapped = format!(
+        "task __repl_expr__ : TaskBrief {{\n    goal = \"eval\"\n    step Eval {{\n        {expr_src};\n    }}\n}}"
+    );
+
+    let (tokens, lex_errors) = lex(&wrapped);
+    if !lex_errors.is_empty() {
+        return Err(ReplError::Parse("failed to lex REPL expression".to_string()));
+    }
+
+    let (program, parse_errors) = parse(&tokens, &wrapped);
+    if parse_errors.iter().any(|error| error.is_error()) {
+        return Err(ReplError::Parse("failed to parse REPL expression".to_string()));
+    }
+
+    program
+        .tasks
+        .first()
+        .and_then(|task| task.steps.first())
+        .and_then(|step| step.body.first())
+        .and_then(|stmt| match stmt {
+            crate::ast::Stmt::Expr { value, .. } => Some(value.clone()),
+            crate::ast::Stmt::Let { .. } => None,
+        })
+        .ok_or_else(|| ReplError::Parse("expected a REPL expression".to_string()))
+}
+
+fn try_eval_expression_input(src: &str) -> Option<Result<Value, ReplError>> {
+    let expr = parse_repl_expr(src).ok()?;
+    Some(ReplEvaluator.eval_expr(&expr, &ReplEnv::new()))
+}
+
 fn eval_input(session: &mut ReplSession, src: &str, cwd: &std::path::Path) {
     // Build the full source: existing session declarations + new input.
     let full_source = if session.declarations.is_empty() {
@@ -207,6 +343,14 @@ fn eval_input(session: &mut ReplSession, src: &str, cwd: &std::path::Path) {
             .filter(|e| e.is_error())
             .collect();
         if !new_src_errors.is_empty() {
+            if let Some(result) = try_eval_expression_input(src) {
+                match result {
+                    Ok(value) => println!("{} {}", "=".green(), value),
+                    Err(err) => eprintln!("{} {}", "error:".red().bold(), err),
+                }
+                return;
+            }
+
             print_diagnostics(&parse_errors, &full_source, "<repl>");
             return;
         }
@@ -214,7 +358,7 @@ fn eval_input(session: &mut ReplSession, src: &str, cwd: &std::path::Path) {
 
     // Semantic + type check.
     let file_dir = std::path::Path::new(".");
-    let ctx = CheckContext { file_dir, cwd, manifest: None };
+    let ctx = CheckContext { file_dir, cwd, manifest: None, brief_path: None, allow_missing_skills: false };
     let mut diags = checker::check(&program, &ctx);
     diags.extend(typeck::type_check_with_skills(
         &program,
@@ -253,7 +397,7 @@ fn check_session(session: &ReplSession, cwd: &std::path::Path) {
     let (program, parse_errors) = parse(&tokens, &session.declarations);
 
     let file_dir = std::path::Path::new(".");
-    let ctx = CheckContext { file_dir, cwd, manifest: None };
+    let ctx = CheckContext { file_dir, cwd, manifest: None, brief_path: None, allow_missing_skills: false };
     let mut diags = parse_errors;
     diags.extend(checker::check(&program, &ctx));
     diags.extend(typeck::type_check_with_skills(
@@ -305,6 +449,9 @@ fn execute_tasks(program: &Program) {
         if !task.uses.is_empty() {
             println!("  {:<8} [{}]", "skills:".dimmed(), task.uses.join(", ").cyan());
         }
+        if !task.effects.is_empty() {
+            println!("  {:<8} [{}]", "effects:".dimmed(), task.effects.join(", ").cyan());
+        }
 
         for step in &task.steps {
             print!("  {} {}... ", "→".dimmed(), step.name);
@@ -337,6 +484,13 @@ fn collect_expr_effects(expr: &crate::ast::Expr) -> Vec<String> {
         crate::ast::Expr::Call  { args, .. }           => {
             args.iter().flat_map(collect_expr_effects).collect()
         }
+        crate::ast::Expr::Match { scrutinee, arms }   => {
+            let mut out = collect_expr_effects(scrutinee);
+            for arm in arms {
+                out.extend(collect_expr_effects(&arm.body));
+            }
+            out
+        }
         _ => Vec::new(),
     }
 }
@@ -351,6 +505,11 @@ mod tests {
 
     fn new_cwd() -> std::path::PathBuf {
         std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    }
+
+    fn eval_expr_src(src: &str) -> Result<Value, ReplError> {
+        let expr = parse_repl_expr(src)?;
+        ReplEvaluator.eval_expr(&expr, &ReplEnv::new())
     }
 
     #[test]
@@ -399,5 +558,33 @@ mod tests {
         session.clear();
         assert_eq!(session.count, 0);
         assert!(session.declarations.is_empty());
+    }
+
+    #[test]
+    fn test_eval_match_variant_expression() {
+        let value = eval_expr_src(r#"match iOS { iOS => "mobile" Android => "desktop" _ => "other" }"#)
+            .expect("match expression should evaluate");
+        assert_eq!(value, Value::String("mobile".to_string()));
+    }
+
+    #[test]
+    fn test_eval_match_wildcard_expression() {
+        let value = eval_expr_src(r#"match Web { iOS => "mobile" _ => "other" }"#)
+            .expect("wildcard arm should evaluate");
+        assert_eq!(value, Value::String("other".to_string()));
+    }
+
+    #[test]
+    fn test_eval_match_variant_binding_expression() {
+        let value = eval_expr_src(r#"match Ok("Ada") { Ok(user) => user _ => "unknown" }"#)
+            .expect("variant binding should evaluate");
+        assert_eq!(value, Value::String("Ada".to_string()));
+    }
+
+    #[test]
+    fn test_eval_match_no_matching_arm_returns_error() {
+        let err = eval_expr_src(r#"match Web { iOS => "mobile" Android => "desktop" }"#)
+            .expect_err("missing arm should be an error");
+        assert!(matches!(err, ReplError::NoMatchingArm(value) if value == "Web"));
     }
 }

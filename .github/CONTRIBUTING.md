@@ -14,7 +14,7 @@ Thank you for contributing to Brief! This is a community-first project.
 ## Development Setup
 
 ```bash
-git clone https://github.com/yourusername/brief
+git clone https://github.com/sorunokoe/brief
 cd brief
 cargo build
 cargo test                          # 93 tests must all pass
@@ -76,4 +76,4 @@ Next: **v1.0** — `brief watch`, `brief init`, mdBook docs site.
 
 ## Questions?
 
-Open a [GitHub Discussion](https://github.com/yourusername/brief/discussions).
+Open a [GitHub Discussion](https://github.com/sorunokoe/brief/discussions).

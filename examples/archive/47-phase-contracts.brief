@@ -1,0 +1,35 @@
+import skill "PaymentService"
+
+sealed type PaymentStatus = Pending | Authorized | Captured | Refunded | Failed
+
+effect PaymentService {
+    fn authorize(amount: Int, currency: String) -> Result<String>
+    fn capture(authToken: String) -> Result<String>
+}
+
+task ProcessPayment : TaskBrief uses [PaymentService] {
+    goal = "Process a payment with phase contract guarantees"
+
+    extras {
+        amount: Int
+        currency: String
+    }
+
+    step Authorize {
+        pre { amount > 0 }
+        post { authToken.isValid }
+
+        let authToken = perform PaymentService.authorize(amount, currency)?;
+    }
+
+    step Capture {
+        pre { authToken.isValid }
+        post { receipt.isConfirmed }
+
+        let receipt = perform PaymentService.capture(authToken)?;
+    }
+}
+
+test "positive amount pre-condition" {
+    assert amount > 0
+}

@@ -2,13 +2,16 @@ import skill "DesignSystem"
 
 import skill "GraphQL"
 
+sealed type Platform = iOS | Android | Web | KMP
+
 @BriefBuilder
 task ProfileScreen : TaskBrief uses [DesignSystem, GraphQL] {
-    goal   = "Display user profile with design-system components"
-    extras = [
-        "figmaURL": "https://figma.com/file/abc?node-id=1:2",
-        "platform": "iOS"
-    ]
+    goal = "Display user profile with design-system components"
+
+    extras {
+        figmaURL: String
+        platform: Platform
+    }
 
     step FetchData {
         let user = perform GraphQL.query(UserProfileQuery)?;

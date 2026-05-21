@@ -1,0 +1,6 @@
+// Auto-generated for effect contract validation.
+
+effects [cache-read]
+interface CacheService {
+    fn get(key: String) -> CacheEntry
+}

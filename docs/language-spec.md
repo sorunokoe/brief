@@ -33,7 +33,9 @@ The following identifiers are reserved:
 ```
 task       step       import     skill      uses       perform
 let        sealed     type       struct     protocol   effect
-fn         async      await      return     test
+fn         async      await      match      return     test
+extras     provides   effects    pre        post
+parallel   retry      fallback
 ```
 
 ### 3.2 Decorators and Attributes
@@ -71,7 +73,7 @@ Built-in attributes: `@url`, `@nonEmpty`, `@matches("pattern")`, `@once`
 ### 3.4 Operators and Punctuation
 
 ```
-{  }  [  ]  (  )  :  ,  .  =  ?  ;  ->  <  >  |  @
+{  }  [  ]  (  )  :  ,  .  =  ?  ;  ->  =>  <  >  |  @
 ```
 
 ---
@@ -105,6 +107,21 @@ sealed type TaskStatus = Pending | Running | Done(String) | Failed(String)
 ```
 
 Sealed types are closed — the compiler knows all variants. They form the foundation of the effect row system.
+
+### Opaque Types
+
+`opaque type Name` declares a named type whose internals are unknown to Brief. Opaque types:
+- Pass all type checks — compatible as any argument or return type
+- Cannot have fields accessed (emits `E211`)
+- May appear as variants in sealed types: `sealed type LexResult = Ok(TokenStream) | Err(DiagSet)`
+- Are typically provided by skills at compiler artifact boundaries
+
+```brief
+opaque type TokenStream
+opaque type DiagnosticSet
+
+sealed type LexResult = Lexed(TokenStream) | LexFailed(DiagnosticSet)
+```
 
 ### 4.4 Structs
 
@@ -345,7 +362,13 @@ decorator*
 
 task_body ::=
     ('goal' '=' STRING)?
-    ('extras' '=' '[' kv_pairs ']')?
+    (
+        'extras' '=' '[' kv_pairs ']'      // deprecated — emits W103
+      | 'extras' '{' typed_fields '}'
+    )?
+    ('provides' '{' typed_fields '}')?
+    ('effects' '[' ident_list ']')?
+    step_group_decl*
     step_decl*
 ```
 
@@ -353,43 +376,201 @@ task_body ::=
 
 - `goal` — **required** in v0.1. A human-readable description of what this task accomplishes. This is the primary input the AI agent uses to understand the task scope.
 
-### 5.3 Optional Fields
+### 5.3 Extras
 
-- `extras` — a string key-value map for arbitrary metadata. Common keys:
-  - `"platform"` — `"iOS"`, `"Android"`, `"KMP"`, `"Web"`
-  - `"figmaURL"` — Figma node URL for UI tasks
-  - `"graphqlSchema"` — path or URL to GraphQL schema for domain tasks
+Brief supports two `extras` forms:
+
+- Legacy string-map syntax:
+
+  ```brief
+  extras = ["key": "value", "version": "1.0"]  // deprecated — emits W103
+  ```
+
+- Typed record syntax:
+
+  ```brief
+  extras {
+      platform: Platform
+      environment: Environment
+  }
+  ```
+
+Typed extras declare metadata or runtime inputs the compiler can check. Each field type must resolve to a declared type (typically a sealed type) or to one of the built-in scalars `String`, `Bool`, `Int`, or `Float`. If an extras field references an unknown type, Brief emits **E208**.
 
 ### 5.4 The `@BriefBuilder` Decorator
 
 `@BriefBuilder` marks a task as using the composable builder pattern. In v0.1, this is a marker that indicates the task may be composed with other tasks. Full composability semantics are defined in v0.2.
 
+Builder tasks should declare the typed outputs they produce:
+
+```brief
+@BriefBuilder
+task MyBuilder : TaskBrief {
+    provides {
+        artifact: Artifact
+        buildId: String
+    }
+    ...
+}
+```
+
+If an `@BriefBuilder` task omits `provides { ... }`, Brief emits **W104**.
+
 ### 5.5 Example
 
 ```brief
 import skill "DesignSystem"
-import skill "GraphQL"
+
+sealed type Platform = iOS | Android | Web
+sealed type Environment = Production | Staging | Development
 
 @BriefBuilder
-task ProfileScreen : TaskBrief uses [DesignSystem, GraphQL] {
-    goal   = "Display the user profile screen with avatar, name, and recent activity"
-    extras = ["platform": "iOS", "figmaURL": "https://figma.com/file/abc?node-id=1:2"]
+task DeploymentBrief : TaskBrief uses [DesignSystem] {
+    goal = "Deploy the app for a given platform and environment"
 
-    step FetchProfile {
-        let user = perform GraphQL.query(UserProfileQuery)?
+    extras {
+        platform: Platform
+        environment: Environment
     }
 
-    step RenderProfile {
-        let card  = perform DesignSystem.profileCard(user, theme: .default)?
-        let badge = perform DesignSystem.button("Edit Profile", style: .secondary)?
-        display(card, badge)
+    provides {
+        deploymentUrl: String
+        buildId: String
+    }
+
+    step Build {
+        let artifact = perform DesignSystem.buildArtifact(platform, environment)?
+    }
+
+    step Deploy {
+        let deploymentUrl = "https://staging.example.com"
+        let buildId = "build-42"
     }
 }
 ```
 
 ---
 
-## 6. Steps
+## 6. Match Expressions
+
+Brief's `match` expression dispatches on sealed type variants or result values.
+
+### 6.1 Syntax
+
+```brief
+let result = match scrutinee {
+    VariantA     => expr_a
+    VariantB(x)  => expr_using_x
+    _            => fallback_expr
+}
+```
+
+### 6.2 Rules
+
+- The scrutinee may be any expression; typically a variable bound in a prior step.
+- Arms are tried top-to-bottom; the first matching arm executes.
+- `_` (wildcard) matches any value and must appear last.
+- `VariantName(binding)` destructures a single payload and binds it in the arm body.
+- **Exhaustiveness (E207):** When the scrutinee is a declared `sealed type`, all variants must be covered or a `_` wildcard must be present. Violation emits `warning[E207]`.
+
+### 6.3 Examples
+
+```brief
+sealed type Platform = iOS | Android | Web
+
+let label = match platform {
+    iOS     => "Mobile (Apple)"
+    Android => "Mobile (Google)"
+    _       => "Web"
+}
+```
+
+```brief
+let name = match fetchResult {
+    Ok(user) => user.name
+    Err(msg) => "anonymous"
+}
+```
+
+### 6.4 Error Codes
+
+| Code | Meaning |
+|------|---------|
+| E207 | Non-exhaustive match — missing sealed type variants |
+
+---
+
+## 7. Phase Contracts
+
+Steps may declare optional `pre` and `post` condition blocks.
+
+```brief
+step Charge {
+    pre { amount > 0, account.isActive }
+    post { receipt.isValid }
+
+    let receipt = perform PaymentService.charge(amount)?
+}
+```
+
+Conditions are stored as documentation-level assertions. Future versions will evaluate them at runtime.
+
+---
+
+## 8. Effect Contracts
+
+Tasks declare the effects they produce with an `effects [...]` block.
+
+```brief
+task FetchWithCache : TaskBrief uses [NetworkService, CacheService] {
+    effects [network, cache-read]
+    ...
+}
+```
+
+If a task performs a skill that produces an undeclared effect, `E209 EffectContractViolation` is emitted.
+
+| Code | Meaning |
+|------|---------|
+| E209 | Skill effect not declared in task `effects [...]` |
+
+---
+
+## 9. Workflow Combinators
+
+Steps can be grouped with combinators for parallel execution, retry logic, and fallback chains.
+
+### parallel
+```brief
+parallel {
+    FetchUsers
+    FetchProducts
+}
+```
+The named steps run concurrently.
+
+### retry
+```brief
+retry(3) {
+    SyncToBackend
+}
+```
+The named step retries up to N times on failure.
+
+### fallback
+```brief
+fallback {
+    SyncPrimary
+    SyncFallback
+}
+```
+Steps are tried in order; the first to succeed wins.
+
+**Step reference validation (E210):** If a combinator names a step not declared in the task, `E210` is emitted.
+
+---
+
+## 10. Steps
 
 Steps describe the sequenced workflow of a task. They are ordered — step bodies execute in declaration order.
 
@@ -399,15 +580,16 @@ step StepName {
 }
 ```
 
-### 6.1 Statements
+### 10.1 Statements
 
 - `let x = expr;` — bind a value to a name (immutable binding)
 - `expr;` — evaluate an expression for its side effect
 
-### 6.2 Expressions
+### 10.2 Expressions
 
 | Form | Description |
 |------|-------------|
+| `match expr { ... }` | Pattern match on sealed variants or result values — see §6 |
 | `perform Skill.fn(args)?` | Perform an effect; `?` propagates Err |
 | `await expr` | Await an async expression (v0.1: async effects are managed transparently) |
 | `x.method(args)` | Method call |
@@ -417,9 +599,9 @@ step StepName {
 
 ---
 
-## 7. Skill System
+## 11. Skill System
 
-### 7.1 Import and Resolution
+### 11.1 Import and Resolution
 
 ```brief
 import skill "DesignSystem"
@@ -431,7 +613,7 @@ Resolution order for `DesignSystem`:
 3. `~/.brief/skills/DesignSystem.briefskill`
 4. Brief skill registry (v0.2)
 
-### 7.2 The `.briefskill` Interface File
+### 11.2 The `.briefskill` Interface File
 
 `.briefskill` files are auto-generated by `brief skillgen` — they are **never written by hand**.
 
@@ -448,7 +630,7 @@ interface DesignSystem {
 }
 ```
 
-### 7.3 Staleness Detection
+### 11.3 Staleness Detection
 
 The `.briefskill` header contains a SHA-256 checksum of the source `README.md`. When the checksum does not match the current `README.md`, `brief check` emits a `W102` warning:
 
@@ -460,7 +642,7 @@ warning[W102]: skill interface 'DesignSystem' is stale
 
 ---
 
-## 8. Error Codes
+## 12. Error Codes
 
 ### Errors (fatal — task is invalid)
 
@@ -476,13 +658,24 @@ warning[W102]: skill interface 'DesignSystem' is stale
 | `E201` | `UnknownType` | A type name cannot be resolved to any declaration in scope |
 | `E202` | `WrongArgCount` | `perform` call passes wrong number of arguments to a typed effect function |
 | `E203` | `AttributeConstraint` | Struct field attribute constraint fails (e.g. `@url` on non-URL string) |
+| `E206` | `ScopedGenericConflict` | Generic type parameter shadows a builtin or declared type name |
+| `E208` | `UnknownExtrasField` | Typed `extras { field: Type }` references an unknown type |
+| `E209` | `EffectContractViolation` | Skill effect is not declared in the task `effects [...]` block |
+| `E210` | `UndeclaredStepInCombinator` | `parallel`, `retry`, or `fallback` references a step not declared in the task |
+| `E211` | `OpaqueTypeFieldAccess` | Field access on an opaque type — opaque types are fully abstract |
+| `E212` | `SkillAbiVersionMismatch` | Skill ABI version in `.briefskill` does not match the expected version |
+| `E213` | `SkillAbiUnknownType` | Skill fn signature references a type not declared as opaque, sealed, or primitive |
 
 ### Warnings (non-fatal — task may still be handed to AI)
 
 | Code | Name | Meaning |
 |------|------|---------|
+| `E207` | `NonExhaustiveMatch` | `match` on a sealed type omits variants and has no wildcard arm |
 | `W101` | `MissingSkillInterface` | Imported skill has no `.briefskill` interface file; type checking is partial |
 | `W102` | `StaleSkillInterface` | Skill interface file checksum does not match current `README.md` |
+| `W103` | `DeprecatedStringExtras` | Legacy `extras = ["key": "value"]` syntax is deprecated in favor of typed `extras { ... }` |
+| `W104` | `BriefBuilderProvidesMissing` | `@BriefBuilder` task omits the recommended `provides { ... }` block |
+| `W105` | `OpaqueTypeUnused` | An `opaque type` is declared but never referenced in any sealed type variant, extras field, or step |
 
 ### Diagnostic format
 
@@ -504,7 +697,7 @@ warning[W101]: skill 'DesignSystem' has no interface file
 
 ---
 
-## 9. Standard Library
+## 13. Standard Library
 
 Brief's standard library is defined in `briefs/core/` and `briefs/effects/`.
 
@@ -541,17 +734,18 @@ effect Async {
 
 ---
 
-## 10. Grammar (EBNF)
+## 14. Grammar (EBNF)
 
 ```ebnf
 program        ::= top_decl*
-top_decl       ::= import_decl | sealed_type_decl | type_alias_decl
+top_decl       ::= import_decl | sealed_type_decl | opaque_type_decl | type_alias_decl
                  | effect_group_decl | struct_decl
                  | protocol_decl | effect_decl | task_decl | test_decl
 
 import_decl    ::= 'import' 'skill' STRING
 
 sealed_type_decl  ::= 'sealed' 'type' Ident type_params? '=' type_variant ('|' type_variant)*
+opaque_type_decl  ::= 'opaque' 'type' Ident
 type_variant      ::= Ident ( '(' type_ref (',' type_ref)* ')' )?
 
 type_alias_decl   ::= 'type' Ident '=' attribute+ type_ref
@@ -579,9 +773,21 @@ task_decl      ::= decorator* 'task' Ident ':' 'TaskBrief'
                    ( 'uses' '[' ident_list ']' )?
                    '{' task_body '}'
 task_body      ::= ('goal' '=' STRING)?
-                   ('extras' '=' '[' kv_pairs ']')?
+                   (
+                     'extras' '=' '[' kv_pairs ']'
+                   | 'extras' '{' typed_fields '}'
+                   )?
+                   ('provides' '{' typed_fields '}')?
+                   ('effects' '[' ident_list ']')?
+                   step_group_decl*
                    step_decl*
-step_decl      ::= 'step' Ident '{' stmt* '}'
+step_group_decl ::= 'parallel' '{' ident_list '}'
+                  | 'retry' '(' IntLiteral ')' '{' Ident '}'
+                  | 'fallback' '{' ident_list '}'
+step_decl      ::= 'step' Ident '{' phase_contract* stmt* '}'
+phase_contract ::= 'pre' '{' contract_list '}' | 'post' '{' contract_list '}'
+contract_list  ::= contract (',' contract)*
+contract       ::= /* documentation-level assertion text */
 
 test_decl      ::= 'test' STRING '{' test_body '}'
                  (* test_body uses mock/run/assert syntax; parsed by brief test, *)
@@ -591,22 +797,29 @@ stmt           ::= let_stmt | expr_stmt
 let_stmt       ::= attribute* 'let' Ident '=' expr ';'
 expr_stmt      ::= expr ';'
 
-expr           ::= 'perform' Ident '.' Ident type_args? '(' arg_list ')' '?'?
+expr           ::= match_expr
+                 | 'perform' Ident '.' Ident type_args? '(' arg_list ')' '?'?
                  | 'await' expr
                  | Ident '.' Ident '(' arg_list ')'
                  | Ident '(' arg_list ')'
                  | Ident
                  | STRING
 
+match_expr     ::= 'match' expr '{' match_arm+ '}'
+match_arm      ::= pattern '=>' expr
+pattern        ::= '_' | Ident | Ident '(' Ident ')'
+
 arg_list       ::= ( expr (',' expr)* )?
 decorator      ::= '@' Ident ( '(' arg_list ')' )?
 ident_list     ::= Ident (',' Ident)*
 kv_pairs       ::= STRING ':' STRING (',' STRING ':' STRING)*
+typed_fields   ::= typed_field*
+typed_field    ::= Ident ':' type_ref
 ```
 
 ---
 
-## 11. CLI Reference
+## 15. CLI Reference
 
 | Command | Description |
 |---------|-------------|
@@ -635,13 +848,79 @@ kv_pairs       ::= STRING ':' STRING (',' STRING ':' STRING)*
 
 ---
 
-## 12. Versioning
+## 16. Version History
 
 This document describes Brief v1.0. The language is stable.
 
-**Version history:**
-- `v0.1` — Core language: tasks, steps, effects, sealed types, structs, protocols, skill imports
-- `v0.2` — Ecosystem: `brief test`, `brief fmt`, LSP go-to-def/find-refs, WASM, skill registry
-- `v0.3` — Power types: `@once` linear types, type aliases, effect groups, `brief doc`
-- `v0.4` — Test block support in main parser (`brief check` handles `test { }` files); `@mcp` alias attribute; examples 27–40 (composition, AI pipeline, platform branching, event sourcing, concurrency, MCP, background jobs, distributed transactions); `brief watch`, `brief init`, `brief ci`
-- `v1.0` — Stability: cross-step `@once` linear type tracking (E104/E105 across steps); `brief gen --force`; `brief fmt --check`; security-hardened skill registry (name validation, size caps, HTTP timeouts); diagnostic deduplication; `ExitCode` API (no `process::exit` in library modules); StringPool O(1) dedup; OnceLock-based builtin type sets; 117 compiler tests; 40 verified examples
+### v0.1
+- Core language: tasks, steps, effects, sealed types, structs, protocols, skill imports
+
+### v0.2
+- Ecosystem: `brief test`, `brief fmt`, LSP go-to-def/find-refs, WASM, skill registry
+
+### v0.3
+- Power types: `@once` linear types, type aliases, effect groups, `brief doc`
+
+### v0.4
+- Test block support in main parser (`brief check` handles `test { }` files)
+- `@mcp` alias attribute
+- Examples 27–40 (composition, AI pipeline, platform branching, event sourcing, concurrency, MCP, background jobs, distributed transactions)
+- `brief watch`, `brief init`, `brief ci`
+
+### v0.5
+- Scoped generic type params per function signature (E206)
+- Comment trivia preservation — fmt --write refuses files with comments
+- LSP O(1) offset→position via binary search + 50ms debounce
+- Typed extras record syntax: `extras { field: Type }` (W103, E208)
+- @BriefBuilder `provides { }` enforcement (W104)
+- `match` expressions with exhaustiveness checking (E207)
+- Typed HIR module (`hir.rs`) with `lower()` function
+- Phase contracts: `pre { } / post { }` on steps
+- Effect contracts: `effects [...]` on tasks (E209)
+- Workflow combinators: `parallel`, `retry(n)`, `fallback` (E210)
+- `opaque type Name` declarations — abstract compiler artifact types at skill boundaries
+- ABI-versioned `.briefskill` interfaces (`abi_version: "1.0"`) with load-time verification
+- `brief self-hosting check|run|compare` — mediated self-description CLI
+- Stage 1 Mediated Self-Description: 6 compiler passes described as Brief tasks in `compiler/`
+
+### v1.0
+- Stability: cross-step `@once` linear type tracking (E104/E105 across steps)
+- `brief gen --force`
+- `brief fmt --check`
+- Security-hardened skill registry (name validation, size caps, HTTP timeouts)
+- Diagnostic deduplication
+- `ExitCode` API (no `process::exit` in library modules)
+- StringPool O(1) dedup
+- OnceLock-based builtin type sets
+- 226 compiler tests
+- 59 verified examples
+
+## 17. Stage 1 Mediated Self-Description
+
+As of v0.5, the Brief compiler describes its own compilation pipeline as a set of
+type-checked Brief tasks in `compiler/`. This is **Stage 1** of self-hosting:
+Brief is the authoritative description of pass structure; Rust skill backends
+provide execution.
+
+### New language features enabling Stage 1
+
+**`opaque type Name`** — declares a named type whose internals are unknown to Brief.
+Opaque types pass all type checks and cannot have fields accessed. Used for compiler
+artifacts (`TokenStream`, `Ast`, `HirModule`) at skill boundaries.
+
+**ABI-versioned skill interfaces** — `.briefskill` files carry `abi_version: "1.0"`.
+Mismatches between the interface declaration and the Rust backend are caught at
+load time (E212 `SkillAbiVersionMismatch`).
+
+**New error/warning codes:**
+- `E211` — `OpaqueTypeFieldAccess`: field access on opaque type
+- `E212` — `SkillAbiVersionMismatch`: skill ABI version mismatch
+- `E213` — `SkillAbiUnknownType`: skill fn references unknown type
+- `W105` — `OpaqueTypeUnused`: declared opaque type never used
+
+### CLI
+```bash
+brief self-hosting check              # validate all compiler pass Brief files
+brief self-hosting run <file>         # execute Brief-mediated pipeline
+brief self-hosting compare <file>     # diff Rust vs Brief-mediated outputs
+```

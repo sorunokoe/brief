@@ -1,0 +1,7 @@
+// Auto-generated for the v0.5 showcase example.
+
+effects [network]
+interface AnalyticsService {
+    fn getMetrics(audience: String) -> Result<String>
+    fn getDimensions() -> Result<String>
+}

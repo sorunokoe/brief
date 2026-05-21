@@ -1,0 +1,30 @@
+// Auto-generated skill interface for Stage 1 Mediated Self-Description
+// abi_version: "1.0"  
+// Source: briefc/src/checker.rs + briefc/src/typeck.rs
+// Regenerate: brief skillgen compiler/skills/CheckerPrimitives/
+
+interface CheckerPrimitives {
+    opaque type Ast
+    opaque type TypedAst
+    opaque type DiagnosticSet
+    
+    sealed type CheckOutcome = Checked(TypedAst) | CheckFailed(DiagnosticSet)
+
+    // Full semantic type check (runs all check phases)
+    fn typeCheck(ast: Ast) -> CheckOutcome
+    
+    // Check linear @once type usage (E104/E105)
+    fn checkLinear(ast: Ast) -> CheckOutcome
+    
+    // Check effect declarations match uses [] clauses (E103)
+    fn checkEffects(ast: Ast) -> CheckOutcome
+    
+    // Check match expression exhaustiveness (E207)
+    fn checkExhaustiveness(ast: Ast) -> CheckOutcome
+    
+    // Count diagnostics at error severity
+    fn errorCount(diagnostics: DiagnosticSet) -> Int
+    
+    // Count diagnostics at warning severity
+    fn warningCount(diagnostics: DiagnosticSet) -> Int
+}

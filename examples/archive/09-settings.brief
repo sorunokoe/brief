@@ -4,13 +4,17 @@ import skill "DesignSystem"
 
 import skill "Analytics"
 
+sealed type Platform = iOS | Android | Web | KMP
+sealed type ThemeChoice = Light | Dark | System
+
 @BriefBuilder
 task LoadSettings : TaskBrief uses [DataStore, DesignSystem] {
-    goal   = "Load user preferences from local storage and render the settings screen"
-    extras = [
-        "figmaURL": "https://figma.com/file/settings?node-id=1:1",
-        "platform": "KMP"
-    ]
+    goal = "Load user preferences from local storage and render the settings screen"
+
+    extras {
+        figmaURL: String
+        platform: Platform
+    }
 
     step FetchPreferences {
         let prefs = perform DataStore.load("user.preferences")?;
@@ -23,12 +27,13 @@ task LoadSettings : TaskBrief uses [DataStore, DesignSystem] {
 
 @BriefBuilder
 task UpdateTheme : TaskBrief uses [DataStore, Analytics] {
-    goal   = "Persist the user's chosen colour theme (light / dark / system)"
-    extras = [
-        "allowedValues": "light,dark,system",
-        "defaultTheme": "system",
-        "platform": "KMP"
-    ]
+    goal = "Persist the user's chosen colour theme (light / dark / system)"
+
+    extras {
+        defaultTheme: ThemeChoice
+        platform: Platform
+        theme: ThemeChoice
+    }
 
     step ValidateTheme {
         let valid = perform DataStore.validate("theme", newTheme)?;
@@ -45,12 +50,13 @@ task UpdateTheme : TaskBrief uses [DataStore, Analytics] {
 
 @BriefBuilder
 task DeleteAccount : TaskBrief uses [DataStore, Analytics] {
-    goal   = "Permanently delete user account and wipe all local data (GDPR)"
-    extras = [
-        "confirmSteps": "2",
-        "gdprArticle": "17",
-        "platform": "KMP"
-    ]
+    goal = "Permanently delete user account and wipe all local data (GDPR)"
+
+    extras {
+        confirmationSteps: Int
+        gdprArticle: Int
+        platform: Platform
+    }
 
     step ConfirmIntent {
         let confirmed = perform Analytics.confirmDialog("delete_account")?;

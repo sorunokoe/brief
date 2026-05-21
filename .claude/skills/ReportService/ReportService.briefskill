@@ -1,0 +1,6 @@
+// Auto-generated for the v0.5 showcase example.
+
+effects [storage]
+interface ReportService {
+    fn generate(metrics: String, dimensions: String, template: String) -> Result<String>
+}

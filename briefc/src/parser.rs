@@ -12,7 +12,6 @@
 ///   - `effect Name { fn sig }`
 ///   - Full `TypeRef`: generics (`Result<T, E>`), optional (`T?`)
 ///   - `await expr` expression
-
 use crate::ast::*;
 use crate::errors::{BriefError, ErrorCode};
 use crate::lexer::{Spanned, Token};
@@ -28,16 +27,21 @@ enum TypeDecl {
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub struct Parser<'a> {
-    tokens:  &'a [Spanned],
-    pos:     usize,
+    tokens: &'a [Spanned],
+    pos: usize,
     #[allow(dead_code)]
-    source:  &'a str,
+    source: &'a str,
     pub errors: Vec<BriefError>,
 }
 
 impl<'a> Parser<'a> {
     pub fn new(tokens: &'a [Spanned], source: &'a str) -> Self {
-        Self { tokens, pos: 0, source, errors: Vec::new() }
+        Self {
+            tokens,
+            pos: 0,
+            source,
+            errors: Vec::new(),
+        }
     }
 
     // ── Peeking / advancing ──────────────────────────────────────────────
@@ -52,19 +56,25 @@ impl<'a> Parser<'a> {
 
     fn advance(&mut self) -> Option<&Spanned> {
         let s = self.tokens.get(self.pos);
-        if s.is_some() { self.pos += 1; }
+        if s.is_some() {
+            self.pos += 1;
+        }
         s
     }
 
     fn current_span(&self) -> Span {
-        self.tokens.get(self.pos)
+        self.tokens
+            .get(self.pos)
             .map(|s| Span::new(s.start, s.end))
             .unwrap_or_default()
     }
 
     fn prev_span(&self) -> Span {
-        if self.pos == 0 { return Span::default(); }
-        self.tokens.get(self.pos - 1)
+        if self.pos == 0 {
+            return Span::default();
+        }
+        self.tokens
+            .get(self.pos - 1)
             .map(|s| Span::new(s.start, s.end))
             .unwrap_or_default()
     }
@@ -75,13 +85,13 @@ impl<'a> Parser<'a> {
             let s = self.advance().unwrap();
             Some(Span::new(s.start, s.end))
         } else {
-            let got  = self.peek().cloned();
+            let got = self.peek().cloned();
             let span = self.current_span();
             self.errors.push(BriefError {
-                code:    ErrorCode::ParseError,
+                code: ErrorCode::ParseError,
                 message: format!("expected `{expected:?}`, got `{got:?}`"),
                 span,
-                hint:    None,
+                hint: None,
             });
             None
         }
@@ -97,10 +107,10 @@ impl<'a> Parser<'a> {
             got => {
                 let span = self.current_span();
                 self.errors.push(BriefError {
-                    code:    ErrorCode::ParseError,
+                    code: ErrorCode::ParseError,
                     message: format!("expected identifier, got `{got:?}`"),
                     span,
-                    hint:    None,
+                    hint: None,
                 });
                 None
             }
@@ -117,10 +127,10 @@ impl<'a> Parser<'a> {
             got => {
                 let span = self.current_span();
                 self.errors.push(BriefError {
-                    code:    ErrorCode::ParseError,
+                    code: ErrorCode::ParseError,
                     message: format!("expected string literal, got `{got:?}`"),
                     span,
-                    hint:    None,
+                    hint: None,
                 });
                 None
             }
@@ -134,17 +144,69 @@ impl<'a> Parser<'a> {
         let span = self.current_span();
         let name = match self.peek().cloned() {
             Some(Token::Ident(n)) => n,
-            Some(Token::Type)     => "type".to_string(),
-            Some(Token::Struct)   => "struct".to_string(),
+            Some(Token::Type) => "type".to_string(),
+            Some(Token::Struct) => "struct".to_string(),
             _ => return self.expect_ident(), // will emit error
         };
         self.advance();
         Some((name, span))
     }
 
-    fn at_end(&self) -> bool { self.pos >= self.tokens.len() }
+    fn at_end(&self) -> bool {
+        self.pos >= self.tokens.len()
+    }
 
-    fn _source(&self) -> &str { self.source }
+    fn _source(&self) -> &str {
+        self.source
+    }
+
+    fn parse_contract_block(&mut self) -> Option<Vec<String>> {
+        self.expect(&Token::LBrace)?;
+        let mut conditions = Vec::new();
+        let mut condition_start: Option<usize> = None;
+
+        while self.peek() != Some(&Token::RBrace) && !self.at_end() {
+            let spanned = match self.tokens.get(self.pos) {
+                Some(spanned) => spanned,
+                None => break,
+            };
+
+            if spanned.token == Token::Comma {
+                if let Some(start) = condition_start.take() {
+                    let raw = &self.source[start..spanned.start];
+                    let condition = normalize_contract_condition(raw);
+                    if !condition.is_empty() {
+                        conditions.push(condition);
+                    }
+                }
+                self.advance();
+                continue;
+            }
+
+            condition_start.get_or_insert(spanned.start);
+            self.advance();
+        }
+
+        if let Some(start) = condition_start.take() {
+            let block_end = self
+                .tokens
+                .get(self.pos)
+                .map(|spanned| spanned.start)
+                .unwrap_or(self.source.len());
+            let raw = &self.source[start..block_end];
+            let condition = normalize_contract_condition(raw);
+            if !condition.is_empty() {
+                conditions.push(condition);
+            }
+        }
+
+        self.expect(&Token::RBrace);
+        Some(conditions)
+    }
+}
+
+fn normalize_contract_condition(raw: &str) -> String {
+    raw.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -159,48 +221,92 @@ pub fn parse(tokens: &[Spanned], source: &str) -> (Program, Vec<BriefError>) {
 
 impl<'a> Parser<'a> {
     fn parse_program(&mut self) -> Program {
-        let mut imports       = Vec::new();
-        let mut types         = Vec::new();
-        let mut type_aliases  = Vec::new();
+        let mut imports = Vec::new();
+        let mut opaque_types = Vec::new();
+        let mut types = Vec::new();
+        let mut type_aliases = Vec::new();
         let mut effect_groups = Vec::new();
-        let mut structs       = Vec::new();
-        let mut protocols     = Vec::new();
-        let mut effects       = Vec::new();
-        let mut tasks         = Vec::new();
-        let mut tests         = Vec::new();
+        let mut structs = Vec::new();
+        let mut protocols = Vec::new();
+        let mut effects = Vec::new();
+        let mut tasks = Vec::new();
+        let mut tests = Vec::new();
 
         while !self.at_end() {
             match self.peek() {
-                Some(Token::Import)   => { if let Some(i) = self.parse_import() { imports.push(i); } }
-                Some(Token::Sealed)   => { if let Some(t) = self.parse_sealed_type() { types.push(t); } }
-                Some(Token::Type)     => {
+                Some(Token::Import) => {
+                    if let Some(i) = self.parse_import() {
+                        imports.push(i);
+                    }
+                }
+                Some(Token::Opaque) => {
+                    if let Some(t) = self.parse_opaque_type() {
+                        opaque_types.push(t);
+                    }
+                }
+                Some(Token::Sealed) => {
+                    if let Some(t) = self.parse_sealed_type() {
+                        types.push(t);
+                    }
+                }
+                Some(Token::Type) => {
                     // `type X = @attr BaseType`  OR  `type X = [A, B]`
                     match self.parse_type_decl() {
                         TypeDecl::Alias(a) => type_aliases.push(a),
                         TypeDecl::Group(g) => effect_groups.push(g),
                     }
                 }
-                Some(Token::Struct)   => { if let Some(s) = self.parse_struct() { structs.push(s); } }
-                Some(Token::Protocol) => { if let Some(p) = self.parse_protocol() { protocols.push(p); } }
-                Some(Token::Effect)   => { if let Some(e) = self.parse_effect() { effects.push(e); } }
-                Some(Token::Task)
-                | Some(Token::At)     => { if let Some(t) = self.parse_task() { tasks.push(t); } }
-                Some(Token::Test)     => { if let Some(t) = self.parse_test() { tests.push(t); } }
+                Some(Token::Struct) => {
+                    if let Some(s) = self.parse_struct() {
+                        structs.push(s);
+                    }
+                }
+                Some(Token::Protocol) => {
+                    if let Some(p) = self.parse_protocol() {
+                        protocols.push(p);
+                    }
+                }
+                Some(Token::Effect) => {
+                    if let Some(e) = self.parse_effect() {
+                        effects.push(e);
+                    }
+                }
+                Some(Token::Task) | Some(Token::At) => {
+                    if let Some(t) = self.parse_task() {
+                        tasks.push(t);
+                    }
+                }
+                Some(Token::Test) => {
+                    if let Some(t) = self.parse_test() {
+                        tests.push(t);
+                    }
+                }
                 _ => {
                     let span = self.current_span();
-                    let got  = self.peek().cloned();
+                    let got = self.peek().cloned();
                     self.errors.push(BriefError {
                         code:    ErrorCode::ParseError,
                         message: format!("unexpected token `{got:?}` at top level"),
                         span,
-                        hint:    Some("expected `import skill`, `type`, `sealed type`, `struct`, `protocol`, `effect`, `task`, or `test`".to_string()),
+                        hint:    Some("expected `import skill`, `opaque type`, `type`, `sealed type`, `struct`, `protocol`, `effect`, `task`, or `test`".to_string()),
                     });
                     self.advance();
                 }
             }
         }
 
-        Program { imports, types, type_aliases, effect_groups, structs, protocols, effects, tasks, tests }
+        Program {
+            imports,
+            opaque_types,
+            types,
+            type_aliases,
+            effect_groups,
+            structs,
+            protocols,
+            effects,
+            tasks,
+            tests,
+        }
     }
 
     // ── import skill "Name" ──────────────────────────────────────────────
@@ -210,7 +316,10 @@ impl<'a> Parser<'a> {
         self.expect(&Token::Import)?;
         self.expect(&Token::Skill)?;
         let (name, name_span) = self.expect_str()?;
-        Some(SkillImport { name, span: Span::new(start, name_span.end) })
+        Some(SkillImport {
+            name,
+            span: Span::new(start, name_span.end),
+        })
     }
 
     // ── type alias / effect group ─────────────────────────────────────────
@@ -222,19 +331,39 @@ impl<'a> Parser<'a> {
         self.advance(); // consume `type`
         let (name, _) = match self.expect_ident() {
             Some(n) => n,
-            None    => return TypeDecl::Alias(TypeAliasDecl {
-                name: String::new(), attrs: vec![], base: TypeRef { name: String::new(), args: vec![], optional: false, span: Span::default() }, span: Span::default(),
-            }),
+            None => {
+                return TypeDecl::Alias(TypeAliasDecl {
+                    name: String::new(),
+                    attrs: vec![],
+                    base: TypeRef {
+                        name: String::new(),
+                        args: vec![],
+                        optional: false,
+                        span: Span::default(),
+                    },
+                    span: Span::default(),
+                })
+            }
         };
         if self.peek() != Some(&Token::Eq) {
             let span = self.current_span();
             self.errors.push(BriefError {
-                code:    ErrorCode::ParseError,
+                code: ErrorCode::ParseError,
                 message: "expected `=` in type declaration".to_string(),
                 span,
-                hint:    Some("example: type Email = @matches(\"[^@]+@[^@]+\") String".to_string()),
+                hint: Some("example: type Email = @matches(\"[^@]+@[^@]+\") String".to_string()),
             });
-            return TypeDecl::Alias(TypeAliasDecl { name, attrs: vec![], base: TypeRef { name: String::new(), args: vec![], optional: false, span: Span::default() }, span: Span::default() });
+            return TypeDecl::Alias(TypeAliasDecl {
+                name,
+                attrs: vec![],
+                base: TypeRef {
+                    name: String::new(),
+                    args: vec![],
+                    optional: false,
+                    span: Span::default(),
+                },
+                span: Span::default(),
+            });
         }
         self.advance(); // consume `=`
 
@@ -243,28 +372,46 @@ impl<'a> Parser<'a> {
             self.advance();
             let mut members = Vec::new();
             while self.peek() != Some(&Token::RBracket) && !self.at_end() {
-                if let Some((m, _)) = self.expect_ident() { members.push(m); }
-                if self.peek() == Some(&Token::Comma) { self.advance(); }
+                if let Some((m, _)) = self.expect_ident() {
+                    members.push(m);
+                }
+                if self.peek() == Some(&Token::Comma) {
+                    self.advance();
+                }
             }
             self.expect(&Token::RBracket);
             let end = self.prev_span().end;
-            return TypeDecl::Group(EffectGroupDecl { name, members, span: Span::new(start, end) });
+            return TypeDecl::Group(EffectGroupDecl {
+                name,
+                members,
+                span: Span::new(start, end),
+            });
         }
 
         // `@attr1 @attr2 BaseType` → refinement type alias
         let mut attrs = Vec::new();
         while self.peek() == Some(&Token::At) {
-            if let Some(a) = self.parse_attribute() { attrs.push(a); }
+            if let Some(a) = self.parse_attribute() {
+                attrs.push(a);
+            }
         }
         let base = match self.parse_type_ref() {
             Some(t) => t,
-            None    => TypeRef { name: "String".to_string(), args: vec![], optional: false, span: Span::default() },
+            None => TypeRef {
+                name: "String".to_string(),
+                args: vec![],
+                optional: false,
+                span: Span::default(),
+            },
         };
         let end = self.prev_span().end;
-        TypeDecl::Alias(TypeAliasDecl { name, attrs, base, span: Span::new(start, end) })
+        TypeDecl::Alias(TypeAliasDecl {
+            name,
+            attrs,
+            base,
+            span: Span::new(start, end),
+        })
     }
-
-
 
     fn parse_decorator(&mut self) -> Option<Decorator> {
         let start = self.current_span().start;
@@ -280,7 +427,11 @@ impl<'a> Parser<'a> {
             None
         };
         let end = self.prev_span().end;
-        Some(Decorator { name, arg, span: Span::new(start, end) })
+        Some(Decorator {
+            name,
+            arg,
+            span: Span::new(start, end),
+        })
     }
 
     // ── @attr on struct fields ────────────────────────────────────────────
@@ -298,7 +449,11 @@ impl<'a> Parser<'a> {
             None
         };
         let end = self.prev_span().end;
-        Some(Attribute { name, arg, span: Span::new(start, end) })
+        Some(Attribute {
+            name,
+            arg,
+            span: Span::new(start, end),
+        })
     }
 
     // ── TypeRef ───────────────────────────────────────────────────────────
@@ -313,8 +468,12 @@ impl<'a> Parser<'a> {
             self.advance();
             let mut args = Vec::new();
             while self.peek() != Some(&Token::RAngle) && !self.at_end() {
-                if let Some(arg) = self.parse_type_ref() { args.push(arg); }
-                if self.peek() == Some(&Token::Comma) { self.advance(); }
+                if let Some(arg) = self.parse_type_ref() {
+                    args.push(arg);
+                }
+                if self.peek() == Some(&Token::Comma) {
+                    self.advance();
+                }
             }
             self.expect(&Token::RAngle);
             args
@@ -331,17 +490,28 @@ impl<'a> Parser<'a> {
         };
 
         let end = self.prev_span().end;
-        Some(TypeRef { name, args, optional, span: Span::new(start, end) })
+        Some(TypeRef {
+            name,
+            args,
+            optional,
+            span: Span::new(start, end),
+        })
     }
 
     /// Parse a type parameter list: `<T>` or `<T, U>`
     fn parse_type_params(&mut self) -> Vec<String> {
-        if self.peek() != Some(&Token::LAngle) { return Vec::new(); }
+        if self.peek() != Some(&Token::LAngle) {
+            return Vec::new();
+        }
         self.advance();
         let mut params = Vec::new();
         while self.peek() != Some(&Token::RAngle) && !self.at_end() {
-            if let Some((name, _)) = self.expect_ident() { params.push(name); }
-            if self.peek() == Some(&Token::Comma) { self.advance(); }
+            if let Some((name, _)) = self.expect_ident() {
+                params.push(name);
+            }
+            if self.peek() == Some(&Token::Comma) {
+                self.advance();
+            }
         }
         self.expect(&Token::RAngle);
         params
@@ -361,18 +531,32 @@ impl<'a> Parser<'a> {
         // Collect return-type attributes like `@once`, `@affine`
         let mut ret_attrs = Vec::new();
         while self.peek() == Some(&Token::At) {
-            if let Some(a) = self.parse_attribute() { ret_attrs.push(a); }
+            if let Some(a) = self.parse_attribute() {
+                ret_attrs.push(a);
+            }
         }
         let ret = self.parse_type_ref()?;
         let end = self.prev_span().end;
-        Some(FnSignature { name, type_params, params, ret_attrs, ret, doc: None, span: Span::new(start, end) })
+        Some(FnSignature {
+            name,
+            type_params,
+            params,
+            ret_attrs,
+            ret,
+            doc: None,
+            span: Span::new(start, end),
+        })
     }
 
     fn parse_param_list(&mut self) -> Vec<Param> {
         let mut params = Vec::new();
         while self.peek() != Some(&Token::RParen) && !self.at_end() {
-            if let Some(p) = self.parse_param() { params.push(p); }
-            if self.peek() == Some(&Token::Comma) { self.advance(); }
+            if let Some(p) = self.parse_param() {
+                params.push(p);
+            }
+            if self.peek() == Some(&Token::Comma) {
+                self.advance();
+            }
         }
         params
     }
@@ -382,17 +566,39 @@ impl<'a> Parser<'a> {
         // collect leading attributes like `@nonEmpty`
         let mut attrs = Vec::new();
         while self.peek() == Some(&Token::At) {
-            if let Some(a) = self.parse_attribute() { attrs.push(a); }
+            if let Some(a) = self.parse_attribute() {
+                attrs.push(a);
+            }
         }
         let (name, _) = self.expect_ident()?;
         self.expect(&Token::Colon)?;
         // attributes may also appear between `:` and the type name
         while self.peek() == Some(&Token::At) {
-            if let Some(a) = self.parse_attribute() { attrs.push(a); }
+            if let Some(a) = self.parse_attribute() {
+                attrs.push(a);
+            }
         }
         let ty = self.parse_type_ref()?;
         let end = self.prev_span().end;
-        Some(Param { name, attrs, ty, span: Span::new(start, end) })
+        Some(Param {
+            name,
+            attrs,
+            ty,
+            span: Span::new(start, end),
+        })
+    }
+
+    // ── opaque type ──────────────────────────────────────────────────────
+
+    fn parse_opaque_type(&mut self) -> Option<OpaqueTypeDecl> {
+        let start = self.current_span().start;
+        self.expect(&Token::Opaque)?;
+        self.expect(&Token::Type)?;
+        let (name, name_span) = self.expect_ident()?;
+        Some(OpaqueTypeDecl {
+            name,
+            span: Span::new(start, name_span.end),
+        })
     }
 
     // ── sealed type ──────────────────────────────────────────────────────
@@ -407,7 +613,9 @@ impl<'a> Parser<'a> {
 
         let mut variants = Vec::new();
         loop {
-            if let Some(v) = self.parse_type_variant() { variants.push(v); }
+            if let Some(v) = self.parse_type_variant() {
+                variants.push(v);
+            }
             if self.peek() == Some(&Token::Pipe) {
                 self.advance();
             } else {
@@ -416,7 +624,12 @@ impl<'a> Parser<'a> {
         }
 
         let end = self.prev_span().end;
-        Some(SealedTypeDecl { name, params, variants, span: Span::new(start, end) })
+        Some(SealedTypeDecl {
+            name,
+            params,
+            variants,
+            span: Span::new(start, end),
+        })
     }
 
     fn parse_type_variant(&mut self) -> Option<TypeVariant> {
@@ -426,8 +639,12 @@ impl<'a> Parser<'a> {
             self.advance();
             let mut fields = Vec::new();
             while self.peek() != Some(&Token::RParen) && !self.at_end() {
-                if let Some(t) = self.parse_type_ref() { fields.push(t); }
-                if self.peek() == Some(&Token::Comma) { self.advance(); }
+                if let Some(t) = self.parse_type_ref() {
+                    fields.push(t);
+                }
+                if self.peek() == Some(&Token::Comma) {
+                    self.advance();
+                }
             }
             self.expect(&Token::RParen);
             fields
@@ -435,7 +652,11 @@ impl<'a> Parser<'a> {
             Vec::new()
         };
         let end = self.prev_span().end;
-        Some(TypeVariant { name, fields, span: Span::new(start, end) })
+        Some(TypeVariant {
+            name,
+            fields,
+            span: Span::new(start, end),
+        })
     }
 
     // ── struct ───────────────────────────────────────────────────────────
@@ -450,7 +671,9 @@ impl<'a> Parser<'a> {
         let mut fields = Vec::new();
         while self.peek() != Some(&Token::RBrace) && !self.at_end() {
             let pos_before = self.pos;
-            if let Some(f) = self.parse_struct_field() { fields.push(f); }
+            if let Some(f) = self.parse_struct_field() {
+                fields.push(f);
+            }
             if self.pos == pos_before && self.peek() != Some(&Token::RBrace) {
                 self.advance(); // guard against infinite loop on unexpected token
             }
@@ -458,7 +681,12 @@ impl<'a> Parser<'a> {
 
         let end = self.current_span().end;
         self.expect(&Token::RBrace);
-        Some(StructDecl { name, params, fields, span: Span::new(start, end) })
+        Some(StructDecl {
+            name,
+            params,
+            fields,
+            span: Span::new(start, end),
+        })
     }
 
     fn parse_struct_field(&mut self) -> Option<StructField> {
@@ -468,12 +696,19 @@ impl<'a> Parser<'a> {
 
         let mut attrs = Vec::new();
         while self.peek() == Some(&Token::At) {
-            if let Some(a) = self.parse_attribute() { attrs.push(a); }
+            if let Some(a) = self.parse_attribute() {
+                attrs.push(a);
+            }
         }
 
         let ty = self.parse_type_ref()?;
         let end = self.prev_span().end;
-        Some(StructField { name, attrs, ty, span: Span::new(start, end) })
+        Some(StructField {
+            name,
+            attrs,
+            ty,
+            span: Span::new(start, end),
+        })
     }
 
     // ── protocol ─────────────────────────────────────────────────────────
@@ -488,7 +723,9 @@ impl<'a> Parser<'a> {
         let mut methods = Vec::new();
         while self.peek() != Some(&Token::RBrace) && !self.at_end() {
             let pos_before = self.pos;
-            if let Some(f) = self.parse_fn_sig() { methods.push(f); }
+            if let Some(f) = self.parse_fn_sig() {
+                methods.push(f);
+            }
             if self.pos == pos_before && self.peek() != Some(&Token::RBrace) {
                 self.advance();
             }
@@ -496,7 +733,12 @@ impl<'a> Parser<'a> {
 
         let end = self.current_span().end;
         self.expect(&Token::RBrace);
-        Some(ProtocolDecl { name, params, methods, span: Span::new(start, end) })
+        Some(ProtocolDecl {
+            name,
+            params,
+            methods,
+            span: Span::new(start, end),
+        })
     }
 
     // ── effect ───────────────────────────────────────────────────────────
@@ -511,7 +753,9 @@ impl<'a> Parser<'a> {
         let mut fns = Vec::new();
         while self.peek() != Some(&Token::RBrace) && !self.at_end() {
             let pos_before = self.pos;
-            if let Some(f) = self.parse_fn_sig() { fns.push(f); }
+            if let Some(f) = self.parse_fn_sig() {
+                fns.push(f);
+            }
             if self.pos == pos_before && self.peek() != Some(&Token::RBrace) {
                 self.advance();
             }
@@ -519,10 +763,87 @@ impl<'a> Parser<'a> {
 
         let end = self.current_span().end;
         self.expect(&Token::RBrace);
-        Some(EffectDecl { name, params, fns, span: Span::new(start, end) })
+        Some(EffectDecl {
+            name,
+            params,
+            fns,
+            span: Span::new(start, end),
+        })
     }
 
     // ── task declaration ─────────────────────────────────────────────────
+
+    fn parse_ident_list(&mut self) -> Option<Vec<String>> {
+        self.expect(&Token::LBracket)?;
+        let mut items = Vec::new();
+        while self.peek() != Some(&Token::RBracket) && !self.at_end() {
+            if let Some((name, _)) = self.expect_ident() {
+                items.push(name);
+            }
+            if self.peek() == Some(&Token::Comma) {
+                self.advance();
+            }
+        }
+        self.expect(&Token::RBracket)?;
+        Some(items)
+    }
+
+    fn parse_step_ref(&mut self) -> Option<String> {
+        if self.peek() == Some(&Token::Step) {
+            self.advance();
+        }
+        let (name, _) = self.expect_ident()?;
+        Some(name)
+    }
+
+    fn parse_step_ref_block(&mut self) -> Option<Vec<String>> {
+        self.expect(&Token::LBrace)?;
+        let mut steps = Vec::new();
+        while self.peek() != Some(&Token::RBrace) && !self.at_end() {
+            steps.push(self.parse_step_ref()?);
+            if self.peek() == Some(&Token::Comma) {
+                self.advance();
+            }
+        }
+        self.expect(&Token::RBrace)?;
+        Some(steps)
+    }
+
+    fn parse_parallel_group(&mut self) -> Option<StepGroup> {
+        self.advance();
+        Some(StepGroup::Parallel(self.parse_step_ref_block()?))
+    }
+
+    fn parse_retry_group(&mut self) -> Option<StepGroup> {
+        self.advance();
+        self.expect(&Token::LParen)?;
+        let count = match self.peek().cloned() {
+            Some(Token::Int(n)) if n >= 0 => {
+                self.advance();
+                u32::try_from(n).ok()
+            }
+            got => {
+                let span = self.current_span();
+                self.errors.push(BriefError {
+                    code: ErrorCode::ParseError,
+                    message: format!("expected non-negative integer retry count, got `{got:?}`"),
+                    span,
+                    hint: Some("example: retry(3) { SyncStep }".to_string()),
+                });
+                None
+            }
+        }?;
+        self.expect(&Token::RParen)?;
+        self.expect(&Token::LBrace)?;
+        let step = self.parse_step_ref()?;
+        self.expect(&Token::RBrace)?;
+        Some(StepGroup::Retry { count, step })
+    }
+
+    fn parse_fallback_group(&mut self) -> Option<StepGroup> {
+        self.advance();
+        Some(StepGroup::Fallback(self.parse_step_ref_block()?))
+    }
 
     fn parse_task(&mut self) -> Option<Task> {
         let start = self.current_span().start;
@@ -530,7 +851,9 @@ impl<'a> Parser<'a> {
         // Collect leading decorators: `@BriefBuilder`, `@deprecated(...)` etc.
         let mut decorators = Vec::new();
         while self.peek() == Some(&Token::At) {
-            if let Some(d) = self.parse_decorator() { decorators.push(d); }
+            if let Some(d) = self.parse_decorator() {
+                decorators.push(d);
+            }
         }
 
         let has_builder = decorators.iter().any(|d| d.name == "BriefBuilder");
@@ -541,14 +864,18 @@ impl<'a> Parser<'a> {
 
         // Expect `TaskBrief` (identifier)
         match self.peek().cloned() {
-            Some(Token::Ident(ref s)) if s == "TaskBrief" => { self.advance(); }
+            Some(Token::Ident(ref s)) if s == "TaskBrief" => {
+                self.advance();
+            }
             got => {
                 let span = self.current_span();
                 self.errors.push(BriefError {
-                    code:    ErrorCode::ParseError,
+                    code: ErrorCode::ParseError,
                     message: format!("expected `TaskBrief` after `:`, got `{got:?}`"),
                     span,
-                    hint:    Some("task declarations must be `task Name : TaskBrief { ... }`".to_string()),
+                    hint: Some(
+                        "task declarations must be `task Name : TaskBrief { ... }`".to_string(),
+                    ),
                 });
             }
         }
@@ -556,23 +883,24 @@ impl<'a> Parser<'a> {
         // optional `uses [Skill1, Skill2]`
         let uses = if self.peek() == Some(&Token::Uses) {
             self.advance();
-            self.expect(&Token::LBracket)?;
-            let mut skills = Vec::new();
-            while self.peek() != Some(&Token::RBracket) && !self.at_end() {
-                if let Some((name, _)) = self.expect_ident() { skills.push(name); }
-                if self.peek() == Some(&Token::Comma) { self.advance(); }
-            }
-            self.expect(&Token::RBracket)?;
-            skills
+            self.parse_ident_list()?
         } else {
             Vec::new()
         };
 
         self.expect(&Token::LBrace)?;
 
-        let mut goal   = None;
-        let mut extras = Vec::new();
-        let mut steps  = Vec::new();
+        let mut goal = None;
+        let mut effects = Vec::new();
+        let mut extras = None;
+        let mut extras_span = None;
+        let mut provides = None;
+        let mut needs: Vec<crate::ast::NeedItem> = Vec::new();
+        let mut forbids: Vec<crate::ast::ForbidItem> = Vec::new();
+        let mut allow: Vec<crate::ast::CallPattern> = Vec::new();
+        let mut deny: Vec<crate::ast::CallPattern> = Vec::new();
+        let mut step_groups = Vec::new();
+        let mut steps = Vec::new();
 
         while self.peek() != Some(&Token::RBrace) && !self.at_end() {
             let pos_before = self.pos;
@@ -580,23 +908,109 @@ impl<'a> Parser<'a> {
                 Some(Token::Ident(ref s)) if s == "goal" => {
                     self.advance();
                     self.expect(&Token::Eq)?;
-                    if let Some((val, _)) = self.expect_str() { goal = Some(val); }
+                    if let Some((val, _)) = self.expect_str() {
+                        goal = Some(val);
+                    }
+                }
+                Some(Token::Ident(ref s)) if s == "effects" => {
+                    self.advance();
+                    if let Some(declared_effects) = self.parse_ident_list() {
+                        effects = declared_effects;
+                    }
                 }
                 Some(Token::Ident(ref s)) if s == "extras" => {
+                    let extras_start = self.current_span().start;
                     self.advance();
-                    self.expect(&Token::Eq)?;
-                    extras = self.parse_extras_map();
+                    match self.peek() {
+                        Some(Token::Eq) => {
+                            self.advance();
+                            let (pairs, span) = self.parse_extras_map(extras_start);
+                            extras = Some(ExtrasNode::StringMap(pairs));
+                            extras_span = Some(span);
+                        }
+                        Some(Token::LBrace) => {
+                            let (fields, span) = self.parse_typed_fields(extras_start);
+                            extras = Some(ExtrasNode::TypedRecord(fields));
+                            extras_span = Some(span);
+                        }
+                        got => {
+                            let span = self.current_span();
+                            self.errors.push(BriefError {
+                                code:    ErrorCode::ParseError,
+                                message: format!("expected `=` or `{{` after `extras`, got `{got:?}`"),
+                                span,
+                                hint:    Some("use `extras = [\"key\": \"value\"]` or `extras { field: Type }`".to_string()),
+                            });
+                        }
+                    }
+                }
+                Some(Token::Ident(ref s)) if s == "provides" => {
+                    let provides_start = self.current_span().start;
+                    self.advance();
+                    match self.peek() {
+                        Some(Token::LBrace) => {
+                            let (fields, _) = self.parse_typed_fields(provides_start);
+                            provides = Some(fields);
+                        }
+                        got => {
+                            let span = self.current_span();
+                            self.errors.push(BriefError {
+                                code: ErrorCode::ParseError,
+                                message: format!("expected `{{` after `provides`, got `{got:?}`"),
+                                span,
+                                hint: Some("use `provides { field: Type }`".to_string()),
+                            });
+                        }
+                    }
+                }
+                Some(Token::Ident(ref s)) if s == "needs" => {
+                    self.advance();
+                    let parsed = self.parse_needs_block();
+                    needs.extend(parsed);
+                }
+                Some(Token::Ident(ref s)) if s == "forbids" => {
+                    self.advance();
+                    let parsed = self.parse_forbids_block();
+                    forbids.extend(parsed);
+                }
+                Some(Token::Ident(ref s)) if s == "allow" => {
+                    self.advance();
+                    let parsed = self.parse_allow_deny_block();
+                    allow.extend(parsed);
+                }
+                Some(Token::Ident(ref s)) if s == "deny" => {
+                    self.advance();
+                    let parsed = self.parse_allow_deny_block();
+                    deny.extend(parsed);
+                }
+                Some(Token::Ident(ref s)) if s == "parallel" => {
+                    if let Some(group) = self.parse_parallel_group() {
+                        step_groups.push(group);
+                    }
+                }
+                Some(Token::Ident(ref s)) if s == "retry" => {
+                    if let Some(group) = self.parse_retry_group() {
+                        step_groups.push(group);
+                    }
+                }
+                Some(Token::Ident(ref s)) if s == "fallback" => {
+                    if let Some(group) = self.parse_fallback_group() {
+                        step_groups.push(group);
+                    }
                 }
                 Some(Token::Step) => {
-                    if let Some(step) = self.parse_step() { steps.push(step); }
+                    if let Some(step) = self.parse_step() {
+                        step_groups.push(StepGroup::Sequential(step.clone()));
+                        steps.push(step);
+                    }
                 }
                 got => {
                     let span = self.current_span();
                     self.errors.push(BriefError {
-                        code:    ErrorCode::ParseError,
+                        code: ErrorCode::ParseError,
                         message: format!("unexpected token `{got:?}` inside task body"),
                         span,
-                        hint:    Some("expected `goal`, `extras`, or `step`".to_string()),
+                        hint: Some("expected `goal`, `effects`, `extras`, `provides`, `needs`, `forbids`, `allow`, `deny`, `parallel`, `retry`, `fallback`, or `step`".to_string()),
                     });
                     self.advance();
                 }
@@ -609,25 +1023,262 @@ impl<'a> Parser<'a> {
 
         let end = self.current_span().end;
         self.expect(&Token::RBrace);
-        Some(Task { decorators, has_builder, name, uses, goal, extras, steps, span: Span::new(start, end) })
+        Some(Task {
+            decorators,
+            has_builder,
+            name,
+            uses,
+            effects,
+            goal,
+            extras,
+            extras_span,
+            provides,
+            needs,
+            forbids,
+            allow,
+            deny,
+            step_groups,
+            steps,
+            span: Span::new(start, end),
+        })
+    }
+
+    // ── needs { env "VAR" feature "FLAG" } ───────────────────────────────
+
+    fn parse_needs_block(&mut self) -> Vec<crate::ast::NeedItem> {
+        use crate::ast::{NeedItem, NeedKind};
+        let mut items = Vec::new();
+        if self.expect(&Token::LBrace).is_none() {
+            return items;
+        }
+        while self.peek() != Some(&Token::RBrace) && !self.at_end() {
+            let span = self.current_span();
+            match self.peek().cloned() {
+                Some(Token::Ident(ref s)) if s == "env" => {
+                    self.advance();
+                    if let Some((key, _)) = self.expect_str() {
+                        items.push(NeedItem { kind: NeedKind::Env, key, span });
+                    }
+                }
+                Some(Token::Ident(ref s)) if s == "feature" => {
+                    self.advance();
+                    if let Some((key, _)) = self.expect_str() {
+                        items.push(NeedItem { kind: NeedKind::Feature, key, span });
+                    }
+                }
+                Some(Token::Ident(ref s)) if s == "config" => {
+                    self.advance();
+                    if let Some((key, _)) = self.expect_str() {
+                        items.push(NeedItem { kind: NeedKind::Config, key, span });
+                    }
+                }
+                _ => { self.advance(); }
+            }
+            if self.peek() == Some(&Token::Comma) { self.advance(); }
+        }
+        self.expect(&Token::RBrace);
+        items
+    }
+
+    // ── forbids { skill "X" func "Skill.fn" } ────────────────────────────
+
+    fn parse_forbids_block(&mut self) -> Vec<crate::ast::ForbidItem> {
+        use crate::ast::{ForbidItem, ForbidKind};
+        let mut items = Vec::new();
+        if self.expect(&Token::LBrace).is_none() {
+            return items;
+        }
+        while self.peek() != Some(&Token::RBrace) && !self.at_end() {
+            let span = self.current_span();
+            match self.peek().cloned() {
+                Some(Token::Skill) => {
+                    self.advance();
+                    if let Some((name, _)) = self.expect_str() {
+                        items.push(ForbidItem { kind: ForbidKind::Skill, name, span });
+                    }
+                }
+                Some(Token::Ident(ref s)) if s == "func" => {
+                    self.advance();
+                    if let Some((name, _)) = self.expect_str() {
+                        items.push(ForbidItem { kind: ForbidKind::Func, name, span });
+                    }
+                }
+                _ => { self.advance(); }
+            }
+            if self.peek() == Some(&Token::Comma) { self.advance(); }
+        }
+        self.expect(&Token::RBrace);
+        items
+    }
+
+    // ── allow { Skill.func(key="val", ...) } / deny { ... } ─────────────────
+
+    fn parse_allow_deny_block(&mut self) -> Vec<crate::ast::CallPattern> {
+        use crate::ast::{ArgPattern, CallPattern};
+        let mut items = Vec::new();
+        if self.expect(&Token::LBrace).is_none() {
+            return items;
+        }
+        while self.peek() != Some(&Token::RBrace) && !self.at_end() {
+            let span_start = self.current_span().start;
+
+            // Expect: Ident (skill name)
+            let skill = match self.peek().cloned() {
+                Some(Token::Ident(s)) => { self.advance(); s }
+                _ => { self.advance(); continue; }
+            };
+
+            // Expect: Dot then either Ident (func name) or Star (wildcard)
+            if self.peek() != Some(&Token::Dot) {
+                // No dot — skip this entry
+                continue;
+            }
+            self.advance(); // consume '.'
+
+            let func = match self.peek().cloned() {
+                Some(Token::Star) => {
+                    self.advance();
+                    None // GitHub.* — wildcard
+                }
+                Some(Token::Ident(fname)) => {
+                    self.advance();
+                    Some(fname)
+                }
+                Some(Token::Fn) => {
+                    // `fn` is a keyword but valid function names like `fn` appear in briefskill
+                    self.advance();
+                    Some("fn".to_string())
+                }
+                _ => None,
+            };
+
+            // Optional: (key=value, ...)
+            let mut args = Vec::new();
+            if self.peek() == Some(&Token::LParen) {
+                self.advance(); // consume '('
+                while self.peek() != Some(&Token::RParen) && !self.at_end() {
+                    // key name
+                    let key = match self.peek().cloned() {
+                        Some(Token::Ident(k)) => { self.advance(); k }
+                        _ => { self.advance(); continue; }
+                    };
+                    if self.peek() != Some(&Token::Eq) {
+                        continue;
+                    }
+                    self.advance(); // consume '='
+
+                    // value: string, int, true, false, or *
+                    let pat = match self.peek().cloned() {
+                        Some(Token::Star) => {
+                            self.advance();
+                            ArgPattern::Any
+                        }
+                        Some(Token::Str(s)) => {
+                            self.advance();
+                            // If the string contains glob metacharacters → Glob
+                            if s.contains('*') || s.contains('?') || s.contains('[') {
+                                ArgPattern::Glob(s)
+                            } else {
+                                ArgPattern::Exact(serde_json::Value::String(s))
+                            }
+                        }
+                        Some(Token::Int(n)) => {
+                            self.advance();
+                            ArgPattern::Exact(serde_json::Value::Number(
+                                serde_json::Number::from(n)
+                            ))
+                        }
+                        Some(Token::Ident(ref b)) if b == "true" => {
+                            self.advance();
+                            ArgPattern::Exact(serde_json::Value::Bool(true))
+                        }
+                        Some(Token::Ident(ref b)) if b == "false" => {
+                            self.advance();
+                            ArgPattern::Exact(serde_json::Value::Bool(false))
+                        }
+                        _ => { self.advance(); continue; }
+                    };
+                    args.push((key, pat));
+                    if self.peek() == Some(&Token::Comma) { self.advance(); }
+                }
+                self.expect(&Token::RParen);
+            }
+
+            let span = Span::new(span_start, self.prev_span().end);
+            items.push(CallPattern { skill, func, args, span });
+
+            if self.peek() == Some(&Token::Comma) { self.advance(); }
+        }
+        self.expect(&Token::RBrace);
+        items
     }
 
     // ── extras = ["key": "value", ...] ───────────────────────────────────
 
-    fn parse_extras_map(&mut self) -> Vec<(String, String)> {
+    fn parse_extras_map(&mut self, start: usize) -> (Vec<(String, String)>, Span) {
         let mut pairs = Vec::new();
-        if self.expect(&Token::LBracket).is_none() { return pairs; }
+        if self.expect(&Token::LBracket).is_none() {
+            return (pairs, Span::new(start, self.prev_span().end));
+        }
 
         while self.peek() != Some(&Token::RBracket) && !self.at_end() {
-            let key = match self.expect_str() { Some((k, _)) => k, None => break };
-            if self.expect(&Token::Colon).is_none() { break; }
-            let val = match self.expect_str() { Some((v, _)) => v, None => break };
+            let key = match self.expect_str() {
+                Some((k, _)) => k,
+                None => break,
+            };
+            if self.expect(&Token::Colon).is_none() {
+                break;
+            }
+            let val = match self.expect_str() {
+                Some((v, _)) => v,
+                None => break,
+            };
             pairs.push((key, val));
-            if self.peek() == Some(&Token::Comma) { self.advance(); }
+            if self.peek() == Some(&Token::Comma) {
+                self.advance();
+            }
         }
 
         self.expect(&Token::RBracket);
-        pairs
+        (pairs, Span::new(start, self.prev_span().end))
+    }
+
+    // ── typed records: `extras { ... }`, `provides { ... }` ─────────────────
+
+    fn parse_typed_fields(&mut self, start: usize) -> (Vec<ExtrasField>, Span) {
+        let mut fields = Vec::new();
+        if self.expect(&Token::LBrace).is_none() {
+            return (fields, Span::new(start, self.prev_span().end));
+        }
+
+        while self.peek() != Some(&Token::RBrace) && !self.at_end() {
+            let pos_before = self.pos;
+            let field_start = self.current_span().start;
+            let Some((name, _)) = self.expect_ident() else {
+                break;
+            };
+            if self.expect(&Token::Colon).is_none() {
+                break;
+            }
+            let Some(type_ref) = self.parse_type_ref() else {
+                break;
+            };
+            let span = Span::new(field_start, self.prev_span().end);
+            fields.push(ExtrasField {
+                name,
+                type_ref,
+                span,
+            });
+            if self.peek() == Some(&Token::Comma) {
+                self.advance();
+            }
+            if self.pos == pos_before {
+                self.advance();
+            }
+        }
+
+        self.expect(&Token::RBrace);
+        (fields, Span::new(start, self.prev_span().end))
     }
 
     // ── test "name" { ... } ───────────────────────────────────────────────
@@ -638,24 +1289,68 @@ impl<'a> Parser<'a> {
         let (name, _) = self.expect_str()?;
         self.expect(&Token::LBrace)?;
 
-        // Test bodies use mock/run/assert syntax parsed by tester.rs.
-        // Skip tokens with brace-depth tracking so check/fmt don't error.
+        // Parse the test body:
+        // - `perform Skill.fn(args)` → collected into body as Stmt::Expr
+        // - Everything else (mock, run, assert, ...) → skipped opaquely
+        //   so tester.rs can re-parse the raw source without interference.
+        let mut body: Vec<Stmt> = Vec::new();
         let mut depth = 1usize;
         while !self.at_end() {
             match self.peek() {
-                Some(Token::LBrace) => { depth += 1; self.advance(); }
-                Some(Token::RBrace) => {
-                    depth -= 1;
-                    if depth == 0 { break; }
+                Some(Token::LBrace) => {
+                    depth += 1;
                     self.advance();
                 }
-                _ => { self.advance(); }
+                Some(Token::RBrace) => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                    self.advance();
+                }
+                // Parse `perform Skill.fn(literal_args)` at depth 1 only.
+                Some(Token::Perform) if depth == 1 => {
+                    let stmt_start = self.current_span().start;
+                    if let Some(expr) = self.parse_expr() {
+                        // Consume optional trailing semicolon.
+                        if self.peek() == Some(&Token::Semi) {
+                            self.advance();
+                        }
+                        let stmt_end = self.prev_span().end;
+                        body.push(Stmt::Expr {
+                            value: expr,
+                            span: Span::new(stmt_start, stmt_end),
+                        });
+                    } else {
+                        // parse_expr failed — skip to next semi or brace to recover.
+                        while !self.at_end() {
+                            match self.peek() {
+                                Some(Token::Semi) | Some(Token::RBrace) => {
+                                    break;
+                                }
+                                _ => {
+                                    self.advance();
+                                }
+                            }
+                        }
+                        if self.peek() == Some(&Token::Semi) {
+                            self.advance();
+                        }
+                    }
+                }
+                _ => {
+                    self.advance();
+                }
             }
         }
 
         let end = self.current_span().end;
         self.expect(&Token::RBrace);
-        Some(TestDecl { name, body: vec![], span: Span::new(start, end) })
+        Some(TestDecl {
+            name,
+            body,
+            span: Span::new(start, end),
+        })
     }
 
     // ── step FetchData { ... } ────────────────────────────────────────────
@@ -665,6 +1360,22 @@ impl<'a> Parser<'a> {
         self.expect(&Token::Step)?;
         let (name, _) = self.expect_ident()?;
         self.expect(&Token::LBrace)?;
+
+        let mut pre_conditions = Vec::new();
+        let mut post_conditions = Vec::new();
+        loop {
+            match self.peek() {
+                Some(Token::Ident(keyword)) if keyword == "pre" => {
+                    self.advance();
+                    pre_conditions.extend(self.parse_contract_block()?);
+                }
+                Some(Token::Ident(keyword)) if keyword == "post" => {
+                    self.advance();
+                    post_conditions.extend(self.parse_contract_block()?);
+                }
+                _ => break,
+            }
+        }
 
         let mut body = Vec::new();
         while self.peek() != Some(&Token::RBrace) && !self.at_end() {
@@ -679,7 +1390,13 @@ impl<'a> Parser<'a> {
 
         let end = self.current_span().end;
         self.expect(&Token::RBrace);
-        Some(Step { name, body, span: Span::new(start, end) })
+        Some(Step {
+            name,
+            pre_conditions,
+            post_conditions,
+            body,
+            span: Span::new(start, end),
+        })
     }
 
     // ── statement ─────────────────────────────────────────────────────────
@@ -703,23 +1420,109 @@ impl<'a> Parser<'a> {
                 let value = self.parse_expr()?;
                 self.expect(&Token::Semi);
                 let end = self.prev_span().end;
-                Some(Stmt::Let { attrs: stmt_attrs, name, value, span: Span::new(start, end) })
+                Some(Stmt::Let {
+                    attrs: stmt_attrs,
+                    name,
+                    value,
+                    span: Span::new(start, end),
+                })
             }
             _ => {
                 let value = self.parse_expr()?;
                 self.expect(&Token::Semi);
                 let end = self.prev_span().end;
-                Some(Stmt::Expr { value, span: Span::new(start, end) })
+                Some(Stmt::Expr {
+                    value,
+                    span: Span::new(start, end),
+                })
             }
         }
     }
 
     // ── expression ────────────────────────────────────────────────────────
 
+    fn parse_pattern(&mut self) -> Option<Pattern> {
+        match self.peek().cloned() {
+            Some(Token::Ident(name)) if name == "_" => {
+                self.advance();
+                Some(Pattern::Wildcard)
+            }
+            Some(Token::Ident(name)) => {
+                self.advance();
+                if self.peek() == Some(&Token::LParen) {
+                    self.advance();
+                    let (binding, _) = self.expect_ident()?;
+                    self.expect(&Token::RParen)?;
+                    Some(Pattern::Variant1(name, binding))
+                } else {
+                    Some(Pattern::Variant(name))
+                }
+            }
+            got => {
+                let span = self.current_span();
+                self.errors.push(BriefError {
+                    code: ErrorCode::ParseError,
+                    message: format!("expected match pattern, got `{got:?}`"),
+                    span,
+                    hint: Some("expected `Variant`, `Variant(name)`, or `_`".to_string()),
+                });
+                None
+            }
+        }
+    }
+
+    fn parse_match_expr(&mut self) -> Option<Expr> {
+        self.expect(&Token::Match)?;
+        let scrutinee = self.parse_expr()?;
+        self.expect(&Token::LBrace)?;
+
+        let mut arms = Vec::new();
+        while self.peek() != Some(&Token::RBrace) && !self.at_end() {
+            let pos_before = self.pos;
+            let arm_start = self.current_span().start;
+            let Some(pattern) = self.parse_pattern() else {
+                if self.pos == pos_before {
+                    self.advance();
+                }
+                continue;
+            };
+            if self.expect(&Token::FatArrow).is_none() {
+                if self.pos == pos_before {
+                    self.advance();
+                }
+                continue;
+            }
+            let Some(body) = self.parse_expr() else {
+                if self.pos == pos_before {
+                    self.advance();
+                }
+                continue;
+            };
+            let span = Span::new(arm_start, body.span().end);
+            arms.push(MatchArm {
+                pattern,
+                body: Box::new(body),
+                span,
+            });
+            if self.pos == pos_before {
+                self.advance();
+            }
+        }
+
+        self.expect(&Token::RBrace)?;
+        Some(Expr::Match {
+            scrutinee: Box::new(scrutinee),
+            arms,
+        })
+    }
+
     fn parse_expr(&mut self) -> Option<Expr> {
         let start = self.current_span().start;
 
         match self.peek().cloned() {
+            // `match expr { Pattern => expr }`
+            Some(Token::Match) => self.parse_match_expr(),
+
             // `perform Skill.fn(args)?`
             Some(Token::Perform) => {
                 self.advance();
@@ -738,21 +1541,33 @@ impl<'a> Parser<'a> {
                 let args = self.parse_arg_list()?;
                 self.expect(&Token::RParen)?;
                 let propagate = if self.peek() == Some(&Token::Question) {
-                    self.advance(); true
-                } else { false };
+                    self.advance();
+                    true
+                } else {
+                    false
+                };
                 let end = self.prev_span().end;
-                Some(Expr::Perform { skill, func, args, propagate, span: Span::new(start, end) })
+                Some(Expr::Perform {
+                    skill,
+                    func,
+                    args,
+                    propagate,
+                    span: Span::new(start, end),
+                })
             }
 
             // `await expr`
             Some(Token::Await) => {
                 self.advance();
                 let inner = self.parse_expr()?;
-                let end   = inner.span().end;
-                Some(Expr::Await { expr: Box::new(inner), span: Span::new(start, end) })
+                let end = inner.span().end;
+                Some(Expr::Await {
+                    expr: Box::new(inner),
+                    span: Span::new(start, end),
+                })
             }
 
-            // `Ident` — could be `foo.bar(args)`, `foo(args)`, or just `foo`
+            // `Ident` — could be `foo.bar(args)`, `foo.bar`, `foo(args)`, or just `foo`
             Some(Token::Ident(name)) => {
                 self.advance();
 
@@ -761,29 +1576,47 @@ impl<'a> Parser<'a> {
                     if !matches!(self.peek2(), Some(Token::Ident(_))) {
                         let span = self.current_span();
                         self.errors.push(BriefError {
-                            code:    ErrorCode::ParseError,
+                            code: ErrorCode::ParseError,
                             message: "expected method name after `.`".to_string(),
                             span,
-                            hint:    None,
+                            hint: None,
                         });
                         return None;
                     }
                     self.advance(); // `.`
                     let (func, _) = self.expect_ident()?;
-                    self.expect(&Token::LParen)?;
-                    let args = self.parse_arg_list()?;
-                    self.expect(&Token::RParen)?;
+                    let args = if self.peek() == Some(&Token::LParen) {
+                        self.advance();
+                        let args = self.parse_arg_list()?;
+                        self.expect(&Token::RParen)?;
+                        args
+                    } else {
+                        Vec::new()
+                    };
                     let end = self.prev_span().end;
-                    Some(Expr::Call { receiver: Some(name), func, args, span: Span::new(start, end) })
+                    Some(Expr::Call {
+                        receiver: Some(name),
+                        func,
+                        args,
+                        span: Span::new(start, end),
+                    })
                 } else if self.peek() == Some(&Token::LParen) {
                     self.advance();
                     let args = self.parse_arg_list()?;
                     self.expect(&Token::RParen)?;
                     let end = self.prev_span().end;
-                    Some(Expr::Call { receiver: None, func: name, args, span: Span::new(start, end) })
+                    Some(Expr::Call {
+                        receiver: None,
+                        func: name,
+                        args,
+                        span: Span::new(start, end),
+                    })
                 } else {
                     let end = self.prev_span().end;
-                    Some(Expr::Ident { name, span: Span::new(start, end) })
+                    Some(Expr::Ident {
+                        name,
+                        span: Span::new(start, end),
+                    })
                 }
             }
 
@@ -791,16 +1624,29 @@ impl<'a> Parser<'a> {
             Some(Token::Str(val)) => {
                 self.advance();
                 let end = self.prev_span().end;
-                Some(Expr::Str { value: val, span: Span::new(start, end) })
+                Some(Expr::Str {
+                    value: val,
+                    span: Span::new(start, end),
+                })
+            }
+
+            // Integer literal as expression (e.g. boundary values in perform args)
+            Some(Token::Int(n)) => {
+                self.advance();
+                let end = self.prev_span().end;
+                Some(Expr::Int {
+                    value: n,
+                    span: Span::new(start, end),
+                })
             }
 
             got => {
                 let span = self.current_span();
                 self.errors.push(BriefError {
-                    code:    ErrorCode::ParseError,
+                    code: ErrorCode::ParseError,
                     message: format!("expected expression, got `{got:?}`"),
                     span,
-                    hint:    None,
+                    hint: None,
                 });
                 None
             }
@@ -814,7 +1660,9 @@ impl<'a> Parser<'a> {
         while self.peek() != Some(&Token::RParen) && !self.at_end() {
             let expr = self.parse_expr()?;
             args.push(expr);
-            if self.peek() == Some(&Token::Comma) { self.advance(); }
+            if self.peek() == Some(&Token::Comma) {
+                self.advance();
+            }
         }
         Some(args)
     }
@@ -852,6 +1700,19 @@ mod tests {
     }
 
     #[test]
+    fn parse_task_effects() {
+        let src = r#"
+            task T : TaskBrief {
+                goal = "x"
+                effects [network, cache-read]
+            }
+        "#;
+        let (prog, errs) = parse_src(src);
+        assert!(errs.is_empty(), "{errs:?}");
+        assert_eq!(prog.tasks[0].effects, vec!["network", "cache-read"]);
+    }
+
+    #[test]
     fn parse_step_with_perform() {
         let src = r#"
             import skill "GQL"
@@ -866,7 +1727,30 @@ mod tests {
         assert!(errs.is_empty(), "{errs:?}");
         let step = &prog.tasks[0].steps[0];
         assert_eq!(step.name, "Fetch");
-        assert!(matches!(&step.body[0], Stmt::Let { name, value: Expr::Perform { propagate: true, .. }, .. } if name == "user"));
+        assert!(
+            matches!(&step.body[0], Stmt::Let { name, value: Expr::Perform { propagate: true, .. }, .. } if name == "user")
+        );
+    }
+
+    #[test]
+    fn parse_step_phase_contracts() {
+        let src = r#"
+            task T : TaskBrief {
+                goal = "test"
+                step Charge {
+                    pre { x > 0 }
+                    post { y.isValid }
+
+                    let y = "ok";
+                }
+            }
+        "#;
+        let (prog, errs) = parse_src(src);
+        assert!(errs.is_empty(), "{errs:?}");
+        let step = &prog.tasks[0].steps[0];
+        assert_eq!(step.pre_conditions, vec!["x > 0"]);
+        assert_eq!(step.post_conditions, vec!["y.isValid"]);
+        assert_eq!(step.body.len(), 1);
     }
 
     #[test]
@@ -882,6 +1766,60 @@ mod tests {
     }
 
     #[test]
+    fn parse_task_provides_block() {
+        let src = r#"
+            @BriefBuilder
+            task T : TaskBrief {
+                goal = "x"
+                provides {
+                    deploymentUrl: String
+                    buildId: String
+                }
+            }
+        "#;
+        let (prog, errs) = parse_src(src);
+        assert!(errs.is_empty(), "{errs:?}");
+        let provides = prog.tasks[0].provides.as_ref().expect("provides block");
+        assert_eq!(provides.len(), 2);
+        assert_eq!(provides[0].name, "deploymentUrl");
+        assert_eq!(provides[0].type_ref.name, "String");
+        assert_eq!(provides[1].name, "buildId");
+        assert_eq!(provides[1].type_ref.name, "String");
+    }
+
+    #[test]
+    fn parse_parallel_group() {
+        let src = r#"
+            task T : TaskBrief {
+                goal = "x"
+                parallel { StepA, StepB }
+            }
+        "#;
+        let (prog, errs) = parse_src(src);
+        assert!(errs.is_empty(), "{errs:?}");
+        assert!(matches!(
+            &prog.tasks[0].step_groups[0],
+            StepGroup::Parallel(steps) if steps == &vec!["StepA".to_string(), "StepB".to_string()]
+        ));
+    }
+
+    #[test]
+    fn parse_retry_group() {
+        let src = r#"
+            task T : TaskBrief {
+                goal = "x"
+                retry(3) { SyncStep }
+            }
+        "#;
+        let (prog, errs) = parse_src(src);
+        assert!(errs.is_empty(), "{errs:?}");
+        assert!(matches!(
+            &prog.tasks[0].step_groups[0],
+            StepGroup::Retry { count, step } if *count == 3 && step == "SyncStep"
+        ));
+    }
+
+    #[test]
     fn parse_sealed_type() {
         let src = "sealed type Platform = iOS | Android | Web";
         let (prog, errs) = parse_src(src);
@@ -889,6 +1827,15 @@ mod tests {
         assert_eq!(prog.types.len(), 1);
         assert_eq!(prog.types[0].name, "Platform");
         assert_eq!(prog.types[0].variants.len(), 3);
+    }
+
+    #[test]
+    fn parse_opaque_type_decl() {
+        let src = "opaque type TokenStream";
+        let (prog, errs) = parse_src(src);
+        assert!(errs.is_empty(), "{errs:?}");
+        assert_eq!(prog.opaque_types.len(), 1);
+        assert_eq!(prog.opaque_types[0].name, "TokenStream");
     }
 
     #[test]
@@ -937,6 +1884,65 @@ mod tests {
     }
 
     #[test]
+    fn parse_match_expr() {
+        let src = r#"
+            task T : TaskBrief {
+                goal = "test"
+                step Render {
+                    let view = match platform {
+                        iOS => perform DesignSystem.renderMobile(platform)?
+                        Android => perform DesignSystem.renderAndroid(platform)?
+                        _ => perform DesignSystem.renderWeb(platform)?
+                    };
+                }
+            }
+        "#;
+        let (prog, errs) = parse_src(src);
+        assert!(errs.is_empty(), "{errs:?}");
+        let Stmt::Let { value, .. } = &prog.tasks[0].steps[0].body[0] else {
+            panic!("expected let statement");
+        };
+        match value {
+            Expr::Match { scrutinee, arms } => {
+                assert!(matches!(scrutinee.as_ref(), Expr::Ident { name, .. } if name == "platform"));
+                assert_eq!(arms.len(), 3);
+                assert!(matches!(arms[0].pattern, Pattern::Variant(ref name) if name == "iOS"));
+                assert!(matches!(arms[1].pattern, Pattern::Variant(ref name) if name == "Android"));
+                assert!(matches!(arms[2].pattern, Pattern::Wildcard));
+            }
+            other => panic!("expected match expression, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_match_variant_binding_body() {
+        let src = r#"
+            task T : TaskBrief {
+                goal = "test"
+                step Handle {
+                    let name = match result {
+                        Ok(user) => user.name
+                        Err(e) => "unknown"
+                    };
+                }
+            }
+        "#;
+        let (prog, errs) = parse_src(src);
+        assert!(errs.is_empty(), "{errs:?}");
+        let Stmt::Let { value, .. } = &prog.tasks[0].steps[0].body[0] else {
+            panic!("expected let statement");
+        };
+        match value {
+            Expr::Match { arms, .. } => {
+                assert!(matches!(arms[0].pattern, Pattern::Variant1(ref variant, ref binding) if variant == "Ok" && binding == "user"));
+                assert!(matches!(arms[0].body.as_ref(), Expr::Call { receiver: Some(ref receiver), func, args, .. } if receiver == "user" && func == "name" && args.is_empty()));
+                assert!(matches!(arms[1].pattern, Pattern::Variant1(ref variant, ref binding) if variant == "Err" && binding == "e"));
+            }
+            other => panic!("expected match expression, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn parse_await_expr() {
         let src = r#"
             task T : TaskBrief {
@@ -950,8 +1956,13 @@ mod tests {
         // Parse `await` followed by `perform ...`
         let (prog, errs) = parse_src(src);
         assert!(errs.is_empty(), "{errs:?}");
-        assert!(matches!(&prog.tasks[0].steps[0].body[0],
-            Stmt::Let { value: Expr::Await { .. }, .. }));
+        assert!(matches!(
+            &prog.tasks[0].steps[0].body[0],
+            Stmt::Let {
+                value: Expr::Await { .. },
+                ..
+            }
+        ));
     }
 
     // ── Test block parsing ────────────────────────────────────────────────
@@ -1077,12 +2088,12 @@ test "FetchProfile loads user via GraphQL" {
     assert result is Ok
 }
 "#;
-        let (tokens, _)  = lex(src);
+        let (tokens, _) = lex(src);
         let (prog, errs) = parse(&tokens, src);
         assert!(errs.is_empty(), "parse errors: {errs:?}");
         let pass1 = Formatter::format_program(&prog);
 
-        let (tokens2, _)  = lex(&pass1);
+        let (tokens2, _) = lex(&pass1);
         let (prog2, errs2) = parse(&tokens2, &pass1);
         assert!(errs2.is_empty(), "pass-2 parse errors: {errs2:?}");
         let pass2 = Formatter::format_program(&prog2);

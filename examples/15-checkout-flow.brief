@@ -9,6 +9,7 @@ import skill "Notifications"
 sealed type Currency = USD | EUR | GBP | JPY
 
 sealed type PaymentMethod = CreditCard(String) | ApplePay | GooglePay | Crypto(String)
+sealed type CheckoutStage = Validation | Payment | Confirmation
 
 struct CartItem {
     productId: @nonEmpty String
@@ -25,11 +26,12 @@ struct Order {
 
 @BriefBuilder
 task ValidateCart : TaskBrief uses [Cart, Inventory] {
-    goal   = "Validate cart items are in stock and prices are current"
-    extras = [
-        "domain": "checkout",
-        "stage": "validation"
-    ]
+    goal = "Validate cart items are in stock and prices are current"
+
+    extras {
+        domain: String
+        stage: CheckoutStage
+    }
 
     step CheckStock {
         let items = perform Cart.getItems(sessionToken)?;
@@ -43,12 +45,13 @@ task ValidateCart : TaskBrief uses [Cart, Inventory] {
 
 @BriefBuilder
 task ProcessPayment : TaskBrief uses [Payment] {
-    goal   = "Charge the customer and obtain a payment confirmation"
-    extras = [
-        "currency": "USD",
-        "domain": "checkout",
-        "pciScope": "true"
-    ]
+    goal = "Charge the customer and obtain a payment confirmation"
+
+    extras {
+        currency: Currency
+        domain: String
+        pciScope: Bool
+    }
 
     step Authorise {
         let intent = perform Payment.createIntent(amount, currency, method)?;
@@ -61,11 +64,12 @@ task ProcessPayment : TaskBrief uses [Payment] {
 
 @BriefBuilder
 task ConfirmOrder : TaskBrief uses [Cart, Notifications] {
-    goal   = "Create the order record and notify the customer"
-    extras = [
-        "domain": "checkout",
-        "notificationChannels": "email,push"
-    ]
+    goal = "Create the order record and notify the customer"
+
+    extras {
+        domain: String
+        notificationChannels: String
+    }
 
     step CreateRecord {
         let order = perform Cart.convertToOrder(sessionToken, receipt)?;

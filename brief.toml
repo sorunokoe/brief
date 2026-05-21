@@ -3,7 +3,31 @@ name = "brief"
 version = "1.0.0"
 authors = ["Brief Contributors"]
 
+[skills.CheckerPrimitives]
+path = "compiler/skills/CheckerPrimitives"
+
+[skills.LexerPrimitives]
+path = "compiler/skills/LexerPrimitives"
+
+[skills.ParserPrimitives]
+path = "compiler/skills/ParserPrimitives"
+
+[skills.FormatterPrimitives]
+path = "compiler/skills/FormatterPrimitives"
+
+[skills.HirPrimitives]
+path = "compiler/skills/HirPrimitives"
+
+[skills.CompilerDriver]
+path = "compiler/skills/CompilerDriver"
+
 [ci]
 examples = [
   "examples/*.brief",
+  "compiler/01-lex-pass.brief",
+  "compiler/02-parse-pass.brief",
+  "compiler/03-check-pass.brief",
+  "compiler/04-fmt-pass.brief",
+  "compiler/05-hir-pass.brief",
+  "compiler/06-pipeline.brief",
 ]

@@ -11,7 +11,7 @@ This guide takes you from zero to your first validated `.brief` file in 5 minute
 **Build from source (requires Rust):**
 
 ```bash
-git clone https://github.com/yourusername/brief
+git clone https://github.com/sorunokoe/brief
 cd brief
 cargo build --release
 cp target/release/brief /usr/local/bin/
@@ -360,4 +360,4 @@ v1.0 (stability):
 - Documentation website
 - Performance optimization
 
-Watch [releases](https://github.com/yourusername/brief/releases) for updates.
+Watch [releases](https://github.com/sorunokoe/brief/releases) for updates.

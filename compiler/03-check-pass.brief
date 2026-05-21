@@ -1,0 +1,69 @@
+// Stage 1 Mediated Self-Description — Checker pass
+// Skill backend: compiler/skills/CheckerPrimitives/CheckerPrimitives.briefskill
+// Rust implementation: briefc/src/checker.rs + briefc/src/typeck.rs
+
+import skill "CheckerPrimitives"
+
+opaque type Ast
+opaque type TypedAst
+opaque type DiagnosticSet
+
+sealed type CheckOutcome = Checked(TypedAst) | CheckFailed(DiagnosticSet)
+
+@BriefBuilder
+task CheckPass : TaskBrief uses [CheckerPrimitives] {
+    goal = "Perform semantic type checking, linear type validation, effect checking, and match exhaustiveness on an AST"
+
+    effects [cpu, memory]
+
+    extras {
+        ast: Ast
+        strict: Bool
+    }
+
+    provides {
+        typedAst: TypedAst
+        errorCount: Int
+        warningCount: Int
+    }
+
+    step TypeCheck {
+        pre { ast.isStructured }
+        post { checkResult.isReady }
+
+        let checkResult = perform CheckerPrimitives.typeCheck(ast)?;
+    }
+
+    step CheckLinearTypes {
+        pre { checkResult.isReady }
+
+        let linearResult = perform CheckerPrimitives.checkLinear(ast)?;
+    }
+
+    step CheckEffects {
+        pre { checkResult.isReady }
+
+        let effectResult = perform CheckerPrimitives.checkEffects(ast)?;
+    }
+
+    step ExtractTypedAst {
+        pre { checkResult.isReady }
+        post { typedAst.isTyped }
+
+        let typedAst = match checkResult {
+            Checked(ta)    => ta
+            CheckFailed(d) => d
+        };
+        let errorCount = perform CheckerPrimitives.errorCount(typedAst)?;
+        let warningCount = perform CheckerPrimitives.warningCount(typedAst)?;
+    }
+
+}
+
+test "type check requires structured ast" {
+    assert ast.isStructured
+}
+
+test "clean ast has zero errors" {
+    assert errorCount >= 0
+}

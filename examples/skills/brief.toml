@@ -1,0 +1,71 @@
+# Example brief.toml for a project using the reference skills.
+# Copy to your project root as brief.toml and adjust the mcp_command entries.
+#
+# Package availability:
+#   ✅ @modelcontextprotocol/server-* — official packages from Anthropic, installable today
+#   ✅ builtin:*                       — ships with Brief, no npm install required
+#   🔧 @brief/*                        — reference package names; substitute your own MCP server for now
+
+[project]
+name    = "my-brief-project"
+version = "0.1.0"
+
+# ── Skills ────────────────────────────────────────────────────────────────────
+# Each skill needs an mcp_command or mcp_url pointing to its MCP server.
+# Replace the mcp_command with whatever runs your actual skill server.
+
+[skills.FileSystem]
+# ✅ Official Anthropic package — works today
+# Provide one or more allowed directory paths as arguments (e.g. /workspace, /home/user/projects)
+mcp_command = ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"]
+
+[skills.GitHub]
+# ✅ Official Anthropic package — works today
+# Requires GITHUB_TOKEN env var
+mcp_command = ["npx", "-y", "@modelcontextprotocol/server-github"]
+
+[skills.WebSearch]
+# ✅ Official Anthropic package — works today
+# Requires BRAVE_API_KEY env var
+mcp_command = ["npx", "-y", "@modelcontextprotocol/server-brave-search"]
+
+[skills.Memory]
+# ✅ Official Anthropic package — works today
+mcp_command = ["npx", "-y", "@modelcontextprotocol/server-memory"]
+
+[skills.Shell]
+# 🔧 No official MCP server exists for shell execution — bring your own.
+# e.g. mcp_command = ["node", "./shell-mcp-server.js"]
+
+# ── Verifiers ─────────────────────────────────────────────────────────────────
+# Configure a verifier for each @annotation used in .briefskill files.
+# brief check (E309) will warn if an annotation has no configured verifier.
+
+[verifiers."@url"]
+# ✅ Ships with Brief — validates http/https URLs are reachable (no install needed)
+skill = "builtin:url"
+
+[verifiers."@local-path"]
+# ✅ Ships with Brief — checks that a file or directory exists on the local filesystem
+skill = "builtin:local-path"
+
+[verifiers."@github-repo"]
+# ✅ Ships with Brief — checks GitHub repo accessibility via the GitHub API
+# Uses GITHUB_TOKEN env var if set (required for private repos, recommended for rate-limits)
+skill = "builtin:github-repo"
+
+[verifiers."@shell-command"]
+# ✅ Ships with Brief — checks that a command exists in PATH
+skill = "builtin:shell-command"
+
+# ── Verification settings ─────────────────────────────────────────────────────
+[verify]
+# Locks expire after 24 hours (default). Increase for stable, air-gapped environments.
+max_lock_age_hours = 24
+
+# ── CI ─────────────────────────────────────────────────────────────────────────
+[ci]
+examples = [
+    "examples/skills/FileSystem/TransformFile.brief",
+    "examples/skills/WebSearch/ResearchTopic.brief",
+]

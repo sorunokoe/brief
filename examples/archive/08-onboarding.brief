@@ -4,6 +4,7 @@ import skill "Analytics"
 
 import skill "Auth"
 
+sealed type Platform = iOS | Android | Web | KMP
 sealed type OnboardingStep = Welcome | Permissions | Profile | Complete
 
 struct OnboardingState {
@@ -14,12 +15,14 @@ struct OnboardingState {
 
 @BriefBuilder
 task OnboardingWelcome : TaskBrief uses [DesignSystem, Analytics] {
-    goal   = "Show the welcome screen and animate in the value proposition"
-    extras = [
-        "animation": "fade-slide-up",
-        "figmaURL": "https://figma.com/file/onboard?node-id=1:10",
-        "platform": "iOS"
-    ]
+    goal = "Show the welcome screen and animate in the value proposition"
+
+    extras {
+        animation: String
+        currentStep: OnboardingStep
+        figmaURL: String
+        platform: Platform
+    }
 
     step RenderHero {
         let hero = perform DesignSystem.heroIllustration("welcome")?;
@@ -32,12 +35,14 @@ task OnboardingWelcome : TaskBrief uses [DesignSystem, Analytics] {
 
 @BriefBuilder
 task OnboardingPermissions : TaskBrief uses [Analytics] {
-    goal   = "Request camera, location, and notification permissions with rationale UI"
-    extras = [
-        "figmaURL": "https://figma.com/file/onboard?node-id=2:10",
-        "permissions": "camera,location,notifications",
-        "platform": "iOS"
-    ]
+    goal = "Request camera, location, and notification permissions with rationale UI"
+
+    extras {
+        currentStep: OnboardingStep
+        figmaURL: String
+        permissions: String
+        platform: Platform
+    }
 
     step ShowRationale {
         let copy = perform Analytics.copyFor("permissions_rationale")?;
@@ -54,11 +59,13 @@ task OnboardingPermissions : TaskBrief uses [Analytics] {
 
 @BriefBuilder
 task OnboardingProfile : TaskBrief uses [Auth, DesignSystem, Analytics] {
-    goal   = "Collect display name and avatar during onboarding"
-    extras = [
-        "figmaURL": "https://figma.com/file/onboard?node-id=3:10",
-        "platform": "iOS"
-    ]
+    goal = "Collect display name and avatar during onboarding"
+
+    extras {
+        currentStep: OnboardingStep
+        figmaURL: String
+        platform: Platform
+    }
 
     step RenderForm {
         let form = perform DesignSystem.textInput("display_name", placeholder)?;

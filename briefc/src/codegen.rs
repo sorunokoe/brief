@@ -23,18 +23,23 @@
 
 #[cfg(feature = "llvm-backend")]
 mod backend {
-    use crate::ast::{Program, Task, Step, Stmt, Expr};
+    use crate::ast::{Expr, MatchArm, Pattern, Program, Step, Stmt, Task};
     use crate::errors::BriefError;
 
     // ── String pool ──────────────────────────────────────────────────────────
 
     struct StringPool {
         entries: Vec<String>,
-        index:   std::collections::HashMap<String, usize>,
+        index: std::collections::HashMap<String, usize>,
     }
 
     impl StringPool {
-        fn new() -> Self { StringPool { entries: Vec::new(), index: std::collections::HashMap::new() } }
+        fn new() -> Self {
+            StringPool {
+                entries: Vec::new(),
+                index: std::collections::HashMap::new(),
+            }
+        }
 
         /// Intern a string, returning its global name (`@str.N`).
         /// Identical strings share a single constant via the dedup index.
@@ -67,7 +72,7 @@ mod backend {
         for b in s.bytes() {
             match b {
                 b'\\' => out.push_str("\\5C"),
-                b'"'  => out.push_str("\\22"),
+                b'"' => out.push_str("\\22"),
                 b'\n' => out.push_str("\\0A"),
                 b'\r' => out.push_str("\\0D"),
                 b'\t' => out.push_str("\\09"),
@@ -83,14 +88,20 @@ mod backend {
     // ── Code generator ───────────────────────────────────────────────────────
 
     pub struct IrEmitter {
-        pool:  StringPool,
-        fns:   Vec<String>, // function bodies
-        main:  Option<String>,
+        pool: StringPool,
+        fns: Vec<String>, // function bodies
+        main: Option<String>,
+        next_label_id: usize,
     }
 
     impl IrEmitter {
         pub fn new() -> Self {
-            IrEmitter { pool: StringPool::new(), fns: Vec::new(), main: None }
+            IrEmitter {
+                pool: StringPool::new(),
+                fns: Vec::new(),
+                main: None,
+                next_label_id: 0,
+            }
         }
 
         pub fn compile(&mut self, program: &Program) -> Result<(), Vec<BriefError>> {
@@ -156,7 +167,7 @@ mod backend {
             out.push_str(&format!("  call void @brief_rt_print(ptr {label_ref})\n"));
             for stmt in &step.body {
                 let expr = match stmt {
-                    Stmt::Let  { value, .. } => value,
+                    Stmt::Let { value, .. } => value,
                     Stmt::Expr { value, .. } => value,
                 };
                 out.push_str(&self.compile_expr(expr));
@@ -166,67 +177,133 @@ mod backend {
 
         fn compile_expr(&mut self, expr: &Expr) -> String {
             match expr {
-                Expr::Perform { skill, func, args, .. } => {
+                Expr::Perform {
+                    skill, func, args, ..
+                } => {
                     let sk = self.pool.intern(skill);
                     let fn_ = self.pool.intern(func);
                     let n = args.len() as i32;
                     format!("  call void @brief_rt_perform(ptr {sk}, ptr {fn_}, i32 {n})\n")
                 }
                 Expr::Await { expr: inner, .. } => self.compile_expr(inner),
-                other => {
-                    eprintln!(
-                        "brief codegen: unsupported expression form '{}' — skipped in IR output",
-                        expr_kind_name(other)
-                    );
-                    String::new()
-                }
+                Expr::Call { args, .. } => args
+                    .iter()
+                    .map(|arg| self.compile_expr(arg))
+                    .collect::<Vec<_>>()
+                    .join(""),
+                Expr::Match { scrutinee, arms } => self.compile_match_expr(scrutinee, arms),
+                Expr::Ident { .. } | Expr::Str { .. } | Expr::Int { .. } => String::new(),
             }
         }
 
+        fn compile_match_expr(&mut self, scrutinee: &Expr, arms: &[MatchArm]) -> String {
+            let mut out = self.compile_expr(scrutinee);
+            if arms.is_empty() {
+                out.push_str(
+                    "  ; TODO(M5): proper switch lowering once expression values are represented in the LLVM backend.\n",
+                );
+                return out;
+            }
+
+            let match_id = self.fresh_label_id();
+            let selected_arm = select_placeholder_arm(scrutinee, arms);
+            let merge_label = format!("match.end.{match_id}");
+
+            out.push_str(
+                "  ; TODO(M5): proper switch lowering once expression values are represented in the LLVM backend.\n",
+            );
+            out.push_str(&format!(
+                "  ; placeholder dispatch selects arm {selected_arm} until the backend has real tagged values\n"
+            ));
+            out.push_str(&format!(
+                "  br label %match.arm.{match_id}.{selected_arm}\n"
+            ));
+
+            for (arm_idx, arm) in arms.iter().enumerate() {
+                out.push_str(&format!("match.arm.{match_id}.{arm_idx}:\n"));
+                out.push_str(&self.compile_expr(&arm.body));
+                out.push_str(&format!("  br label %{merge_label}\n"));
+            }
+
+            out.push_str(&format!("{merge_label}:\n"));
+            out
+        }
+
+        fn fresh_label_id(&mut self) -> usize {
+            let id = self.next_label_id;
+            self.next_label_id += 1;
+            id
+        }
+
         fn emit_main(&mut self, first_task: &str) -> String {
-            format!(
-                "define i32 @main() {{\nentry:\n  call void @{first_task}()\n  ret i32 0\n}}\n"
-            )
+            format!("define i32 @main() {{\nentry:\n  call void @{first_task}()\n  ret i32 0\n}}\n")
+        }
+    }
+
+    fn select_placeholder_arm(scrutinee: &Expr, arms: &[MatchArm]) -> usize {
+        if let Some(idx) = arms
+            .iter()
+            .position(|arm| pattern_matches_literal(scrutinee, &arm.pattern))
+        {
+            return idx;
+        }
+
+        arms.iter()
+            .position(|arm| matches!(arm.pattern, Pattern::Wildcard))
+            .unwrap_or(0)
+    }
+
+    fn pattern_matches_literal(scrutinee: &Expr, pattern: &Pattern) -> bool {
+        let variant_name = match pattern {
+            Pattern::Variant(name) | Pattern::Variant1(name, _) => name.as_str(),
+            Pattern::Wildcard => return false,
+        };
+
+        match scrutinee {
+            Expr::Ident { name, .. } => name == variant_name,
+            Expr::Str { value, .. } => value == variant_name,
+            Expr::Int { value, .. } => value.to_string() == variant_name,
+            Expr::Perform { .. } | Expr::Await { .. } | Expr::Call { .. } | Expr::Match { .. } => {
+                false
+            }
         }
     }
 
     // ── Entry point ──────────────────────────────────────────────────────────
 
-    fn expr_kind_name(expr: &crate::ast::Expr) -> &'static str {
-        use crate::ast::Expr;
-        match expr {
-            Expr::Ident { .. }   => "Ident",
-            Expr::Str { .. }     => "Str",
-            Expr::Perform { .. } => "Perform",
-            Expr::Await { .. }   => "Await",
-            Expr::Call { .. }    => "Call",
-        }
-    }
-
     pub fn build_file(
         source_path: &std::path::Path,
-        output:      Option<&std::path::Path>,
-        emit_ir:     bool,
-        target:      Option<&str>,
+        output: Option<&std::path::Path>,
+        emit_ir: bool,
+        target: Option<&str>,
     ) -> bool {
-        use colored::Colorize;
+        use crate::checker::{check, CheckContext};
+        use crate::errors::print_diagnostics;
         use crate::lexer::lex;
         use crate::parser::parse;
-        use crate::checker::{check, CheckContext};
         use crate::typeck::type_check_with_skills;
-        use crate::errors::print_diagnostics;
+        use colored::Colorize;
 
         // ── Parse + type-check ────────────────────────────────────────────
         let source = match std::fs::read_to_string(source_path) {
-            Ok(s)  => s,
-            Err(e) => { eprintln!("{}: {e}", "error".red().bold()); return false; }
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("{}: {e}", "error".red().bold());
+                return false;
+            }
         };
 
-        let (tokens, _)       = lex(&source);
+        let (tokens, _) = lex(&source);
         let (program, p_errs) = parse(&tokens, &source);
-        let cwd      = std::env::current_dir().unwrap_or_default();
+        let cwd = std::env::current_dir().unwrap_or_default();
         let file_dir = source_path.parent().unwrap_or(std::path::Path::new("."));
-        let ctx      = CheckContext { file_dir, cwd: &cwd, manifest: None };
+        let ctx = CheckContext {
+            file_dir,
+            cwd: &cwd,
+            manifest: None,
+            brief_path: None,
+            allow_missing_skills: false,
+        };
 
         let mut diags = p_errs;
         diags.extend(check(&program, &ctx));
@@ -238,7 +315,10 @@ mod backend {
         }
 
         // ── Emit IR ───────────────────────────────────────────────────────
-        let stem = source_path.file_stem().and_then(|s| s.to_str()).unwrap_or("out");
+        let stem = source_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("out");
         let mut emitter = IrEmitter::new();
         if let Err(errs) = emitter.compile(&program) {
             print_diagnostics(&errs, &source, &source_path.display().to_string());
@@ -248,7 +328,11 @@ mod backend {
 
         let ll_path = std::path::PathBuf::from(format!("{stem}.ll"));
         if let Err(e) = std::fs::write(&ll_path, &ir) {
-            eprintln!("{}: cannot write {}: {e}", "error".red().bold(), ll_path.display());
+            eprintln!(
+                "{}: cannot write {}: {e}",
+                "error".red().bold(),
+                ll_path.display()
+            );
             return false;
         }
 
@@ -269,19 +353,19 @@ mod backend {
         } else {
             format!("./{stem}")
         };
-        let out_path = output.map(|p| p.display().to_string())
+        let out_path = output
+            .map(|p| p.display().to_string())
             .unwrap_or(default_out);
 
-        let clang = std::env::var("BRIEF_CLANG")
-            .unwrap_or_else(|_| {
-                // Prefer LLVM 18 clang if it's in the known Homebrew location
-                let homebrew = "/opt/homebrew/Cellar/llvm@18/18.1.8/bin/clang";
-                if std::path::Path::new(homebrew).exists() {
-                    homebrew.to_string()
-                } else {
-                    "clang".to_string()
-                }
-            });
+        let clang = std::env::var("BRIEF_CLANG").unwrap_or_else(|_| {
+            // Prefer LLVM 18 clang if it's in the known Homebrew location
+            let homebrew = "/opt/homebrew/Cellar/llvm@18/18.1.8/bin/clang";
+            if std::path::Path::new(homebrew).exists() {
+                homebrew.to_string()
+            } else {
+                "clang".to_string()
+            }
+        });
 
         let ok = if is_wasm {
             // WASM32 target: compile IR directly — no libc, task functions exported.
@@ -290,12 +374,14 @@ mod backend {
             let status = std::process::Command::new(&clang)
                 .args([
                     ll_path.to_str().unwrap(),
-                    "--target", wasm_target,
+                    "--target",
+                    wasm_target,
                     "-nostdlib",
                     "-Wl,--no-entry",
                     "-Wl,--export-dynamic",
                     "-Wl,--allow-undefined",
-                    "-o", &out_path,
+                    "-o",
+                    &out_path,
                 ])
                 .status();
             let _ = std::fs::remove_file(&ll_path);
@@ -343,9 +429,7 @@ void brief_rt_exit(int code)                       { exit(code); }
                 args.insert(0, format!("--target={t}"));
             }
 
-            let status = std::process::Command::new(&clang)
-                .args(&args)
-                .status();
+            let status = std::process::Command::new(&clang).args(&args).status();
 
             let _ = std::fs::remove_file(&ll_path);
             let _ = std::fs::remove_file(&rt_path);
@@ -376,12 +460,14 @@ void brief_rt_exit(int code)                       { exit(code); }
 
 pub fn build_file(
     source_path: &std::path::Path,
-    output:      Option<&std::path::Path>,
-    emit_ir:     bool,
-    target:      Option<&str>,
+    output: Option<&std::path::Path>,
+    emit_ir: bool,
+    target: Option<&str>,
 ) -> bool {
     #[cfg(feature = "llvm-backend")]
-    { return backend::build_file(source_path, output, emit_ir, target); }
+    {
+        return backend::build_file(source_path, output, emit_ir, target);
+    }
 
     #[cfg(not(feature = "llvm-backend"))]
     {
@@ -400,7 +486,7 @@ pub fn build_file(
 
 #[cfg(all(test, feature = "llvm-backend"))]
 mod tests {
-    use super::backend::{IrEmitter, escape_llvm_str};
+    use super::backend::{escape_llvm_str, IrEmitter};
     use crate::lexer::lex;
     use crate::parser::parse;
 
@@ -489,5 +575,29 @@ mod tests {
         // String pool interns by insertion order; both steps emit separate entries
         assert!(ir.contains("@str.0"));
         assert!(ir.contains("@str.1"));
+    }
+
+    #[test]
+    fn test_ir_lowers_match_expression_without_panic() {
+        let src = r#"
+            sealed type Platform = iOS | Android
+
+            task T : TaskBrief {
+                goal = "g"
+                step S {
+                    match iOS {
+                        iOS => perform IO.print("mobile")
+                        _ => perform IO.print("other")
+                    }
+                }
+            }
+        "#;
+        let ir = compile_to_ir(src);
+        assert!(ir.contains("; TODO(M5): proper switch lowering"));
+        assert!(ir.contains("br label %match.arm.0.0"));
+        assert!(ir.contains("match.arm.0.0:"));
+        assert!(ir.contains("match.arm.0.1:"));
+        assert!(ir.contains("match.end.0:"));
+        assert_eq!(ir.matches("call void @brief_rt_perform").count(), 2);
     }
 }

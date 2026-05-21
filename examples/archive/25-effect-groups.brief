@@ -68,6 +68,7 @@ task UpdateAccountSettings : TaskBrief uses [SecurityEffects, AccountEffects] {
 
 task SendSecureNotification : TaskBrief uses [SecurityEffects, NotifyEffects, AccountEffects] {
     goal   = "Send notification after verifying permissions — triple group composition"
+    effects [network]
     extras = [
         "domain": "notifications",
         "priority": "high"

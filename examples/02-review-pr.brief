@@ -1,0 +1,25 @@
+import skill "GitHub"
+import skill "FileSystem"
+
+task ReviewPR : TaskBrief uses [GitHub, FileSystem] {
+    goal = "Fetch a pull request, review changed files, and write a summary to a file"
+
+    step FetchChangelog {
+        let changelog = perform GitHub.get_file_contents("owner", "repo", "CHANGELOG.md", "main")?;
+    }
+
+    step ReviewIssues {
+        let issues = perform GitHub.list_issues("owner", "repo", "open")?;
+    }
+
+    step WriteReport {
+        let _ = perform FileSystem.write_file("/workspace/review.md", "summary")?;
+    }
+}
+
+test "boundary coverage" {
+    // @enum coverage: brief check verifies all 3 values are tested
+    let _ = perform GitHub.list_issues("owner", "repo", "open")?;
+    let _ = perform GitHub.list_issues("owner", "repo", "closed")?;
+    let _ = perform GitHub.list_issues("owner", "repo", "all")?;
+}

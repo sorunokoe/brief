@@ -1,0 +1,67 @@
+// Stage 1 Mediated Self-Description — Formatter pass
+// Skill backend: compiler/skills/FormatterPrimitives/FormatterPrimitives.briefskill
+// Rust implementation: briefc/src/fmt.rs
+//
+// NOTE: FormatRecovered = comment trivia lost during formatting.
+// CI must treat FormatRecovered as degraded, not green.
+
+import skill "FormatterPrimitives"
+
+opaque type Ast
+opaque type DiagnosticSet
+
+sealed type FormatOutcome = Formatted | FormatRecovered | FormatFailed(DiagnosticSet)
+
+@BriefBuilder
+task FmtPass : TaskBrief uses [FormatterPrimitives] {
+    goal = "Format source AST to canonical Brief style, with fallback recovery if comment trivia is lost"
+
+    effects [cpu, memory]
+
+    extras {
+        ast: Ast
+        originalSource: String
+        checkOnly: Bool
+    }
+
+    provides {
+        formattedSource: String
+        formatStatus: FormatOutcome
+    }
+
+    fallback {
+        FormatFull
+        FormatRecovery
+    }
+
+    step FormatFull {
+        pre { ast.isStructured }
+        post { formatStatus.isReady }
+
+        let formatStatus = perform FormatterPrimitives.formatFull(ast)?;
+        let formattedSource = perform FormatterPrimitives.extractFormatted(formatStatus)?;
+    }
+
+    step FormatRecovery {
+        pre { ast.isStructured }
+        post { formatStatus.isReady }
+
+        let formatStatus = perform FormatterPrimitives.formatTask(ast)?;
+        let formattedSource = perform FormatterPrimitives.extractFormatted(formatStatus)?;
+    }
+
+    step VerifyFormat {
+        pre { formatStatus.isReady }
+
+        let verified = perform FormatterPrimitives.checkFormat(ast, originalSource)?;
+    }
+
+}
+
+test "format produces output from structured ast" {
+    assert ast.isStructured
+}
+
+test "format status is ready after formatting" {
+    assert formatStatus.isReady
+}

@@ -1,0 +1,6 @@
+// Auto-generated for effect contract validation.
+
+effects [network]
+interface NetworkService {
+    fn fetch(url: String) -> Response
+}

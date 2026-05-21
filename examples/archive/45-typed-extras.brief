@@ -1,0 +1,31 @@
+import skill "DesignSystem"
+
+sealed type Platform = iOS | Android | Web
+sealed type Environment = Production | Staging | Development
+
+@BriefBuilder
+task DeploymentBrief : TaskBrief uses [DesignSystem] {
+    goal = "Deploy the app for a given platform and environment"
+
+    extras {
+        platform: Platform
+        environment: Environment
+    }
+
+    provides {
+        deploymentUrl: String
+        buildId: String
+    }
+
+    step Build {
+        let artifact = perform DesignSystem.buildArtifact(platform, environment)?;
+    }
+
+    step Deploy {
+        let deploymentUrl = "https://staging.example.com";
+        let buildId = "build-42";
+    }
+}
+
+test "typed extras" {
+}

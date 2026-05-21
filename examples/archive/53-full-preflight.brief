@@ -1,0 +1,55 @@
+// Example 53 — Full preflight contract: needs + forbids together
+//
+// This is the "mise en place" pattern:
+//   1. needs {} — confirm ALL ingredients are present before starting
+//   2. forbids {} — define what the AI must NEVER touch
+//   3. uses []   — declare what the AI CAN use
+//
+// If `brief verify` passes and `brief serve` starts, the AI has:
+//   ✓ All required env vars confirmed to exist
+//   ✓ All feature flags confirmed to be enabled
+//   ✓ Forbidden tools hidden from tools/list (AI can't even try them)
+//   ✓ Skill capabilities confirmed via tools/list on each MCP server
+
+import skill "UserDB"
+import skill "Email"
+import skill "Analytics"
+import skill "AuditLog"
+
+task RegisterUser : TaskBrief uses [UserDB, Email, Analytics, AuditLog] {
+    goal = "Register a new user: validate input, persist, send welcome email, record analytics"
+
+    // ── Prerequisites ───────────────────────────────────────────────────────
+    needs {
+        env "DATABASE_URL"           // DB must be reachable
+        env "EMAIL_API_KEY"          // email service must be configured
+        env "ANALYTICS_WRITE_KEY"    // analytics pipeline must be ready
+        feature "email_verification" // new email-verify flow must be enabled
+    }
+
+    // ── Scope boundaries ────────────────────────────────────────────────────
+    forbids {
+        func "UserDB.delete"         // registration never deletes users
+        func "UserDB.updateRole"     // roles are set only by admin flows
+        skill "Payment"              // no payment during registration
+        skill "Admin"                // admin operations out of scope
+    }
+
+    // ── Steps ───────────────────────────────────────────────────────────────
+    step ValidateInput {
+        let user = perform UserDB.findByEmail(email)?;
+    }
+
+    step PersistUser {
+        @once let userId = perform UserDB.create(email, hashedPassword)?;
+    }
+
+    step NotifyUser {
+        perform Email.sendWelcome(email, userId)?;
+    }
+
+    step RecordEvent {
+        perform Analytics.track("user_registered", userId)?;
+        perform AuditLog.append("registration", userId)?;
+    }
+}

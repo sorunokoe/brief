@@ -51,7 +51,25 @@
           "description": "Traces LSP communication between VS Code and the Brief server."
         }
       }
-    }
+    },
+    "commands": [
+      {
+        "command": "brief.restartServer",
+        "title": "Brief: Restart Language Server"
+      },
+      {
+        "command": "brief.check",
+        "title": "Brief: Check (type-check active file)"
+      },
+      {
+        "command": "brief.verify",
+        "title": "Brief: Verify (seal contract → .brief.lock)"
+      },
+      {
+        "command": "brief.serve",
+        "title": "Brief: Serve (start MCP server)"
+      }
+    ]
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",

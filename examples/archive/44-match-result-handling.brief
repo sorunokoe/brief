@@ -1,0 +1,25 @@
+import skill "DataService"
+
+task LookupUser : TaskBrief uses [DataService] {
+    goal   = "Look up a user and handle missing gracefully"
+
+    step Fetch {
+        let result = perform DataService.findUser("alice")?;
+    }
+
+    step Handle {
+        let name = match result {
+            Ok(user) => user.name
+            Err(e)   => "unknown"
+        };
+    }
+}
+
+test "match ok" {
+    let r = Ok("alice")
+    let n = match r {
+        Ok(u) => u
+        Err(e) => "fail"
+    }
+    assert n == "alice"
+}

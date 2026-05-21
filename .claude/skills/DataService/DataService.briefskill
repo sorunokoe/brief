@@ -1,0 +1,12 @@
+// Auto-generated for workflow combinator and result-handling examples.
+
+interface DataService {
+    fn fetch(resourceId: String, timeoutMs: String) -> Result<String>
+    fn findUser(name: String) -> Result<String>
+    fn getUsers() -> Result<String>
+    fn getProducts() -> Result<String>
+    fn getOrders() -> Result<String>
+    fn sync(users: String, products: String, orders: String) -> Result<String>
+    fn syncPrimary() -> Result<String>
+    fn syncFallback() -> Result<String>
+}

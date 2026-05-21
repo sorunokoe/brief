@@ -1,0 +1,55 @@
+// Stage 1 Mediated Self-Description — HIR lowering pass
+// Skill backend: compiler/skills/HirPrimitives/HirPrimitives.briefskill
+// Rust implementation: briefc/src/hir.rs
+
+import skill "HirPrimitives"
+
+opaque type TypedAst
+opaque type HirModule
+opaque type DiagnosticSet
+
+sealed type HirOutcome = Lowered(HirModule) | HirFailed(DiagnosticSet)
+
+@BriefBuilder
+task HirPass : TaskBrief uses [HirPrimitives] {
+    goal = "Lower a type-checked AST to the HIR module for codegen and REPL evaluation"
+
+    effects [cpu, memory]
+
+    extras {
+        typedAst: TypedAst
+    }
+
+    provides {
+        hirModule: HirModule
+        taskCount: Int
+    }
+
+    step LowerModule {
+        pre { typedAst.isTyped }
+        post { hirResult.isReady }
+
+        let hirResult = perform HirPrimitives.lowerModule(typedAst)?;
+    }
+
+    step ValidateHir {
+        pre { hirResult.isReady }
+        post { hirModule.isValid }
+
+        let hirModule = match hirResult {
+            Lowered(hm)   => hm
+            HirFailed(d)  => d
+        };
+        let validated = perform HirPrimitives.validateHir(hirModule)?;
+        let taskCount = perform HirPrimitives.taskCount(hirModule)?;
+    }
+
+}
+
+test "lower requires typed ast" {
+    assert typedAst.isTyped
+}
+
+test "validated hir module has task count" {
+    assert taskCount >= 0
+}

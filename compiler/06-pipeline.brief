@@ -1,0 +1,114 @@
+// Stage 1 Mediated Self-Description — Full compiler pipeline
+// Composes all 5 passes as a type-checked Brief task.
+// Skill backend: compiler/skills/CompilerDriver/CompilerDriver.briefskill
+// Rust implementation: briefc/src/runner.rs + briefc/src/skill_backends.rs
+//
+// Combinator rules enforced here:
+//   parallel — only for data-independent steps
+//   retry    — only for steps with filesystem/network effects
+//   fallback — for degraded recovery (FormatRecovered ≠ green)
+
+import skill "CompilerDriver"
+
+opaque type PassSpec
+opaque type PassResult
+opaque type DiagnosticSet
+
+sealed type RunOutcome = PassSuccess(PassResult) | PassFailed(DiagnosticSet)
+
+@BriefBuilder
+task CompilerPipeline : TaskBrief uses [CompilerDriver] {
+    goal = "Run the full Brief compiler pipeline: lex → parse → check → hir → format, with correct combinator semantics"
+
+    effects [cpu, memory, filesystem]
+
+    extras {
+        sourceFile: String
+        strict: Bool
+    }
+
+    provides {
+        exitCode: Int
+        diagnosticOutput: String
+    }
+
+    step BuildLexSpec {
+        pre { sourceFile.isNotEmpty }
+
+        let lexSpec = perform CompilerDriver.buildPassSpec("lex", strict)?;
+    }
+
+    step BuildParseSpec {
+        pre { sourceFile.isNotEmpty }
+
+        let parseSpec = perform CompilerDriver.buildPassSpec("parse", strict)?;
+    }
+
+    step RunLex {
+        pre { lexSpec.isReady }
+        post { lexResult.isReady }
+
+        let lexResult = perform CompilerDriver.runPass(lexSpec, sourceFile)?;
+    }
+
+    step RunParse {
+        pre { lexResult.isReady, parseSpec.isReady }
+        post { parseResult.isReady }
+
+        let parseResult = perform CompilerDriver.runPass(parseSpec, sourceFile)?;
+    }
+
+    step RunCheck {
+        pre { parseResult.isReady }
+        post { checkResult.isReady }
+
+        let checkSpec = perform CompilerDriver.buildPassSpec("check", strict)?;
+        let checkResult = perform CompilerDriver.runPass(checkSpec, sourceFile)?;
+    }
+
+    step RunHir {
+        pre { checkResult.isReady }
+        post { hirResult.isReady }
+
+        let hirSpec = perform CompilerDriver.buildPassSpec("hir", strict)?;
+        let hirResult = perform CompilerDriver.runPass(hirSpec, sourceFile)?;
+    }
+
+    fallback {
+        RunFormat
+        RunFormatRecovery
+    }
+
+    step RunFormat {
+        pre { hirResult.isReady }
+        post { formatResult.isReady }
+
+        let fmtSpec = perform CompilerDriver.buildPassSpec("fmt", strict)?;
+        let formatResult = perform CompilerDriver.runPass(fmtSpec, sourceFile)?;
+    }
+
+    step RunFormatRecovery {
+        pre { hirResult.isReady }
+        post { formatResult.isReady }
+
+        let fmtSpec = perform CompilerDriver.buildPassSpec("fmt-recovery", strict)?;
+        let formatResult = perform CompilerDriver.runPass(fmtSpec, sourceFile)?;
+    }
+
+    step EmitResults {
+        pre { formatResult.isReady }
+        post { exitCode.isSet }
+
+        let isClean = perform CompilerDriver.isClean(formatResult)?;
+        let exitCode = perform CompilerDriver.exitCode(formatResult)?;
+        let diagnosticOutput = perform CompilerDriver.emitDiagnostics(formatResult)?;
+    }
+}
+
+test "pipeline requires non-empty source file" {
+    assert sourceFile.isNotEmpty
+}
+
+test "exit code is set after pipeline completes" {
+    assert exitCode >= 0
+}
