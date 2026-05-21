@@ -1,6 +1,6 @@
 # Examples Overview
 
-Brief ships with **40 annotated example files** in [`examples/`](https://github.com/yourusername/brief/tree/main/examples).
+Brief ships with **40 annotated example files** in [`examples/`](https://github.com/sorunokoe/brief/tree/main/examples).
 
 ## Quick Start
 

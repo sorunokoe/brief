@@ -9,7 +9,7 @@ Brief is a typed DSL that gives AI agents a verified, sealed context. Instead of
 ## Install
 
 ```bash
-git clone https://github.com/yourusername/brief
+git clone https://github.com/sorunokoe/brief
 cd brief
 cargo build --release
 cp target/release/brief /usr/local/bin/

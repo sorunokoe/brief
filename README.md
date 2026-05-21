@@ -1,5 +1,10 @@
 # Brief
 
+[![CI](https://github.com/sorunokoe/brief/actions/workflows/ci.yml/badge.svg)](https://github.com/sorunokoe/brief/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/sorunokoe/brief)](https://github.com/sorunokoe/brief/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](https://www.rust-lang.org)
+
 > **If it compiles AND verifies, the AI has everything it needs.**
 
 Brief is a typed DSL for AI agent task workflows. It is the boundary between humans and AI agents: a typed, sealed contract that an AI cannot bypass.
@@ -33,7 +38,7 @@ No network in `brief check`. No skippable steps. No compromises.
 
 ```bash
 # Build from source (requires Rust)
-git clone https://github.com/yourusername/brief
+git clone https://github.com/sorunokoe/brief
 cd brief && cargo build --release
 cp target/release/brief /usr/local/bin/
 ```
