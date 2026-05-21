@@ -24,6 +24,7 @@ mod serve;
 mod skill_backends;
 mod skill_loader;
 mod skillgen;
+mod skillsync;
 mod selfhosting;
 mod tester;
 mod typeck;
@@ -247,6 +248,13 @@ enum Commands {
         #[arg(long)]
         fail_on_deny: bool,
     },
+
+    /// Auto-generate .briefskill interface files from live MCP servers
+    Skillsync {
+        /// Skip confirmation when overwriting existing .briefskill files
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -429,6 +437,13 @@ fn main() -> std::process::ExitCode {
         Commands::Audit { trace, fail_on_deny } => {
             print_brief_banner();
             let ok = audit::run_audit(&trace, fail_on_deny);
+            if ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::FAILURE }
+        }
+
+        Commands::Skillsync { yes } => {
+            print_brief_banner();
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let ok = skillsync::run_skillsync(&cwd, yes);
             if ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::FAILURE }
         }
     }

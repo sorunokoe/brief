@@ -27,6 +27,17 @@ pub struct VerificationResult {
     pub message: Option<String>,
 }
 
+/// Full metadata for a single MCP tool, returned by `brief skillsync`.
+#[derive(Debug, Clone)]
+pub struct ToolMeta {
+    /// Tool name as reported by the MCP server (may be bare or qualified).
+    pub name: String,
+    /// Human-readable description from the server's `tools/list` response.
+    pub description: Option<String>,
+    /// The `inputSchema` JSON object (JSON Schema for the tool's arguments).
+    pub input_schema: Option<Value>,
+}
+
 impl VerificationResult {
     pub fn ok()            -> Self { Self { status: VerifyStatus::Ok,   message: None } }
     pub fn fail(msg: &str) -> Self { Self { status: VerifyStatus::Fail, message: Some(msg.to_string()) } }
@@ -109,6 +120,40 @@ pub fn list_skill_tools(config: &SkillConfig, skill_name: &str) -> Result<Vec<St
     }
     if let Some(url) = &config.mcp_url {
         return list_mcp_http_tools(url, skill_name);
+    }
+    Err("skill config has no mcp_command or mcp_url".to_string())
+}
+
+/// Connect to a skill MCP server and return full `ToolMeta` for each tool.
+pub fn list_skill_tools_meta(config: &SkillConfig, skill_name: &str) -> Result<Vec<ToolMeta>, String> {
+    if let Some(cmd) = &config.mcp_command {
+        if cmd.is_empty() {
+            return Err("mcp_command is empty".to_string());
+        }
+        let mut child = Command::new(&cmd[0])
+            .args(&cmd[1..])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(|e| format!("spawn '{}' failed: {e}", cmd[0]))?;
+
+        let result = {
+            let stdin  = child.stdin.take().unwrap();
+            let stdout = child.stdout.take().unwrap();
+            let reader = BufReader::new(stdout);
+            run_mcp_list_session_meta(stdin, reader, skill_name)
+        };
+
+        let exited = child.try_wait().map_or(false, |s| s.is_some());
+        if !exited {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        return result;
+    }
+    if let Some(url) = &config.mcp_url {
+        return list_mcp_http_tools_meta(url, skill_name);
     }
     Err("skill config has no mcp_command or mcp_url".to_string())
 }
@@ -205,6 +250,110 @@ fn list_mcp_http_tools(base_url: &str, skill_name: &str) -> Result<Vec<String>, 
             let mut body = String::new();
             let _ = resp.into_reader().take(64 * 1024).read_to_string(&mut body);
             parse_tools_list_response(&body, skill_name)
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Meta (ToolMeta) variants — return full description + inputSchema
+
+/// Drive an MCP session: initialize → tools/list → return ToolMeta.
+fn run_mcp_list_session_meta<W: Write, R: BufRead>(
+    mut stdin:  W,
+    mut reader: R,
+    skill_name: &str,
+) -> Result<Vec<ToolMeta>, String> {
+    let init_req = json!({
+        "jsonrpc": "2.0",
+        "id":      1,
+        "method":  "initialize",
+        "params": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": { "name": "brief", "version": env!("CARGO_PKG_VERSION") }
+        }
+    });
+    writeln!(stdin, "{}", serde_json::to_string(&init_req).unwrap())
+        .map_err(|e| format!("write error: {e}"))?;
+
+    let mut buf = String::new();
+    reader.read_line(&mut buf).map_err(|e| format!("read initialize response: {e}"))?;
+
+    let notif = json!({ "jsonrpc": "2.0", "method": "notifications/initialized" });
+    writeln!(stdin, "{}", serde_json::to_string(&notif).unwrap())
+        .map_err(|e| format!("write error: {e}"))?;
+
+    let list_req = json!({
+        "jsonrpc": "2.0",
+        "id":      2,
+        "method":  "tools/list"
+    });
+    writeln!(stdin, "{}", serde_json::to_string(&list_req).unwrap())
+        .map_err(|e| format!("write error: {e}"))?;
+    drop(stdin);
+
+    buf.clear();
+    reader.read_line(&mut buf).map_err(|e| format!("read tools/list response: {e}"))?;
+
+    parse_tools_list_meta(&buf, skill_name)
+}
+
+/// Parse `tools/list` response into `Vec<ToolMeta>`.
+pub fn parse_tools_list_meta(line: &str, skill_name: &str) -> Result<Vec<ToolMeta>, String> {
+    let v: Value = serde_json::from_str(line.trim())
+        .map_err(|e| format!("invalid JSON in tools/list response: {e}"))?;
+
+    if let Some(err) = v.get("error") {
+        let msg = err["message"].as_str().unwrap_or("MCP error");
+        return Err(msg.to_string());
+    }
+
+    let tools = v["result"]["tools"]
+        .as_array()
+        .ok_or_else(|| "tools/list response missing 'result.tools' array".to_string())?;
+
+    let prefix = format!("{skill_name}.");
+    let meta: Vec<ToolMeta> = tools.iter()
+        .filter_map(|t| {
+            let raw_name = t["name"].as_str()?;
+            let qualified_name = if raw_name.contains('.') {
+                raw_name.to_string()
+            } else {
+                format!("{prefix}{raw_name}")
+            };
+            Some(ToolMeta {
+                name: qualified_name,
+                description: t["description"].as_str().map(str::to_string),
+                input_schema: t.get("inputSchema").cloned(),
+            })
+        })
+        .collect();
+
+    Ok(meta)
+}
+
+/// `tools/list` meta via HTTP MCP server.
+fn list_mcp_http_tools_meta(base_url: &str, skill_name: &str) -> Result<Vec<ToolMeta>, String> {
+    let list_req = json!({
+        "jsonrpc": "2.0",
+        "id":      1,
+        "method":  "tools/list"
+    });
+
+    let result = ureq::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .post(base_url)
+        .set("Content-Type", "application/json")
+        .send_json(&list_req);
+
+    match result {
+        Ok(resp) => {
+            use std::io::Read;
+            let mut body = String::new();
+            let _ = resp.into_reader().take(64 * 1024).read_to_string(&mut body);
+            parse_tools_list_meta(&body, skill_name)
         }
         Err(e) => Err(e.to_string()),
     }
