@@ -873,6 +873,7 @@ pub fn driver_backend() -> SkillBackend {
                 Path::new(&source_file),
                 RunMode::Check {
                     allow_missing_skills: !spec.strict,
+                    report: false,
                 },
             );
             run_outcome(clean, spec.pass_name, source_file)

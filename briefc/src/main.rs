@@ -62,6 +62,10 @@ enum Commands {
         /// Suppress E107 (missing .briefskill) — useful when skills have not been generated yet
         #[arg(long)]
         allow_missing_skills: bool,
+
+        /// Output machine-readable JSON report to stdout instead of human-readable diagnostics
+        #[arg(long)]
+        report: bool,
     },
 
     /// Verify dynamic annotations and write .brief.lock
@@ -343,9 +347,9 @@ fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Check { file, allow_missing_skills } => {
-            print_brief_banner();
-            let ok = runner::run_file(&file, runner::RunMode::Check { allow_missing_skills });
+        Commands::Check { file, allow_missing_skills, report } => {
+            if !report { print_brief_banner(); }
+            let ok = runner::run_file(&file, runner::RunMode::Check { allow_missing_skills, report });
             if ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::FAILURE }
         }
 

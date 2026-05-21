@@ -22,7 +22,7 @@ use crate::typeck;
 
 pub enum RunMode {
     /// Only validate — do not execute.
-    Check { allow_missing_skills: bool },
+    Check { allow_missing_skills: bool, report: bool },
     /// Validate then execute (print task info in v0.0.1).
     Run,
 }
@@ -74,12 +74,10 @@ pub fn run_file(path: &Path, mode: RunMode) -> bool {
     let file_dir = path.parent().unwrap_or(Path::new("."));
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let mf = manifest::load_manifest(file_dir);
-    let allow_missing = matches!(
-        mode,
-        RunMode::Check {
-            allow_missing_skills: true
-        }
-    );
+    let (allow_missing, report_mode) = match &mode {
+        RunMode::Check { allow_missing_skills, report } => (*allow_missing_skills, *report),
+        RunMode::Run => (false, false),
+    };
     let ctx = CheckContext {
         file_dir,
         cwd: &cwd,
@@ -113,7 +111,14 @@ pub fn run_file(path: &Path, mode: RunMode) -> bool {
         seen.insert(key)
     });
 
-    // ── 5. Print header ───────────────────────────────────────────────────
+    // ── 5. Report mode: emit JSON and return ─────────────────────────────
+    if report_mode {
+        emit_json_report(&program, &diags, &file_str, path, &skill_ifaces);
+        let has_errors = diags.iter().any(|d| d.is_error());
+        return !has_errors;
+    }
+
+    // ── 6. Print header ───────────────────────────────────────────────────
     // Show type declarations (sealed types, structs, effects, protocols)
     let decl_count = program.types.len()
         + program.structs.len()
@@ -194,8 +199,71 @@ pub fn run_file(path: &Path, mode: RunMode) -> bool {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// JSON Report
+// ─────────────────────────────────────────────────────────────────────────────
 
-/// Load `.briefskill` interface files for all `import skill "X"` declarations.
+/// Emit a machine-readable JSON report to stdout for `brief check --report`.
+///
+/// Format:
+/// ```json
+/// {
+///   "file": "path/to/task.brief",
+///   "tasks": [{ "name": "...", "goal": "...", "steps": 3, "uses": ["GitHub"] }],
+///   "diagnostics": [{ "code": "E501", "message": "...", "hint": "...", "is_error": true }],
+///   "summary": { "errors": 1, "warnings": 2, "passed": false }
+/// }
+/// ```
+fn emit_json_report(
+    program: &crate::ast::Program,
+    diags: &[crate::errors::BriefError],
+    file_str: &str,
+    _path: &Path,
+    _skill_ifaces: &HashMap<String, skillgen::SkillInterface>,
+) {
+    let tasks_json: Vec<serde_json::Value> = program
+        .tasks
+        .iter()
+        .map(|task| {
+            serde_json::json!({
+                "name": task.name,
+                "goal": task.goal,
+                "steps": task.steps.len(),
+                "uses": task.uses,
+            })
+        })
+        .collect();
+
+    let diags_json: Vec<serde_json::Value> = diags
+        .iter()
+        .map(|d| {
+            serde_json::json!({
+                "code": d.code.to_string(),
+                "message": d.message,
+                "hint": d.hint,
+                "is_error": d.is_error(),
+                "span": { "start": d.span.start, "end": d.span.end },
+            })
+        })
+        .collect();
+
+    let error_count = diags.iter().filter(|d| d.is_error()).count();
+    let warning_count = diags.iter().filter(|d| d.is_warning()).count();
+
+    let report = serde_json::json!({
+        "file": file_str,
+        "tasks": tasks_json,
+        "diagnostics": diags_json,
+        "summary": {
+            "errors": error_count,
+            "warnings": warning_count,
+            "passed": error_count == 0,
+        }
+    });
+
+    println!("{}", serde_json::to_string_pretty(&report).unwrap_or_default());
+}
+
+
 /// Resolution order: `<file_dir>/.claude/skills/X/X.briefskill` → `<cwd>/.claude/skills/X/X.briefskill`
 fn load_skill_interfaces(
     program: &Program,

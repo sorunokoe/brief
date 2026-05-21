@@ -29,7 +29,7 @@ pub fn cmd_check() -> bool {
 
     for rel_path in COMPILER_BRIEFS {
         let path = repo_root().join(rel_path);
-        let ok = runner::run_file(&path, RunMode::Check { allow_missing_skills: false });
+        let ok = runner::run_file(&path, RunMode::Check { allow_missing_skills: false, report: false });
         if ok {
             println!("  {} {}", "✓".green(), rel_path);
             valid += 1;
@@ -56,7 +56,7 @@ pub fn cmd_run(source_file: &Path) -> bool {
 
     let pipeline_path = repo_root().join("compiler/06-pipeline.brief");
     println!("{} validating {}", "self-hosting:".bold(), display_repo_relative(&pipeline_path));
-    let ok = runner::run_file(&pipeline_path, RunMode::Check { allow_missing_skills: false });
+    let ok = runner::run_file(&pipeline_path, RunMode::Check { allow_missing_skills: false, report: false });
     if !ok {
         return false;
     }
@@ -188,7 +188,7 @@ fn display_repo_relative(path: &Path) -> String {
 }
 
 fn validate_source_file(source_file: &Path) -> bool {
-    runner::run_file(source_file, RunMode::Check { allow_missing_skills: false })
+    runner::run_file(source_file, RunMode::Check { allow_missing_skills: false, report: false })
 }
 
 fn load_pipeline_task(path: &Path) -> Option<Task> {
