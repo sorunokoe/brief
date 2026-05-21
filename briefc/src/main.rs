@@ -1,4 +1,5 @@
 mod ast;
+mod audit;
 mod checker;
 mod ci;
 mod codegen;
@@ -75,6 +76,14 @@ enum Commands {
         /// Dynamic annotations (@url, @local-path, etc.) are NOT verified in draft mode.
         #[arg(long)]
         draft: bool,
+
+        /// Record all tool calls (allowed and blocked) to a JSONL trace file
+        #[arg(long)]
+        record: Option<PathBuf>,
+
+        /// Trace privacy level: 'schema' (arg names+types, no values) or 'full' (all values)
+        #[arg(long, default_value = "schema")]
+        record_args: String,
     },
 
     /// Compile and execute a .brief file
@@ -228,6 +237,16 @@ enum Commands {
         #[arg(long, default_value = "{}")]
         args: String,
     },
+
+    /// Summarize a JSONL trace file from `brief serve --record`
+    Audit {
+        /// Path to the JSONL trace file
+        trace: PathBuf,
+
+        /// Exit with code 1 if any blocked (DENY) calls are found
+        #[arg(long)]
+        fail_on_deny: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -279,9 +298,10 @@ fn main() -> std::process::ExitCode {
             if ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::FAILURE }
         }
 
-        Commands::Serve { file, draft } => {
+        Commands::Serve { file, draft, record, record_args } => {
             // No banner — MCP protocol on stdio.
-            let ok = serve::run_serve(&file, draft);
+            let record_mode = serve::RecordMode::from_str(&record_args);
+            let ok = serve::run_serve(&file, draft, record.as_deref(), record_mode);
             if ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::FAILURE }
         }
 
@@ -403,6 +423,12 @@ fn main() -> std::process::ExitCode {
         Commands::PolicyCheck { file, task, tool, args } => {
             print_brief_banner();
             let ok = policy_check::run_policy_check(file.as_deref(), &task, &tool, &args);
+            if ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::FAILURE }
+        }
+
+        Commands::Audit { trace, fail_on_deny } => {
+            print_brief_banner();
+            let ok = audit::run_audit(&trace, fail_on_deny);
             if ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::FAILURE }
         }
     }

@@ -45,7 +45,22 @@ fn fresh_id() -> u64 { NEXT_ID.fetch_add(1, Ordering::Relaxed) }
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-pub fn run_serve(path: &Path, draft: bool) -> bool {
+/// Trace recording privacy level.
+#[derive(Clone, Copy, PartialEq)]
+pub enum RecordMode {
+    /// Record arg names + value types only (no actual values). Default.
+    Schema,
+    /// Record full arg values (opt-in; may contain sensitive data).
+    Full,
+}
+
+impl RecordMode {
+    pub fn from_str(s: &str) -> Self {
+        if s.eq_ignore_ascii_case("full") { RecordMode::Full } else { RecordMode::Schema }
+    }
+}
+
+pub fn run_serve(path: &Path, draft: bool, record: Option<&Path>, record_mode: RecordMode) -> bool {
     // ── 1. Read + parse source ──────────────────────────────────────────────
     let source = match std::fs::read_to_string(path) {
         Ok(s)  => s,
@@ -163,6 +178,41 @@ pub fn run_serve(path: &Path, draft: bool) -> bool {
     let once_fns = collect_once_fns(&ifaces, &program);
     let mut consumed_handles: HashSet<String> = HashSet::new();
 
+    // ── 5. Open trace writer (if --record) ─────────────────────────────────
+    let mut trace_writer: Option<std::io::BufWriter<std::fs::File>> = None;
+    if let Some(trace_path) = record {
+        match std::fs::OpenOptions::new().create(true).append(true).open(trace_path) {
+            Ok(f) => {
+                let mut w = std::io::BufWriter::new(f);
+                // Session header line.
+                let task_name = program.tasks.first().map(|t| t.name.as_str()).unwrap_or("unknown");
+                let policy_hash = compute_policy_hash(&program);
+                let header = json!({
+                    "event": "session_start",
+                    "task": task_name,
+                    "brief_version": env!("CARGO_PKG_VERSION"),
+                    "policy_hash": policy_hash,
+                    "ts": chrono_now(),
+                });
+                let _ = writeln!(w, "{}", header);
+                let _ = w.flush();
+                if record_mode == RecordMode::Full {
+                    eprintln!("{} {} Tracing to {} (full args — may contain sensitive data)",
+                        "⚠".yellow().bold(), "record-args=full:".yellow(), trace_path.display());
+                } else {
+                    eprintln!("{} Tracing to {} (arg schema only)",
+                        "●".dimmed(), trace_path.display());
+                }
+                trace_writer = Some(w);
+            }
+            Err(e) => {
+                eprintln!("{}: cannot open trace file {}: {e}",
+                    "error".red().bold(), trace_path.display());
+                return false;
+            }
+        }
+    }
+
     // ── 5. MCP server loop ──────────────────────────────────────────────────
     if draft {
         eprintln!("{} Brief MCP server ready {} ({})",
@@ -264,11 +314,13 @@ pub fn run_serve(path: &Path, draft: bool) -> bool {
                             .map(|(_, f)| f)
                             .unwrap_or(tool_name);
 
+                        let call_start = std::time::Instant::now();
+
                         // ── allow{}/deny{} enforcement (E422) ──────────────
                         let decision = enforcer::check_call(
                             &sn, fn_name, &arguments, &task_allow, &task_deny,
                         );
-                        if let crate::enforcer::CallDecision::Blocked { reason } = decision {
+                        if let crate::enforcer::CallDecision::Blocked { ref reason } = decision {
                             let err = json_error(id, -32022, &format!(
                                 "Brief policy blocked call: {sn}.{fn_name} — {reason}",
                             ));
@@ -277,10 +329,15 @@ pub fn run_serve(path: &Path, draft: bool) -> bool {
                             if let Some(e) = err_obj["error"].as_object_mut() {
                                 e.insert("data".to_string(), json!({
                                     "brief_code": "E422",
-                                    "skill": sn,
+                                    "skill": &sn,
                                     "function": fn_name,
                                     "reason": reason,
                                 }));
+                            }
+                            if let Some(tw) = trace_writer.as_mut() {
+                                write_call_trace(tw, &sn, fn_name, &arguments,
+                                    false, Some(reason), 0, None, false,
+                                    record_mode, &[]);
                             }
                             send_line(&mut out, &err_obj);
                             eprintln!("{} E422 blocked: {sn}.{fn_name} — {reason}",
@@ -289,9 +346,17 @@ pub fn run_serve(path: &Path, draft: bool) -> bool {
                         }
 
                         // Proxy call to skill MCP server.
-                        let result = proxy_tool_call(&sn, fn_name, arguments, &ctx, mf.as_ref());
+                        let result = proxy_tool_call(&sn, fn_name, arguments.clone(), &ctx, mf.as_ref());
+                        let elapsed = call_start.elapsed().as_millis() as u64;
                         let resp = match result {
                             Ok(content) => {
+                                if let Some(tw) = trace_writer.as_mut() {
+                                    let result_size = serde_json::to_string(&content)
+                                        .map(|s| s.len()).unwrap_or(0);
+                                    write_call_trace(tw, &sn, fn_name, &arguments,
+                                        true, None, elapsed, Some(result_size), false,
+                                        record_mode, &[]);
+                                }
                                 // @once enforcement: check the response content hash.
                                 // We hash the RESPONSE (not the call args) so that two
                                 // legitimate calls with the same args (producing different
@@ -313,7 +378,14 @@ pub fn run_serve(path: &Path, draft: bool) -> bool {
                                 }
                                 json_response(id, json!({ "content": content }))
                             }
-                            Err(msg) => json_error(id, -32603, &msg),
+                            Err(msg) => {
+                                if let Some(tw) = trace_writer.as_mut() {
+                                    write_call_trace(tw, &sn, fn_name, &arguments,
+                                        true, None, elapsed, Some(0), true,
+                                        record_mode, &[]);
+                                }
+                                json_error(id, -32603, &msg)
+                            },
                         };
                         send_line(&mut out, &resp);
                     }
@@ -683,4 +755,174 @@ fn check_env_needs_at_startup(program: &Program) -> bool {
             "✗".red().bold());
     }
     all_ok
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Trace recording helpers
+
+/// Current time as ISO 8601 string (UTC, second precision).
+fn chrono_now() -> String {
+    // Use std::time since we avoid chrono dep; format as RFC 3339-compatible.
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    // Approximate ISO date from Unix timestamp (no leap-second handling needed).
+    let (y, mo, d, h, mi, s) = unix_to_ymdhms(secs);
+    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
+}
+
+fn unix_to_ymdhms(ts: u64) -> (u64, u64, u64, u64, u64, u64) {
+    let s = ts % 60;
+    let mi = (ts / 60) % 60;
+    let h = (ts / 3600) % 24;
+    let days = ts / 86400;
+    // Days since 1970-01-01.
+    let mut y = 1970u64;
+    let mut rem = days;
+    loop {
+        let ydays = if is_leap(y) { 366 } else { 365 };
+        if rem < ydays { break; }
+        rem -= ydays;
+        y += 1;
+    }
+    let mdays = [31, if is_leap(y) { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut mo = 0usize;
+    while mo < 12 && rem >= mdays[mo] { rem -= mdays[mo]; mo += 1; }
+    (y, mo as u64 + 1, rem + 1, h, mi, s)
+}
+
+fn is_leap(y: u64) -> bool { y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) }
+
+/// Compute a short policy hash (first 12 hex chars of SHA-256) from the task allow/deny/uses/forbids.
+fn compute_policy_hash(program: &crate::ast::Program) -> String {
+    let mut data = String::new();
+    for task in &program.tasks {
+        data.push_str(&task.name);
+        for u in &task.uses { data.push_str(u); }
+        for f in &task.forbids { data.push_str(&f.name); }
+        for p in &task.allow {
+            data.push_str(&format!("allow:{}.{:?}", p.skill, p.func));
+        }
+        for p in &task.deny {
+            data.push_str(&format!("deny:{}.{:?}", p.skill, p.func));
+        }
+    }
+    let hash_bytes = lock::sha256_file_hash(data.as_bytes());
+    format!("sha256:{}", &hash_bytes[..12])
+}
+
+/// Sensitive argument key names — values are redacted in schema mode.
+const SENSITIVE_TRACE_KEYS: &[&str] = &[
+    "token", "secret", "password", "authorization", "cookie", "key",
+    "api_key", "auth", "credential", "private",
+];
+
+/// Schematize args: replace values with their JSON type name.
+/// Sensitive keys are always redacted.
+fn schematize_args(args: &Value, sensitive_env_values: &[String]) -> Value {
+    match args {
+        Value::Object(map) => {
+            let mut out = serde_json::Map::new();
+            for (k, v) in map {
+                let lower = k.to_lowercase();
+                if SENSITIVE_TRACE_KEYS.iter().any(|s| lower.contains(s)) {
+                    out.insert(k.clone(), Value::String("[REDACTED]".into()));
+                } else if let Value::String(s) = v {
+                    // Check if value matches a known secret env var value.
+                    if sensitive_env_values.iter().any(|env_val| env_val == s) {
+                        out.insert(k.clone(), Value::String("[REDACTED:secret]".into()));
+                    } else {
+                        out.insert(k.clone(), Value::String("string".into()));
+                    }
+                } else {
+                    out.insert(k.clone(), Value::String(json_type_name(v).into()));
+                }
+            }
+            Value::Object(out)
+        }
+        _ => Value::String("object".into()),
+    }
+}
+
+/// Redact sensitive keys from full args for --record-args=full mode.
+fn redact_full_args(args: &Value, sensitive_env_values: &[String]) -> Value {
+    match args {
+        Value::Object(map) => {
+            let mut out = serde_json::Map::new();
+            for (k, v) in map {
+                let lower = k.to_lowercase();
+                if SENSITIVE_TRACE_KEYS.iter().any(|s| lower.contains(s)) {
+                    out.insert(k.clone(), Value::String("[REDACTED]".into()));
+                } else if let Value::String(s) = v {
+                    if sensitive_env_values.iter().any(|env_val| env_val == s) {
+                        out.insert(k.clone(), Value::String("[REDACTED:secret]".into()));
+                    } else if s.len() > 512 {
+                        let hash = &lock::sha256_file_hash(s.as_bytes())[..8];
+                        out.insert(k.clone(), Value::String(format!("[TRUNCATED:{}:{}]", s.len(), hash)));
+                    } else {
+                        out.insert(k.clone(), v.clone());
+                    }
+                } else {
+                    out.insert(k.clone(), v.clone());
+                }
+            }
+            Value::Object(out)
+        }
+        _ => args.clone(),
+    }
+}
+
+fn json_type_name(v: &Value) -> &'static str {
+    match v {
+        Value::String(_) => "string",
+        Value::Number(_) => "number",
+        Value::Bool(_) => "bool",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+        Value::Null => "null",
+    }
+}
+
+/// Write one JSONL call trace entry.
+fn write_call_trace(
+    writer: &mut std::io::BufWriter<std::fs::File>,
+    skill: &str,
+    func: &str,
+    args: &Value,
+    allowed: bool,
+    blocked_reason: Option<&str>,
+    elapsed_ms: u64,
+    result_size: Option<usize>,
+    result_error: bool,
+    record_mode: RecordMode,
+    sensitive_env_values: &[String],
+) {
+    let args_recorded = if record_mode == RecordMode::Full {
+        redact_full_args(args, sensitive_env_values)
+    } else {
+        schematize_args(args, sensitive_env_values)
+    };
+
+    let mut entry = json!({
+        "event": "call",
+        "ts": chrono_now(),
+        "skill": skill,
+        "fn": func,
+        "args": args_recorded,
+        "allowed": allowed,
+        "ms": elapsed_ms,
+    });
+
+    if let Some(reason) = blocked_reason {
+        entry["blocked_reason"] = Value::String(reason.to_string());
+    }
+    if let Some(sz) = result_size {
+        entry["result_size"] = json!(sz);
+        entry["result_error"] = json!(result_error);
+    }
+
+    let _ = writeln!(writer, "{}", entry);
+    let _ = writer.flush();
 }
