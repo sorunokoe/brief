@@ -256,6 +256,7 @@ fn validate_source(source: &str) -> Vec<crate::errors::BriefError> {
     use crate::checker::{self, CheckContext};
     use crate::lexer::lex;
     use crate::parser::parse;
+    use crate::runner::load_skill_interfaces_pub;
     use crate::typeck;
 
     let (tokens, lex_errors) = lex(source);
@@ -283,11 +284,14 @@ fn validate_source(source: &str) -> Vec<crate::errors::BriefError> {
         allow_missing_skills: false,
     };
 
+    // Load skill interfaces from CWD so that W411/E501/E503 can fire in the LSP.
+    let skill_ifaces = load_skill_interfaces_pub(&program, file_dir, &cwd);
+
     let mut diags: Vec<crate::errors::BriefError> = parse_errors;
     diags.extend(checker::check(&program, &ctx));
     diags.extend(typeck::type_check_with_skills(
         &program,
-        std::collections::HashMap::new(),
+        skill_ifaces,
     ));
     diags
 }

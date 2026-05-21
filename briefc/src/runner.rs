@@ -270,6 +270,15 @@ fn load_skill_interfaces(
     file_dir: &Path,
     cwd: &Path,
 ) -> HashMap<String, skillgen::SkillInterface> {
+    load_skill_interfaces_pub(program, file_dir, cwd)
+}
+
+/// Public wrapper for `load_skill_interfaces`, used by the LSP.
+pub fn load_skill_interfaces_pub(
+    program: &Program,
+    file_dir: &Path,
+    cwd: &Path,
+) -> HashMap<String, skillgen::SkillInterface> {
     let mut ifaces = HashMap::new();
 
     for import in &program.imports {
