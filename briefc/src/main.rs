@@ -1,6 +1,7 @@
 mod ast;
 mod audit;
 mod checker;
+mod models;
 mod ci;
 mod codegen;
 mod doc;
@@ -17,6 +18,7 @@ mod manifest;
 mod mcp_schema;
 mod parser;
 mod policy_check;
+mod policy_suggest;
 mod registry;
 mod repl;
 mod runner;
@@ -270,6 +272,38 @@ enum Commands {
         #[arg(long)]
         apply: bool,
     },
+
+    /// Manage local AI models for policy generation
+    Models {
+        #[command(subcommand)]
+        command: ModelsCommand,
+    },
+
+    /// Generate an allow{}/deny{} spec from a task goal using heuristics (+ AI if model installed)
+    PolicySuggest {
+        /// Task name to generate policy for
+        #[arg(long)]
+        task: String,
+
+        /// Path to the .brief file (defaults to auto-detecting in current directory)
+        #[arg(long)]
+        file: Option<PathBuf>,
+
+        /// Auto-apply the suggested allow{}/deny{} blocks to the .brief file
+        #[arg(long)]
+        apply: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum ModelsCommand {
+    /// Download a model to ~/.brief/models/
+    Install {
+        /// Model name to install (default: smollm2)
+        model: Option<String>,
+    },
+    /// List installed models
+    List,
 }
 
 #[derive(Subcommand)]
@@ -465,6 +499,21 @@ fn main() -> std::process::ExitCode {
         Commands::Suggest { trace, file, apply } => {
             print_brief_banner();
             let ok = suggest::run_suggest(&trace, file.as_deref(), apply);
+            if ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::FAILURE }
+        }
+
+        Commands::Models { command } => {
+            print_brief_banner();
+            let ok = match command {
+                ModelsCommand::Install { model } => models::run_models_install(model.as_deref()),
+                ModelsCommand::List => models::run_models_list(),
+            };
+            if ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::FAILURE }
+        }
+
+        Commands::PolicySuggest { task, file, apply } => {
+            print_brief_banner();
+            let ok = policy_suggest::run_policy_suggest(&task, file.as_deref(), apply);
             if ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::FAILURE }
         }
     }
