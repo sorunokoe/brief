@@ -1,281 +1,336 @@
-# Brief
+<div align="center">
+
+<pre>
+  ╭──────────────────────────────────────────────────╮
+  │                                                  │
+  │     ▸  b r i e f                                 │
+  │        typed contracts for AI agents             │
+  │                                                  │
+  ╰──────────────────────────────────────────────────╯
+</pre>
 
 [![CI](https://github.com/sorunokoe/brief/actions/workflows/ci.yml/badge.svg)](https://github.com/sorunokoe/brief/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/sorunokoe/brief)](https://github.com/sorunokoe/brief/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](https://www.rust-lang.org)
 
-> **If it compiles AND verifies, the AI has everything it needs.**
+*If it compiles and verifies, the AI has everything it needs.*
 
-Brief is a typed DSL for AI agent task workflows. It is the boundary between humans and AI agents: a typed, sealed contract that an AI cannot bypass.
+</div>
 
-```
-brief check   → fast static analysis (< 1s, no network, CI-safe)
-brief verify  → seal the contract (runs verifiers, writes .brief.lock)
-brief serve   → start MCP server (requires valid .brief.lock)
-```
+---
 
-The AI gets a sealed, verified context — not a hopeful template.
+## The Problem
 
-## The Enforcement Chain
+You give an AI agent access to MCP tools. Then things go wrong.
 
 ```
-You write:  task.brief  +  .briefskill interfaces  +  brief.toml
-              ↓ (instant, <1s)
-brief check → E-codes → iterate until clean
-              ↓ (once, ~5-30s — only when something changes)
-brief verify → calls configured verifiers (URL, Figma, Stripe, k8s, custom…)
-             → writes .brief.lock  ← committed to git; invalidated on source change
-              ↓ (requires valid .brief.lock)
-brief serve  → MCP server: ONLY tools in uses[] exist
-             → @once enforced at protocol level
-             → AI cannot hallucinate tool names
+  prompt: "close stale issues in the repo"
+
+  AI calls: github_delete_repository("my-prod-repo")   ← you never said it could do this
+            github_merge_pull_request(999)              ← hallucinated a tool name
+            stripe_refund(charge_id)                   ← skipped: STRIPE_KEY was unset
 ```
 
-No network in `brief check`. No skippable steps. No compromises.
+The issue isn't the AI. **The issue is there's no contract.**
 
-## Quick Start
+You handed the AI a toolbox with no instructions — it used every tool it could find.
+
+---
+
+## The Solution
+
+Brief is a typed DSL that defines exactly what an AI agent is allowed to do, and enforces it at three layers before the AI touches anything.
+
+```brief
+import skill "GitHub"
+
+task CloseStaleIssues : TaskBrief uses [GitHub] {
+    goal = "Close issues with the 'stale' label"
+
+    needs {
+        env "GITHUB_TOKEN"              // verified before the AI starts
+    }
+
+    forbids {
+        func "GitHub.delete_repository" // hidden from tools/list at runtime
+        func "GitHub.merge_pull_request"
+    }
+
+    step Find {
+        let issues = perform GitHub.list_issues(
+            @github-repo "owner/repo",
+            @enum("open", "closed") "open"
+        )?
+    }
+
+    step Close {
+        perform GitHub.close_issue(issues.stale_ids)?
+    }
+}
+```
+
+```
+  $ brief check task.brief    →  ✅  type-safe, scope validated       (< 1s)
+  $ brief verify task.brief   →  ✅  GitHub reachable, token set      (sealed)
+  $ brief serve task.brief    →  ✅  MCP server ready, AI connects
+```
+
+The AI sees only `list_issues` and `close_issue`. Nothing else exists.
+
+---
+
+## How It Enforces
+
+Three layers. None are skippable.
+
+```
+  ┌─────────────────────────────────────────────────────────────┐
+  │  brief check  ·  instant  ·  no network                     │
+  │                                                             │
+  │  · type-checks the .brief file                              │
+  │  · validates @range, @enum, @nonEmpty, @matches literals    │
+  │  · E420  if a forbidden skill is used                       │
+  │  · E421  if a forbidden function is called                  │
+  ├─────────────────────────────────────────────────────────────┤
+  │  brief verify  ·  once  ·  ~5–30s                           │
+  │                                                             │
+  │  · calls configured verifiers (URL, GitHub, Figma…)        │
+  │  · checks needs {} — env vars, feature flags, config keys   │
+  │  · writes .brief.lock  →  committed to git                  │
+  │  · lock is invalidated automatically if source changes      │
+  ├─────────────────────────────────────────────────────────────┤
+  │  brief serve  ·  requires a valid .brief.lock               │
+  │                                                             │
+  │  · spawns MCP skill servers from brief.toml                 │
+  │  · AI only sees tools declared in uses []                   │
+  │  · forbidden tools are absent from tools/list               │
+  │  · @once enforced at the protocol level                     │
+  └─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Install
 
 ```bash
-# Build from source (requires Rust)
 git clone https://github.com/sorunokoe/brief
 cd brief && cargo build --release
 cp target/release/brief /usr/local/bin/
 ```
 
-```brief
-// hello.brief
-task Hello : TaskBrief {
-    goal = "Say hello to the world"
-}
-```
+Then scaffold a project:
 
 ```bash
-brief check hello.brief     # ✅ instant type check
-brief verify hello.brief    # ✅ seals the contract → hello.brief.lock
-brief serve hello.brief     # ✅ starts MCP server (Claude connects here)
+brief init my-agent && cd my-agent
+brief check task.brief
 ```
 
-## A Real Workflow Brief
+---
+
+## Examples
+
+### Guard a payment flow
 
 ```brief
-import skill "DesignSystem"
-import skill "GraphQL"
-
-@BriefBuilder
-task ProfileScreen : TaskBrief uses [DesignSystem, GraphQL] {
-    goal   = "Display user profile with design-system components"
-
-    step FetchData {
-        let user = perform GraphQL.query(UserProfileQuery)?
-    }
-
-    step Render {
-        @once let card = perform DesignSystem.profileCard(user)?
-        display(card)
-    }
-}
-
-test "boundary coverage" {
-    // @range coverage: brief check verifies these literals exist
-    let r1 = perform GraphQL.query(UserProfileQuery)?;
-}
-```
-
-```toml
-# brief.toml — routing layer
-[skills.DesignSystem]
-mcp_command = ["npx", "-y", "@design-system/mcp-server"]
-
-[skills.GraphQL]
-mcp_url = "http://localhost:4000/mcp"
-
-[verifiers."@url"]
-skill = "builtin:url"   # ships with Brief
-
-[verifiers."figmaURL"]
-mcp_command = ["npx", "-y", "@figma/brief-verifier"]
-```
-
-## Commands
-
-| Command | Status | Description |
-|---------|--------|-------------|
-| `brief check <file>` | ✅ works | Type-check — fast, no network, CI-safe |
-| `brief verify <file>` | ✅ works | Seal the contract → writes `.brief.lock` |
-| `brief serve <file>` | ✅ works | Start MCP server (requires valid lock) |
-| `brief serve <file> --draft` | ✅ works | Start MCP server without a lock — enforces scope but skips dynamic annotation verification |
-| `brief run <file>` | ✅ works | Execute `.brief` against real MCP skill servers |
-| `brief test <file>` | ✅ works | Run `test { }` blocks with mock skill system |
-| `brief test <file> --live` | ✅ works | Same, but make real MCP calls instead of mocks |
-| `brief gen "<desc>"` | ✅ works | Generate `.brief` from description (LLM if `BRIEF_LLM_API_KEY` set) |
-| `brief skillgen <path>` | ✅ works | Generate `.briefskill` from README (LLM if `BRIEF_LLM_API_KEY` set) |
-| `brief fmt <file>` | ✅ works | Auto-format to canonical style |
-| `brief doc <file>` | ✅ works | Generate Markdown documentation |
-| `brief watch <file>` | ✅ works | Live re-check on every save |
-| `brief init <name>` | ✅ works | Scaffold a new Brief project |
-| `brief ci` | ✅ works | Check all `[ci] examples` from `brief.toml` |
-| `brief lsp` | ✅ works | LSP server for editor integration |
-
-## Composable Verification
-
-Brief's compiler knows zero domain logic. Everything is a plugin:
-
-```
-Brief Core (small, stable)
-├── Static: @range, @enum, @matches, @nonEmpty  (compiler, always)
-├── builtin:url           (ships with Brief — HTTP HEAD/GET)
-├── builtin:local-path    (ships with Brief — path exists check)
-├── builtin:github-repo   (ships with Brief — GitHub API, uses GITHUB_TOKEN)
-├── builtin:shell-command (ships with Brief — command in PATH check)
-└── Verifier protocol: dispatch(annotation, value, context) → VerificationResult
-
-Custom Verifiers (MCP format — bring your own)
-├── mcp_command = ["python", "./my-verify.py"]   → user-written
-└── mcp_command = ["npx", "@figma/brief-verifier"] → community-built
-
-Routing (brief.toml — your composition layer)
-[verifiers."@url"]    skill = "builtin:url"
-[verifiers."@figma"]  mcp_command = ["npx", "@figma/brief-verifier"]
-[verifiers."@custom"] mcp_command = ["python", "./verify.py"]
-```
-
-## Error Codes
-
-| Code | Where | Description |
-|------|-------|-------------|
-| E107 | check | Missing `.briefskill` interface file |
-| E301 | check | `@range` boundary literal missing in test block |
-| E302 | check | `@enum` value literal missing in test block |
-| E303 | check | `.brief.lock` missing/stale/source-changed |
-| E309 | check | Dynamic annotation has no configured verifier |
-
-## Reference Skills
-
-Five complete reference skills in [`examples/skills/`](examples/skills/):
-
-| Skill | Key Annotations | What they verify |
-|-------|----------------|-----------------|
-| `FileSystem` | `@local-path` | Path exists and is accessible |
-| `GitHub` | `@github-repo`, `@nonEmpty`, `@enum` | Repo accessible, state valid |
-| `WebSearch` | `@url`, `@range` | URL reachable, result counts in range |
-| `Memory` | `@nonEmpty`, `@range` | Keys valid, TTL in range |
-| `Shell` | `@shell-command`, `@enum`, `@range` | Command exists in PATH |
-
-Each skill includes: `.briefskill` interface, `README.md`, and a `.brief` example with test coverage.
-
-## How Skills Work
-
-A Brief skill has **three distinct parts** — don't confuse them:
-
-```
-.claude/skills/GitHub/
-├── GitHub.briefskill    ← typed interface Brief exposes to the AI (like a .d.ts file)
-├── README.md            ← source for `brief skillgen` to auto-generate the .briefskill
-└── (no code here)       ← the actual implementation is a running MCP server
-```
-
-**The implementation is an MCP server** — a subprocess Brief spawns, communicates with over stdin/stdout JSON-RPC, and proxies tool calls to. It is declared in `brief.toml`, not stored in the skill directory:
-
-```toml
-[skills.GitHub]
-mcp_command = ["npx", "-y", "@modelcontextprotocol/server-github"]
-#                           ↑ this runs a real server process
-```
-
-**Brief acts as a typed proxy:**
-1. The AI calls `GitHub.list_issues(owner, repo, state)` — as seen in the `.briefskill` interface
-2. Brief enforces scope (`uses[]`, `forbids{}`), then forwards the call to the MCP server
-3. The MCP server executes the real operation and returns a result
-
-**What Brief adds over a raw MCP server:**
-- The AI *only* sees tools declared in `uses[]` — no accidental tool discovery
-- `brief check` statically validates annotations (`@enum`, `@range`, `@nonEmpty`) before any runtime
-- `brief verify` confirms the server is reachable and its `tools/list` matches the `.briefskill` (E401)
-- `brief serve` enforces `forbids{}` — forbidden tools are hidden from `tools/list` at the protocol level
-
-**Tool names match the real server exactly.** The `GitHub.briefskill` and `FileSystem.briefskill` interfaces use the same snake_case names as `@modelcontextprotocol/server-github` and `@modelcontextprotocol/server-filesystem`. No translation layer needed.
-
-
-
-- **Typed skill imports** — `import skill "GitHub"` + `uses [GitHub]`
-- **Static constraint annotations** — `@range(1, 100)`, `@enum("a","b")`, `@matches("regex")`, `@nonEmpty`
-- **Dynamic annotations** — `@local-path`, `@github-repo`, `@custom-xyz` → routed to verifiers
-- **Linear types** — `@once let handle = perform...` enforced in `brief serve`
-- **Effect group aliases** — `type AuthEffects = [Auth, Session]`
-- **Test blocks** — spec coverage checking (E301/E302)
-- **Result propagation** — `perform Skill.fn()?`
-- **Lock gate** — E303 if `.brief.lock` missing when dynamic annotations present
-- **`needs {}` block** — declare env vars, feature flags, and config keys that must exist before the AI starts; checked by `brief verify` and re-checked by `brief serve` at startup
-- **`forbids {}` block** — declare skills and functions the AI must never use; enforced statically by `brief check` (E420/E421) and at runtime by `brief serve` (forbidden tools are hidden from `tools/list`)
-
-## The Mise en Place Guarantee
-
-Brief is a preflight system for AI agents. Before the AI touches a single line of code, all ingredients are confirmed to exist, be accessible, and be correct:
-
-```brief
-task CheckoutFlow : TaskBrief uses [Cart, Payment, Order] {
-    goal = "Complete a purchase"
+task Checkout : TaskBrief uses [Cart, Payment, Order] {
+    goal = "Charge the customer and create an order"
 
     needs {
-        env "PAYMENT_API_KEY"    // must be set before AI starts
-        feature "checkout_v2"    // feature flag must be enabled
+        env "STRIPE_SECRET_KEY"
+        feature "checkout_v2"
     }
 
     forbids {
-        skill "Database"         // use Cart abstraction, not raw DB
-        func "Payment.refund"    // checkout only charges, never refunds
+        skill "Database"          // use Cart abstraction, not raw SQL
+        func "Payment.refund"     // checkout never refunds
     }
 
     step Charge {
-        @once let receipt = perform Payment.charge(cart.total)?
+        @once let charge = perform Payment.charge(cart.total)?
+    }
+
+    step Confirm {
+        @once let order = perform Order.create(charge.id)?
     }
 }
 ```
 
-- `brief check` — E420 if `Database` appears in `uses []` or any `perform`; E421 if `Payment.refund` is called
-- `brief verify` — E411 if `PAYMENT_API_KEY` is unset or `checkout_v2` feature is disabled
-- `brief serve` — `Payment.refund` and all `Database.*` tools are hidden from the AI's `tools/list`
+```
+  $ brief check task.brief
+    E421  Payment.refund is forbidden  →  remove from this task
+
+  $ brief verify task.brief
+    E411  needs: STRIPE_SECRET_KEY is not set  →  export STRIPE_SECRET_KEY=...
+```
+
+---
+
+### Lock down a code review agent
+
+```brief
+import skill "GitHub"
+import skill "FileSystem"
+
+task ReviewPR : TaskBrief uses [GitHub, FileSystem] {
+    goal = "Read a PR diff and post a review comment"
+
+    needs {
+        env "GITHUB_TOKEN"
+    }
+
+    forbids {
+        func "GitHub.merge_pull_request"   // review only, never merge
+        func "GitHub.delete_branch"
+        func "FileSystem.write_file"       // read-only
+    }
+
+    step Read {
+        let diff = perform GitHub.get_pull_request(
+            @github-repo "owner/repo", 42
+        )?
+    }
+
+    step Comment {
+        perform GitHub.create_review_comment(diff.id, "LGTM")?
+    }
+}
+```
+
+---
+
+### Verify resources exist before the AI starts
+
+```brief
+import skill "FileSystem"
+import skill "Shell"
+
+task BuildAndDeploy : TaskBrief uses [FileSystem, Shell] {
+    goal = "Build the project and deploy the artifact"
+
+    needs {
+        env "DEPLOY_TARGET"
+        config "build.output_dir"
+    }
+
+    step Build {
+        perform Shell.run_command(
+            @shell-command "cargo",
+            @enum("build", "test", "check") "build"
+        )?
+    }
+
+    step Deploy {
+        let artifact = perform FileSystem.read_file(
+            @local-path "target/release/myapp"
+        )?
+    }
+
+    test "allowed commands" {
+        let _ = perform Shell.run_command("cargo", "build")?
+        let _ = perform Shell.run_command("cargo", "test")?
+        let _ = perform Shell.run_command("cargo", "check")?
+    }
+}
+```
+
+The `@shell-command` annotation is verified by `brief verify` — it confirms `cargo` is in `PATH` before the AI runs a single step. The `@enum` annotation is verified statically by `brief check` — the test block proves every allowed value is covered.
+
+---
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `brief check <file>` | Type-check — instant, no network, CI-safe |
+| `brief verify <file>` | Seal the contract → writes `.brief.lock` |
+| `brief serve <file>` | Start MCP server (requires valid lock) |
+| `brief serve <file> --draft` | Start MCP server — scope enforced, no lock required |
+| `brief run <file>` | Execute against real MCP skill servers |
+| `brief test <file>` | Run `test {}` blocks with mock skill system |
+| `brief test <file> --live` | Same, but use real MCP calls |
+| `brief gen "<desc>"` | Generate `.brief` from a description |
+| `brief skillgen <path>` | Generate `.briefskill` from a README |
+| `brief fmt <file>` | Auto-format to canonical style |
+| `brief doc <file>` | Generate Markdown documentation |
+| `brief watch <file>` | Live re-check on every save |
+| `brief init <name>` | Scaffold a new Brief project |
+| `brief ci` | Check all CI examples from `brief.toml` |
+| `brief lsp` | Start LSP server for editor integration |
+| `brief audit` | Inspect the runtime call log |
+| `brief suggest <file>` | AI-powered fix suggestions |
+
+---
+
+## Language Features
+
+| Feature | What it does |
+|---------|-------------|
+| `import skill "X"` + `uses [X]` | Typed skill import — only declared skills exist |
+| `needs { env "KEY" }` | Prerequisite check — verified before AI starts |
+| `forbids { func "Skill.fn" }` | Scope boundary — hidden from `tools/list` at runtime |
+| `@range(1, 100)` · `@enum("a","b")` | Static constraints — checked by `brief check` |
+| `@url` · `@github-repo` · `@local-path` | Dynamic annotations — verified by `brief verify` |
+| `@once let x = perform ...` | Linear type — enforced at protocol level by `brief serve` |
+| `test "name" { }` | Coverage block — `brief check` validates every literal |
+| `allow {}` · `deny {}` | Argument-level policy enforcement |
+| `type FX = [Auth, Session]` | Effect group aliases |
+
+---
 
 ## Error Codes
 
-| Code | Where | Description |
-|------|-------|-------------|
-| E107 | check | Missing `.briefskill` interface file |
-| E301 | check | `@range` boundary literal missing in test block |
-| E302 | check | `@enum` value literal missing in test block |
-| E303 | check | `.brief.lock` missing/stale/source-changed |
-| E309 | check | Dynamic annotation has no configured verifier |
-| E401 | verify | Skill function not found in live MCP server (`tools/list`) |
-| E402 | verify | Skill MCP server unreachable |
-| E411 | verify | `needs {}` prerequisite not met |
-| E420 | check | `forbids { skill "X" }` — forbidden skill used |
-| E421 | check | `forbids { func "Skill.fn" }` — forbidden function called |
+```
+  E107   check    missing .briefskill interface file
+  E301   check    @range boundary literal missing in test block
+  E302   check    @enum value literal missing in test block
+  E303   check    .brief.lock missing, stale, or source-changed
+  E309   check    dynamic annotation has no configured verifier
+  E401   verify   skill function not found in live MCP server
+  E402   verify   skill MCP server unreachable
+  E411   verify   needs {} prerequisite not met
+  E420   check    forbids { skill "X" } — forbidden skill used
+  E421   check    forbids { func "Skill.fn" } — forbidden function called
+```
 
-## Roadmap
+---
 
-- ✅ Full type system, skill imports, error messages
-- ✅ `brief test`, `brief fmt`, LSP, skill registry
-- ✅ Linear types, type aliases, effect groups
-- ✅ `brief watch`, `brief init`, `brief.toml` manifest
-- ✅ `brief ci`, shell completions, VS Code grammar
-- ✅ `brief verify` — composable verifier protocol (MCP)
-- ✅ `brief serve` — MCP server with lock gate enforcement
-- ✅ `brief run` — real execution against skill MCP servers
-- ✅ `brief test --live` — empirical type validation against real MCP servers
-- ✅ `brief gen` — LLM generation with compiler feedback loop
-- ✅ `brief skillgen` — LLM annotation extraction
-- ✅ **`needs {}` block** — prerequisite verification (env, feature, config)
-- ✅ **`forbids {}` block** — scope boundaries enforced statically and at runtime
-- ✅ **`brief serve --draft`** — start MCP server without a lock (scope enforcement active; dynamic annotations unverified)
-- ✅ **`builtin:local-path`** — path existence verifier (no npm required)
-- ✅ **`builtin:github-repo`** — GitHub repo access verifier (no npm required)
-- ✅ **`builtin:shell-command`** — command-in-PATH verifier (no npm required)
+## How Skills Work
+
+```
+  .claude/skills/GitHub/
+  ├── GitHub.briefskill   ←  typed interface (like a .d.ts)
+  ├── README.md           ←  source for `brief skillgen`
+  └──  (no code)          ←  implementation is an MCP server in brief.toml
+```
+
+```toml
+# brief.toml
+[skills.GitHub]
+mcp_command = ["npx", "-y", "@modelcontextprotocol/server-github"]
+
+[verifiers."@github-repo"]
+skill = "builtin:github-repo"
+
+[verifiers."@url"]
+skill = "builtin:url"
+```
+
+Brief ships with four built-in verifiers: `builtin:url`, `builtin:local-path`, `builtin:github-repo`, `builtin:shell-command`. Everything else is a plugin — write your own as any MCP server.
+
+---
 
 ## Contributing
 
-See [CONTRIBUTING.md](.github/CONTRIBUTING.md). All skill and verifier authors welcome — Brief is built for communities that build with AI.
+See [CONTRIBUTING.md](.github/CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](.github/CODE_OF_CONDUCT.md).
+
+Skill and verifier authors are especially welcome — Brief is designed to grow through community-built extensions.
+
+```bash
+git clone https://github.com/sorunokoe/brief
+cargo test    # all tests must pass
+```
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
