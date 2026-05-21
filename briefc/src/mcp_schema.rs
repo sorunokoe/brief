@@ -137,6 +137,7 @@ mod tests {
                     name: "mapValue".into(),
                     arg_count: 1,
                     return_type: "Code".into(),
+                    description: None,
                     params: vec![SkillParam {
                         name: "input".into(),
                         base_type: "Int".into(),
@@ -148,6 +149,7 @@ mod tests {
                     name: "classify".into(),
                     arg_count: 1,
                     return_type: "Status".into(),
+                    description: None,
                     params: vec![SkillParam {
                         name: "cat".into(),
                         base_type: "String".into(),

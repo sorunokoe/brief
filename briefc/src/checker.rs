@@ -388,6 +388,9 @@ fn check_task(
     // E423/E424/W408/W409: `allow {}/deny {}` block validation.
     check_allow_deny(task, skill_ifaces, diags);
 
+    // E501/E503: goal coverage analysis — verify goal intent is achievable with declared tools.
+    check_goal_coverage(task, skill_ifaces, diags);
+
     // W106: skill in `uses []` but never `perform`-ed in any step.
     warn_unused_skills_in_uses(task, &expanded_uses, diags);
 }
@@ -749,6 +752,150 @@ fn deny_subsumes_allow(deny: &crate::ast::CallPattern, allow: &crate::ast::CallP
     }
     true
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// E501 / E503 — Goal Coverage Analysis
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Stop-words that carry no actionable intent for coverage checking.
+const GOAL_STOP_WORDS: &[&str] = &[
+    "a", "an", "the", "and", "or", "of", "for", "to", "in", "on", "with",
+    "from", "that", "this", "it", "its", "is", "are", "was", "be", "by",
+    "as", "at", "into", "then", "when", "all", "use", "using", "get", "set",
+    "run", "via", "per", "any", "some", "each", "make", "take", "give",
+    "have", "has", "can", "will", "should", "able", "need", "needs",
+];
+
+/// E501 / E503: Verify that the goal text is achievable with the declared tools.
+///
+/// Algorithm:
+/// 1. Tokenise the goal into lowercase words (≥ 4 chars, skip stop-words).
+/// 2. For each token, build the list of functions (across all `uses[]` skills) whose
+///    name or description contains that token.
+/// 3. If a token has NO matching function → E501 (intent not covered).
+/// 4. If a token has matching functions but ALL of them are blocked by a `deny {}`
+///    pattern (wildcard or exact function name) → E503 (goal contradicts policy).
+///
+/// Skips analysis if:
+/// - The task has no `goal` string.
+/// - There are no skill interfaces loaded (no .briefskill files found).
+fn check_goal_coverage(
+    task: &Task,
+    skill_ifaces: &HashMap<String, SkillInterface>,
+    diags: &mut Vec<BriefError>,
+) {
+    let goal_text = match &task.goal {
+        Some(g) => g,
+        None => return, // E101 already emitted
+    };
+
+    // Only analyse tasks that have at least one loaded skill interface.
+    if skill_ifaces.is_empty() {
+        return;
+    }
+
+    // Collect all functions from declared uses[] skills (only those with interfaces loaded).
+    // Each entry: (skill_name, fn_name, description).
+    let mut available_fns: Vec<(&str, &str, Option<&str>)> = Vec::new();
+    for skill_name in &task.uses {
+        if let Some(iface) = skill_ifaces.get(skill_name.as_str()) {
+            for f in &iface.funcs {
+                available_fns.push((skill_name.as_str(), f.name.as_str(), f.description.as_deref()));
+            }
+        }
+    }
+
+    if available_fns.is_empty() {
+        return; // No loaded interfaces → nothing to match against; other checks cover missing interfaces.
+    }
+
+    // Only run E501 analysis when at least one function has a `///` description.
+    // Without descriptions, we can only match on raw function names — too noisy for goal coverage.
+    // Descriptions are populated by `brief skillsync` which writes `///` doc comments.
+    let has_any_description = available_fns.iter().any(|(_, _, desc)| desc.is_some());
+    if !has_any_description {
+        return;
+    }
+
+    // Tokenise the goal.
+    let tokens: Vec<String> = goal_text
+        .to_lowercase()
+        .split(|c: char| !c.is_alphabetic())
+        .filter(|w| w.len() >= 4 && !GOAL_STOP_WORDS.contains(w))
+        .map(str::to_owned)
+        .collect();
+
+    // Deduplicate while preserving first-occurrence order.
+    let mut seen = std::collections::HashSet::new();
+    let tokens: Vec<String> = tokens.into_iter().filter(|t| seen.insert(t.clone())).collect();
+
+    if tokens.is_empty() {
+        return;
+    }
+
+    for token in &tokens {
+        // Collect matching functions (name or description contains the token).
+        let matched: Vec<(&str, &str)> = available_fns
+            .iter()
+            .filter(|(_, fn_name, desc)| {
+                fn_name.to_lowercase().contains(token.as_str())
+                    || desc.map(|d| d.to_lowercase().contains(token.as_str())).unwrap_or(false)
+            })
+            .map(|(skill, fn_name, _)| (*skill, *fn_name))
+            .collect();
+
+        if matched.is_empty() {
+            // E501: goal intent has no covering function.
+            diags.push(BriefError {
+                code: ErrorCode::GoalIntentNotCovered,
+                message: format!(
+                    "goal mentions '{}' but no function in uses[] covers this intent",
+                    token
+                ),
+                span: task.span,
+                hint: Some(format!(
+                    "add a skill to uses[] that provides '{}' functionality, \
+                     or ensure .briefskill files are present with descriptions",
+                    token
+                )),
+            });
+        } else {
+            // E503: check if ALL matching functions are blocked by a deny{} pattern.
+            let deny_patterns = &task.deny;
+            if !deny_patterns.is_empty() {
+                let all_denied = matched.iter().all(|(skill, fn_name)| {
+                    deny_patterns.iter().any(|dp| {
+                        // Deny wildcard (skill.*) or exact function match.
+                        let skill_matches = dp.skill == *skill;
+                        let fn_matches = dp.func.is_none()
+                            || dp.func.as_deref() == Some(fn_name);
+                        skill_matches && fn_matches
+                    })
+                });
+                if all_denied {
+                    let covering: Vec<String> = matched
+                        .iter()
+                        .map(|(s, f)| format!("{s}.{f}"))
+                        .collect();
+                    diags.push(BriefError {
+                        code: ErrorCode::GoalIntentDenied,
+                        message: format!(
+                            "goal mentions '{}' but the only covering function(s) [{}] are blocked by deny{{}}",
+                            token,
+                            covering.join(", ")
+                        ),
+                        span: task.span,
+                        hint: Some(format!(
+                            "remove or narrow the deny{{}} pattern for '{}' to allow the goal to be achieved",
+                            token
+                        )),
+                    });
+                }
+            }
+        }
+    }
+}
+
 
 fn type_ref_str(ty: &TypeRef) -> String {
     let mut s = ty.name.clone();
@@ -3699,6 +3846,225 @@ task Review : TaskBrief uses [GitHub] {
         assert!(
             allow_deny_diags.is_empty(),
             "no allow/deny errors for task without allow/deny blocks: {diags:?}"
+        );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Goal Coverage Tests (E501 / E503)
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod goal_coverage_tests {
+    use super::*;
+    use crate::errors::ErrorCode;
+    use crate::lexer::lex;
+    use crate::parser::parse;
+
+    /// Helper: write temp .briefskill files and run the checker.
+    fn check_with_iface(source: &str, skills: &[(&str, &str)]) -> Vec<BriefError> {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let skills_root = dir.path().join(".claude").join("skills");
+        for (name, content) in skills {
+            let skill_dir = skills_root.join(name);
+            fs::create_dir_all(&skill_dir).unwrap();
+            fs::write(skill_dir.join(format!("{name}.briefskill")), content).unwrap();
+        }
+        let (tokens, _) = lex(source);
+        let (program, _) = parse(&tokens, source);
+        let ctx = CheckContext {
+            file_dir: dir.path(),
+            cwd: dir.path(),
+            manifest: None,
+            brief_path: None,
+            allow_missing_skills: false,
+        };
+        check(&program, &ctx)
+    }
+
+    // ── E501: goal intent not covered ────────────────────────────────────────
+
+    #[test]
+    fn e501_goal_token_not_covered_by_any_function() {
+        let skill_src = r#"interface GitHub {
+    /// Get details of a pull request
+    fn get_pull_request(owner: String, repo: String, number: Int) -> String
+}"#;
+        // Goal mentions "deploy" — no function in GitHub covers deployment.
+        let src = r#"
+import skill "GitHub"
+
+task Review : TaskBrief uses [GitHub] {
+    goal = "review and deploy the pull request"
+    step Run {
+        let _ = perform GitHub.get_pull_request("acme", "repo", 1)
+    }
+}
+"#;
+        let diags = check_with_iface(src, &[("GitHub", skill_src)]);
+        let e501: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code == ErrorCode::GoalIntentNotCovered)
+            .collect();
+        assert!(!e501.is_empty(), "expected E501 for 'deploy' intent: {diags:?}");
+        assert!(
+            e501.iter().any(|d| d.message.contains("deploy")),
+            "E501 should name the uncovered token: {e501:?}"
+        );
+    }
+
+    #[test]
+    fn e501_not_emitted_when_all_intents_covered() {
+        let skill_src = r#"interface GitHub {
+    /// Get details of a pull request
+    fn get_pull_request(owner: String, repo: String, number: Int) -> String
+    /// Post a review comment on a pull request
+    fn create_review_comment(owner: String, repo: String, number: Int, body: String) -> String
+}"#;
+        // All significant tokens ("review", "comment", "pull") covered by function names/descriptions.
+        let src = r#"
+import skill "GitHub"
+
+task Review : TaskBrief uses [GitHub] {
+    goal = "review pull request and post comment"
+    step Run {
+        let _ = perform GitHub.get_pull_request("acme", "repo", 1)
+    }
+}
+"#;
+        let diags = check_with_iface(src, &[("GitHub", skill_src)]);
+        let e501: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code == ErrorCode::GoalIntentNotCovered)
+            .collect();
+        assert!(e501.is_empty(), "no E501 when all intents are covered: {e501:?}");
+    }
+
+    #[test]
+    fn e501_short_stop_words_ignored() {
+        let skill_src = r#"interface GitHub {
+    /// Get details of a pull request
+    fn get_pull_request(owner: String, repo: String, number: Int) -> String
+}"#;
+        // Goal is entirely stop words / short words — no meaningful tokens to check.
+        let src = r#"
+import skill "GitHub"
+
+task Review : TaskBrief uses [GitHub] {
+    goal = "get a pr"
+    step Run {
+        let _ = perform GitHub.get_pull_request("acme", "repo", 1)
+    }
+}
+"#;
+        let diags = check_with_iface(src, &[("GitHub", skill_src)]);
+        let e501: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code == ErrorCode::GoalIntentNotCovered)
+            .collect();
+        assert!(e501.is_empty(), "stop words / short words should not trigger E501: {e501:?}");
+    }
+
+    // ── E503: goal intent denied by deny{} ───────────────────────────────────
+
+    #[test]
+    fn e503_goal_intent_covered_but_denied() {
+        let skill_src = r#"interface GitHub {
+    /// Merge a pull request into the base branch
+    fn merge_pull_request(owner: String, repo: String, number: Int) -> String
+    /// Get details of a pull request
+    fn get_pull_request(owner: String, repo: String, number: Int) -> String
+}"#;
+        // Goal says "merge" but deny{} blocks GitHub.merge_pull_request.
+        let src = r#"
+import skill "GitHub"
+
+task Review : TaskBrief uses [GitHub] {
+    goal = "review and merge the pull request"
+    deny {
+        GitHub.merge_pull_request
+    }
+    step Run {
+        let _ = perform GitHub.get_pull_request("acme", "repo", 1)
+    }
+}
+"#;
+        let diags = check_with_iface(src, &[("GitHub", skill_src)]);
+        let e503: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code == ErrorCode::GoalIntentDenied)
+            .collect();
+        assert!(!e503.is_empty(), "expected E503 when goal intent is covered but denied: {diags:?}");
+        assert!(
+            e503.iter().any(|d| d.message.contains("merge")),
+            "E503 should name the denied token: {e503:?}"
+        );
+    }
+
+    #[test]
+    fn e503_not_emitted_when_deny_blocks_only_some_covering_functions() {
+        let skill_src = r#"interface GitHub {
+    /// Merge a pull request into the base branch
+    fn merge_pull_request(owner: String, repo: String, number: Int) -> String
+    /// Squash-merge a pull request
+    fn squash_merge(owner: String, repo: String, number: Int) -> String
+}"#;
+        // Goal says "merge" — merge_pull_request is denied, BUT squash_merge is not.
+        // Since not ALL covering functions are denied, no E503.
+        let src = r#"
+import skill "GitHub"
+
+task Review : TaskBrief uses [GitHub] {
+    goal = "merge the pull request"
+    deny {
+        GitHub.merge_pull_request
+    }
+    step Run {
+        let _ = perform GitHub.squash_merge("acme", "repo", 1)
+    }
+}
+"#;
+        let diags = check_with_iface(src, &[("GitHub", skill_src)]);
+        let e503: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code == ErrorCode::GoalIntentDenied)
+            .collect();
+        assert!(
+            e503.is_empty(),
+            "no E503 when at least one covering function is not denied: {e503:?}"
+        );
+    }
+
+    // ── No interfaces loaded → skip silently ─────────────────────────────────
+
+    #[test]
+    fn e501_not_emitted_when_no_interfaces_available() {
+        // allow_missing_skills = true → no interfaces loaded → skip goal coverage check.
+        let src = r#"
+import skill "GitHub"
+
+task Review : TaskBrief uses [GitHub] {
+    goal = "deploy and merge and release everything"
+}
+"#;
+        let (tokens, _) = lex(src);
+        let (program, _) = parse(&tokens, src);
+        let ctx = CheckContext {
+            file_dir: std::path::Path::new("."),
+            cwd: std::path::Path::new("."),
+            manifest: None,
+            brief_path: None,
+            allow_missing_skills: true,
+        };
+        let diags = check(&program, &ctx);
+        let e501: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code == ErrorCode::GoalIntentNotCovered)
+            .collect();
+        assert!(
+            e501.is_empty(),
+            "E501 must not fire when allow_missing_skills=true (no interfaces loaded): {e501:?}"
         );
     }
 }

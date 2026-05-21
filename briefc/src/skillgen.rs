@@ -177,6 +177,9 @@ pub struct SkillFn {
     /// Full parameter information with constraint annotations.
     pub params:      Vec<SkillParam>,
     pub return_type: String,
+    /// Optional human-readable description from `///` doc comments in the .briefskill file.
+    /// Populated by `brief skillsync` from the MCP server's `tools/list` description field.
+    pub description: Option<String>,
 }
 
 /// Parse a `.briefskill` file into a `SkillInterface`.
@@ -186,18 +189,32 @@ pub fn parse_briefskill(content: &str) -> Option<SkillInterface> {
     let mut effects = Vec::new();
     let mut funcs = Vec::new();
     let mut in_interface = false;
+    let mut pending_doc: Option<String> = None;
 
     for line in content.lines() {
         let t = line.trim();
 
-        // Skip comment lines.
+        // `///` doc comment — accumulate for the next function.
+        if let Some(doc) = t.strip_prefix("///") {
+            let doc_text = doc.trim().to_string();
+            pending_doc = Some(match pending_doc.take() {
+                Some(prev) if prev.is_empty() => doc_text,
+                Some(prev) => format!("{prev} {doc_text}"),
+                None => doc_text,
+            });
+            continue;
+        }
+
+        // Other comments — don't clear pending doc, just skip.
         if t.starts_with("//") {
             continue;
         }
 
+        // Non-comment, non-fn line — clear pending doc if not inside interface.
         if !in_interface {
             if let Some(parsed_effects) = parse_effects_decl(t) {
                 effects = parsed_effects;
+                pending_doc = None;
                 continue;
             }
         }
@@ -207,11 +224,13 @@ pub fn parse_briefskill(content: &str) -> Option<SkillInterface> {
             let n = t["interface ".len()..t.len() - 1].trim().to_string();
             name = Some(n);
             in_interface = true;
+            pending_doc = None;
             continue;
         }
 
         if t == "}" && in_interface {
             in_interface = false;
+            pending_doc = None;
             continue;
         }
 
@@ -227,7 +246,11 @@ pub fn parse_briefskill(content: &str) -> Option<SkillInterface> {
                     arg_count: params.len(),
                     params,
                     return_type: sig.return_type,
+                    description: pending_doc.take(),
                 });
+            } else {
+                // Non-fn line inside interface — clear pending doc.
+                pending_doc = None;
             }
         }
     }
@@ -680,6 +703,11 @@ fn render_briefskill(skill_name: &str, fns: &[FnSig], sha: &str, source_path: &P
         out.push_str("    // or set BRIEF_LLM_API_KEY for AI-assisted extraction.\n");
     } else {
         for f in fns {
+            if let Some(doc) = &f.doc {
+                if !doc.is_empty() {
+                    out.push_str(&format!("    /// {doc}\n"));
+                }
+            }
             let params = f.params.iter()
                 .map(|(n, t)| format!("{n}: {t}"))
                 .collect::<Vec<_>>()
@@ -910,5 +938,65 @@ interface MapperService {
         assert_eq!(p.base_type, "UserProfile");
         assert!(p.static_constraints.is_empty());
         assert!(p.dynamic_attrs.is_empty());
+    }
+
+    #[test]
+    fn test_parse_briefskill_doc_comments_captured() {
+        let content = r#"
+interface GitHub {
+    /// Get a pull request by number
+    fn get_pull_request(owner: String, repo: String, number: Int) -> String
+    /// Create a review comment on a pull request
+    fn create_review_comment(owner: String, repo: String, number: Int, body: String) -> String
+    fn list_commits(owner: String, repo: String) -> String
+}
+"#;
+        let iface = parse_briefskill(content).expect("should parse");
+        assert_eq!(iface.funcs.len(), 3);
+        assert_eq!(
+            iface.funcs[0].description.as_deref(),
+            Some("Get a pull request by number")
+        );
+        assert_eq!(
+            iface.funcs[1].description.as_deref(),
+            Some("Create a review comment on a pull request")
+        );
+        // No doc comment → None
+        assert!(iface.funcs[2].description.is_none());
+    }
+
+    #[test]
+    fn test_parse_briefskill_regular_comment_not_captured() {
+        let content = r#"
+interface GitHub {
+    // internal: legacy endpoint
+    fn get_pull_request(owner: String) -> String
+}
+"#;
+        let iface = parse_briefskill(content).expect("should parse");
+        // Regular `//` comment should NOT become a description (only `///` does)
+        assert!(iface.funcs[0].description.is_none());
+    }
+
+    #[test]
+    fn test_render_briefskill_emits_doc_comments() {
+        let fns = vec![
+            FnSig {
+                name: "getUser".into(),
+                params: vec![("id".into(), "String".into())],
+                return_type: "User".into(),
+                doc: Some("Fetch a user by ID".into()),
+            },
+            FnSig {
+                name: "deleteUser".into(),
+                params: vec![("id".into(), "String".into())],
+                return_type: "Unit".into(),
+                doc: None,
+            },
+        ];
+        let rendered = render_briefskill("UserService", &fns, &"a".repeat(64), std::path::Path::new("README.md"), false);
+        assert!(rendered.contains("    /// Fetch a user by ID\n"), "doc comment must be rendered");
+        assert!(rendered.contains("    fn getUser(id: String) -> User"), "fn must follow doc comment");
+        assert!(!rendered.contains("/// deleteUser"), "no doc for deleteUser");
     }
 }

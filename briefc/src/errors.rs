@@ -55,6 +55,10 @@ pub enum ErrorCode {
     AllowDenyPatternInvalid,
     /// `allow {}` block with zero patterns — blocks all tool calls, almost certainly a mistake (E424)
     EmptyAllowBlock,
+    /// goal mentions a capability not covered by any function in uses[] (E501)
+    GoalIntentNotCovered,
+    /// goal mentions a capability that is explicitly denied by deny{} — spec contradiction (E503)
+    GoalIntentDenied,
     // ── Warnings ──────────────────────────────────────────────────────────
     /// Missing `.briefskill` file — suppress with `--allow-missing-skills` (E107)
     MissingSkillInterface,
@@ -116,6 +120,8 @@ impl fmt::Display for ErrorCode {
             ErrorCode::ForbiddenFunc => "E421",
             ErrorCode::AllowDenyPatternInvalid => "E423",
             ErrorCode::EmptyAllowBlock => "E424",
+            ErrorCode::GoalIntentNotCovered => "E501",
+            ErrorCode::GoalIntentDenied => "E503",
             ErrorCode::MissingSkillInterface => "E107",
             ErrorCode::StaleSkillInterface => "W102",
             ErrorCode::DeprecatedStringExtras => "W103",
@@ -159,6 +165,8 @@ impl ErrorCode {
                 | ErrorCode::ForbiddenFunc
                 | ErrorCode::AllowDenyPatternInvalid
                 | ErrorCode::EmptyAllowBlock
+                | ErrorCode::GoalIntentNotCovered
+                | ErrorCode::GoalIntentDenied
                 | ErrorCode::MissingSkillInterface
         )
     }
