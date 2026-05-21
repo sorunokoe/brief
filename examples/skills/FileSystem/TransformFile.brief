@@ -8,15 +8,15 @@ task TransformFile : TaskBrief uses [FileSystem] {
     goal = "Read a source file, transform its content, and write the result to an output file"
 
     step ReadSource {
-        let content = perform FileSystem.readFile("/workspace/input.txt")?;
+        let content = perform FileSystem.read_file("/workspace/input.txt")?;
     }
 
     step Transform {
-        let exists = perform FileSystem.fileExists("/workspace/output.txt")?;
+        let info = perform FileSystem.get_file_info("/workspace/output.txt")?;
     }
 
     step WriteResult {
-        let _ = perform FileSystem.writeFile("/workspace/output.txt", "transformed content")?;
+        let _ = perform FileSystem.write_file("/workspace/output.txt", "transformed content")?;
     }
 }
 
@@ -24,6 +24,6 @@ test "FileSystem boundary coverage" {
     // @nonEmpty implied — all paths must be non-empty strings
     // @local-path requires brief verify to confirm path is accessible
 
-    let listing = perform FileSystem.listDirectory("/workspace")?;
-    let exists   = perform FileSystem.fileExists("/workspace/input.txt")?;
+    let listing = perform FileSystem.list_directory("/workspace")?;
+    let info    = perform FileSystem.get_file_info("/workspace/input.txt")?;
 }

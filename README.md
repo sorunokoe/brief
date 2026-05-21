@@ -159,7 +159,39 @@ Five complete reference skills in [`examples/skills/`](examples/skills/):
 
 Each skill includes: `.briefskill` interface, `README.md`, and a `.brief` example with test coverage.
 
-## Language Features
+## How Skills Work
+
+A Brief skill has **three distinct parts** — don't confuse them:
+
+```
+.claude/skills/GitHub/
+├── GitHub.briefskill    ← typed interface Brief exposes to the AI (like a .d.ts file)
+├── README.md            ← source for `brief skillgen` to auto-generate the .briefskill
+└── (no code here)       ← the actual implementation is a running MCP server
+```
+
+**The implementation is an MCP server** — a subprocess Brief spawns, communicates with over stdin/stdout JSON-RPC, and proxies tool calls to. It is declared in `brief.toml`, not stored in the skill directory:
+
+```toml
+[skills.GitHub]
+mcp_command = ["npx", "-y", "@modelcontextprotocol/server-github"]
+#                           ↑ this runs a real server process
+```
+
+**Brief acts as a typed proxy:**
+1. The AI calls `GitHub.list_issues(owner, repo, state)` — as seen in the `.briefskill` interface
+2. Brief enforces scope (`uses[]`, `forbids{}`), then forwards the call to the MCP server
+3. The MCP server executes the real operation and returns a result
+
+**What Brief adds over a raw MCP server:**
+- The AI *only* sees tools declared in `uses[]` — no accidental tool discovery
+- `brief check` statically validates annotations (`@enum`, `@range`, `@nonEmpty`) before any runtime
+- `brief verify` confirms the server is reachable and its `tools/list` matches the `.briefskill` (E401)
+- `brief serve` enforces `forbids{}` — forbidden tools are hidden from `tools/list` at the protocol level
+
+**Tool names match the real server exactly.** The `GitHub.briefskill` and `FileSystem.briefskill` interfaces use the same snake_case names as `@modelcontextprotocol/server-github` and `@modelcontextprotocol/server-filesystem`. No translation layer needed.
+
+
 
 - **Typed skill imports** — `import skill "GitHub"` + `uses [GitHub]`
 - **Static constraint annotations** — `@range(1, 100)`, `@enum("a","b")`, `@matches("regex")`, `@nonEmpty`

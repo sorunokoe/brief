@@ -15,9 +15,9 @@ version = "0.1.0"
 # Replace the mcp_command with whatever runs your actual skill server.
 
 [skills.FileSystem]
-# 🔧 Placeholder — replace with your file-system MCP server
-# e.g. a local server: mcp_command = ["node", "path/to/filesystem-server.js"]
-mcp_command = ["npx", "-y", "@brief/filesystem-skill"]
+# ✅ Official Anthropic package — works today
+# Provide one or more allowed directory paths as arguments (e.g. /workspace, /home/user/projects)
+mcp_command = ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"]
 
 [skills.GitHub]
 # ✅ Official Anthropic package — works today
