@@ -84,7 +84,7 @@ jobs:
         run: |
           FAIL=0
           for f in examples/[0-9]*.brief; do
-            output=$(cargo run --bin brief -- fmt --check "$f" 2>&1)
+            output=$(cargo run --bin brief -- fmt --check "$f" 2>&1 || true)
             if echo "$output" | grep -q "❌"; then
               echo "UNFORMATTED: $f"
               FAIL=1
