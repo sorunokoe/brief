@@ -138,6 +138,29 @@ step ProcessPayment {
 }
 ```
 
+## Goal Coverage
+
+`brief check` compares the task `goal` against the documented capabilities in `uses[]`. When at least one referenced `.briefskill` function includes a `///` description, Brief can flag missing or self-contradictory intent with `E501` and `E503`. These diagnostics also surface live through the LSP.
+
+```brief
+task SendReport : TaskBrief uses [FileSystem] {
+    goal = "Send the report to the customer via email"   // E501: 'email' not covered by FileSystem
+}
+```
+
+`E503` fires when the goal intent is covered only by functions blocked by `deny {}`.
+
+## Step Data-Flow
+
+Brief also checks step-local result handling:
+
+```brief
+step Fetch {
+    let data = perform GitHub.get_pr(42)?  // W410 if `data` is never used below
+    perform GitHub.list_issues("owner", "repo", "open")  // W411: Result not propagated with ?
+}
+```
+
 ## Effect Contracts
 
 Declare what side-effects your task produces:
@@ -170,7 +193,7 @@ brief skillgen .claude/skills/GitHub/
 brief skillgen .claude/skills/FileSystem/
 ```
 
-Or skip this for now — `brief check` will warn (W101) but still pass.
+Or skip this for now — `brief check --allow-missing-skills review-pr.brief` keeps going while you scaffold interfaces. Without that flag, missing interfaces surface as `E107`.
 
 ### Step 3 — Type-check
 
@@ -289,6 +312,7 @@ Static annotations (`@nonEmpty`, `@range`, `@enum`, `@matches`) are checked inst
 | Command | What it does |
 |---------|-------------|
 | `brief check <file>` | Type-check, fast, no network. Use in CI and on every save. |
+| `brief check <file> --report` | Same checks, but emit JSON to stdout. |
 | `brief verify <file>` | Run verifiers, write `.brief.lock`. Run when brief changes. |
 | `brief serve <file>` | Start MCP server. Requires valid lock. This is what AI connects to. |
 | `brief run <file>` | Execute the brief against real skill MCP servers directly. |
@@ -301,6 +325,8 @@ Static annotations (`@nonEmpty`, `@range`, `@enum`, `@matches`) are checked inst
 | `brief fmt <file>` | Auto-format to canonical style. |
 | `brief doc <file>` | Generate Markdown documentation. |
 | `brief ci` | Check all `[ci] examples` from `brief.toml`. |
+
+> `brief check <file> --report` — JSON output for CI pipelines and tooling integration
 
 ---
 
@@ -413,3 +439,11 @@ Copy `examples/skills/brief.toml` as a starting point for your project.
 | `E302` | `@enum` value not in test block | Add `perform` calls for each enum value in a `test` block |
 | `E303` | `.brief.lock` missing or stale | Run `brief verify` |
 | `E309` | Annotation has no verifier | Add `[verifiers."@annotation"]` to `brief.toml` |
+| `E423` | `allow {}` / `deny {}` references an unknown skill or function | Fix the pattern to match a declared skill interface |
+| `E424` | `allow {}` is empty | Add at least one allow pattern or remove the block |
+| `W408` | `deny {}` shadows an `allow {}` pattern | Remove the redundant rule or narrow the deny pattern |
+| `W409` | Sensitive `allow {}` arguments are unconstrained | Add argument constraints for repo/path/token-like fields |
+| `E501` | Goal mentions a capability not covered by any `uses[]` function | Add the right skill/function or tighten the goal text |
+| `E503` | Goal intent is covered only by denied functions | Fix `deny {}` or rewrite the goal to match allowed tools |
+| `W410` | `let x = perform ...` result is never used later in the step | Drop the binding or use the value in a later statement |
+| `W411` | `perform` returns `Result<T>` but no `?` propagation is used | Add `?` or handle the `Result` explicitly |

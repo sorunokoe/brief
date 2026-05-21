@@ -20,7 +20,7 @@ A `.brief` file describes:
 
 ## 2. File Format
 
-Brief source files use the `.brief` extension. Encoding is UTF-8. Line comments begin with `//`. There are no block comments in v0.1.
+Brief source files use the `.brief` extension. Encoding is UTF-8. Line comments begin with `//`. `.briefskill` function doc comments use `///`. There are no block comments in v0.1.
 
 ---
 
@@ -32,9 +32,11 @@ The following identifiers are reserved:
 
 ```
 task       step       import     skill      uses       perform
-let        sealed     type       struct     protocol   effect
-fn         async      await      match      return     test
-extras     provides   effects    pre        post
+let        sealed     opaque     type       struct     protocol
+effect     fn         async      await      match      return
+test       mock       run        assert     not
+extras     provides   effects    needs      forbids
+allow      deny       pre        post
 parallel   retry      fallback
 ```
 
@@ -630,6 +632,20 @@ interface DesignSystem {
 }
 ```
 
+### 11.2.1 Function doc comments
+
+`.briefskill` functions may carry `///` doc comments immediately above a declaration. Brief uses these descriptions for semantic goal-coverage analysis (`E501`, `E503`) during `brief check` and in real-time LSP diagnostics.
+
+```brief
+interface GitHub {
+    /// List issues in a repository filtered by state
+    fn list_issues(owner: @nonEmpty String, repo: @nonEmpty String, state: @enum("open","closed","all") String) -> IssueList
+
+    /// Close a specific issue by number
+    fn close_issue(owner: @nonEmpty String, repo: @nonEmpty String, number: Int) -> Unit
+}
+```
+
 ### 11.3 Staleness Detection
 
 The `.briefskill` header contains a SHA-256 checksum of the source `README.md`. When the checksum does not match the current `README.md`, `brief check` emits a `W102` warning:
@@ -642,45 +658,14 @@ warning[W102]: skill interface 'DesignSystem' is stale
 
 ---
 
-## 12. Error Codes
+## 12. Diagnostics Overview
 
-### Errors (fatal — task is invalid)
-
-| Code | Name | Meaning |
-|------|------|---------|
-| `E001` | `ParseError` | Syntax error — unexpected token or malformed declaration |
-| `E101` | `MissingGoal` | Task is missing the required `goal` field |
-| `E102` | `UndeclaredSkillInUses` | Skill name in `uses [...]` clause has no matching `import skill` |
-| `E103` | `PerformWithoutUses` | `perform X.fn()` — `X` is not declared in the task's `uses [...]` clause |
-| `E104` | `LinearBindingReused` | A `@once` binding is consumed more than once in the same step |
-| `E105` | `LinearBindingDropped` | A `@once` binding is declared but never consumed in its step |
-| `E106` | `UnknownEffectGroup` | `uses [...]` references an effect group alias that was never declared |
-| `E201` | `UnknownType` | A type name cannot be resolved to any declaration in scope |
-| `E202` | `WrongArgCount` | `perform` call passes wrong number of arguments to a typed effect function |
-| `E203` | `AttributeConstraint` | Struct field attribute constraint fails (e.g. `@url` on non-URL string) |
-| `E206` | `ScopedGenericConflict` | Generic type parameter shadows a builtin or declared type name |
-| `E208` | `UnknownExtrasField` | Typed `extras { field: Type }` references an unknown type |
-| `E209` | `EffectContractViolation` | Skill effect is not declared in the task `effects [...]` block |
-| `E210` | `UndeclaredStepInCombinator` | `parallel`, `retry`, or `fallback` references a step not declared in the task |
-| `E211` | `OpaqueTypeFieldAccess` | Field access on an opaque type — opaque types are fully abstract |
-| `E212` | `SkillAbiVersionMismatch` | Skill ABI version in `.briefskill` does not match the expected version |
-| `E213` | `SkillAbiUnknownType` | Skill fn signature references a type not declared as opaque, sealed, or primitive |
-
-### Warnings (non-fatal — task may still be handed to AI)
-
-| Code | Name | Meaning |
-|------|------|---------|
-| `E207` | `NonExhaustiveMatch` | `match` on a sealed type omits variants and has no wildcard arm |
-| `W101` | `MissingSkillInterface` | Imported skill has no `.briefskill` interface file; type checking is partial |
-| `W102` | `StaleSkillInterface` | Skill interface file checksum does not match current `README.md` |
-| `W103` | `DeprecatedStringExtras` | Legacy `extras = ["key": "value"]` syntax is deprecated in favor of typed `extras { ... }` |
-| `W104` | `BriefBuilderProvidesMissing` | `@BriefBuilder` task omits the recommended `provides { ... }` block |
-| `W105` | `OpaqueTypeUnused` | An `opaque type` is declared but never referenced in any sealed type variant, extras field, or step |
+Brief diagnostics are stable codes emitted by `brief check`, `brief verify`, live interface loading, and the LSP. See §18 for the complete reference grouped by surface area.
 
 ### Diagnostic format
 
 Every diagnostic includes:
-1. A code (`error[E103]` or `warning[W101]`)
+1. A code (`error[E103]` or `warning[W410]`)
 2. A human-readable description
 3. A source span (`→ file.brief:line:col`)
 4. A `fix:` suggestion with the exact command or code change to resolve it
@@ -690,9 +675,9 @@ error[E103]: effect 'GraphQL' is performed but not declared in `uses [...]`
   → examples/02-profile-screen.brief:14:19
   fix: add 'GraphQL' to the task's `uses` clause
 
-warning[W101]: skill 'DesignSystem' has no interface file
-  → examples/02-profile-screen.brief:1:1
-  fix: .claude/skills/DesignSystem/DesignSystem.briefskill not found — run: brief skillgen .claude/skills/DesignSystem/
+warning[W410]: perform result bound to 'report' is never used
+  → tasks/send-report.brief:8:9
+  fix: remove the binding or use the value in a later statement
 ```
 
 ---
@@ -824,6 +809,7 @@ typed_field    ::= Ident ':' type_ref
 | Command | Description |
 |---------|-------------|
 | `brief check <file>.brief` | Type-check only — fast, CI-friendly. Exit code 0 = valid. |
+| `brief check <file>.brief --report` | Emit a machine-readable JSON report to stdout for CI and tooling. |
 | `brief run <file>.brief` | Validate then execute the task. |
 | `brief build <file>.brief` | Compile to native binary via LLVM. |
 | `brief build <file>.brief --emit-ir` | Emit LLVM IR for inspection. |
@@ -924,3 +910,65 @@ brief self-hosting check              # validate all compiler pass Brief files
 brief self-hosting run <file>         # execute Brief-mediated pipeline
 brief self-hosting compare <file>     # diff Rust vs Brief-mediated outputs
 ```
+
+---
+
+## 18. Diagnostic Codes
+
+### 18.1 Static diagnostics (`brief check`, LSP)
+
+| Code | Severity | Description |
+|------|----------|-------------|
+| `E001` | error | Syntax error — unexpected token or malformed declaration |
+| `E101` | error | Task is missing the required `goal` field |
+| `E102` | error | Skill in `uses [...]` has no matching `import skill` |
+| `E103` | error | `perform X.fn()` uses a skill not declared in `uses [...]` |
+| `E104` | error | A `@once` binding is consumed more than once |
+| `E105` | error | A `@once` binding is declared but never consumed |
+| `E106` | error | `uses [...]` references an unknown effect-group alias |
+| `E107` | error | Missing `.briefskill` interface file |
+| `E201` | error | Type name cannot be resolved in scope |
+| `E202` | error | `perform` call passes the wrong number of arguments |
+| `E203` | error | Attribute constraint fails (for example `@url` on a non-URL string) |
+| `E206` | error | Generic type parameter shadows a builtin or declared type |
+| `E207` | warning | `match` on a sealed type is non-exhaustive |
+| `E208` | error | Typed `extras { field: Type }` references an unknown type |
+| `E209` | error | Task performs a skill whose effects are not declared in `effects [...]` |
+| `E210` | error | `parallel`, `retry`, or `fallback` references an undeclared step |
+| `E211` | error | Field access on an opaque type |
+| `E301` | error | `@range` boundary literal is missing from a `test {}` block |
+| `E302` | error | `@enum` value literal is missing from a `test {}` block |
+| `E303` | error | `.brief.lock` is missing, stale, or source-changed |
+| `E309` | error | Dynamic annotation has no configured verifier |
+| `E420` | error | `forbids { skill "X" }` — forbidden skill used |
+| `E421` | error | `forbids { func "Skill.fn" }` — forbidden function called |
+| `E423` | error | `allow {}` / `deny {}` pattern references an unknown skill or function |
+| `E424` | error | `allow {}` has zero patterns and therefore blocks all calls |
+| `E501` | error | Goal text mentions a capability not covered by any `uses[]` function |
+| `E503` | error | Goal intent is covered only by functions blocked by `deny {}` |
+| `W102` | warning | `.briefskill` checksum does not match the current source README |
+| `W103` | warning | Legacy `extras = ["k": "v"]` syntax is deprecated |
+| `W104` | warning | `@BriefBuilder` task omits `provides { ... }` |
+| `W105` | warning | `opaque type` declaration is never referenced |
+| `W106` | warning | Skill declared in `uses [...]` is never performed |
+| `W408` | warning | `deny {}` pattern subsumes an `allow {}` pattern |
+| `W409` | warning | Sensitive `allow {}` arguments are left unconstrained |
+| `W410` | warning | `let x = perform ...` result is never used later in the step |
+| `W411` | warning | `perform X` returns `Result<T>` but no `?` propagation is used |
+
+### 18.2 Verify diagnostics (`brief verify`)
+
+| Code | Severity | Description |
+|------|----------|-------------|
+| `E401` | error | Skill function not found in the live MCP server during capability verification |
+| `E402` | error | Skill MCP server is unreachable during capability verification |
+| `E411` | error | `needs {}` prerequisite is not met at verify time |
+
+### 18.3 Runtime and interface-loading diagnostics
+
+| Code | Severity | Description |
+|------|----------|-------------|
+| `E212` | error | Skill ABI version in `.briefskill` is missing or incompatible |
+| `E213` | error | Skill function signature references a type the checker cannot resolve |
+
+All static diagnostics above are also published by the LSP in real time, including `E501`, `E503`, `W410`, and `W411`.

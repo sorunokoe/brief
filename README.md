@@ -90,9 +90,9 @@ Three layers. None are skippable.
   │  brief check  ·  instant  ·  no network                     │
   │                                                             │
   │  · type-checks the .brief file                              │
-  │  · validates @range, @enum, @nonEmpty, @matches literals    │
-  │  · E420  if a forbidden skill is used                       │
-  │  · E421  if a forbidden function is called                  │
+  │  · validates literals, goal coverage, and step data-flow    │
+  │  · E420/E421/E501/E503 catch scope and policy contradictions│
+  │  · W410/W411 flag unused or unpropagated perform results    │
   ├─────────────────────────────────────────────────────────────┤
   │  brief verify  ·  once  ·  ~5–30s                           │
   │                                                             │
@@ -244,6 +244,7 @@ The `@shell-command` annotation is verified by `brief verify` — it confirms `c
 | Command | Description |
 |---------|-------------|
 | `brief check <file>` | Type-check — instant, no network, CI-safe |
+| `brief check <file> --report` | Emit machine-readable JSON to stdout for CI/tooling |
 | `brief verify <file>` | Seal the contract → writes `.brief.lock` |
 | `brief serve <file>` | Start MCP server (requires valid lock) |
 | `brief serve <file> --draft` | Start MCP server — scope enforced, no lock required |
@@ -275,24 +276,33 @@ The `@shell-command` annotation is verified by `brief verify` — it confirms `c
 | `@once let x = perform ...` | Linear type — enforced at protocol level by `brief serve` |
 | `test "name" { }` | Coverage block — `brief check` validates every literal |
 | `allow {}` · `deny {}` | Argument-level policy enforcement |
+| `///` doc comments in `.briefskill` | Function descriptions for E501/E503 goal coverage |
 | `type FX = [Auth, Session]` | Effect group aliases |
 
 ---
 
 ## Error Codes
 
-```
-  E107   check    missing .briefskill interface file
-  E301   check    @range boundary literal missing in test block
-  E302   check    @enum value literal missing in test block
-  E303   check    .brief.lock missing, stale, or source-changed
-  E309   check    dynamic annotation has no configured verifier
-  E401   verify   skill function not found in live MCP server
-  E402   verify   skill MCP server unreachable
-  E411   verify   needs {} prerequisite not met
-  E420   check    forbids { skill "X" } — forbidden skill used
-  E421   check    forbids { func "Skill.fn" } — forbidden function called
-```
+| Code | Phase | Meaning |
+|------|-------|---------|
+| `E107` | check | Missing `.briefskill` interface file |
+| `E301` | check | `@range` boundary literal missing in `test {}` |
+| `E302` | check | `@enum` value literal missing in `test {}` |
+| `E303` | check | `.brief.lock` missing, stale, or source-changed |
+| `E309` | check | Dynamic annotation has no configured verifier |
+| `E401` | verify | Skill function not found in live MCP server |
+| `E402` | verify | Skill MCP server unreachable |
+| `E411` | verify | `needs {}` prerequisite not met |
+| `E420` | check | `forbids { skill "X" }` — forbidden skill used |
+| `E421` | check | `forbids { func "Skill.fn" }` — forbidden function called |
+| `E423` | check | `allow{}` / `deny{}` pattern references unknown skill or function |
+| `E424` | check | `allow {}` with zero patterns blocks all calls |
+| `E501` | check | Goal mentions capability not covered by any `uses[]` function |
+| `E503` | check | Goal intent contradicts `deny{}` policy |
+| `W408` | check | `deny{}` pattern subsumes an `allow{}` pattern |
+| `W409` | check | `allow{}` function with sensitive arg names left unconstrained |
+| `W410` | check | `let x = perform ...` result is never used |
+| `W411` | check | `perform X` returns `Result<T>` but no `?` propagation is used |
 
 ---
 
