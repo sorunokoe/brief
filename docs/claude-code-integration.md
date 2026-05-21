@@ -12,11 +12,11 @@ Claude / Copilot                brief serve             Your skills
      │◀─── capabilities ────────────│                       │
      │                              │                       │
      │──── tools/list ─────────────▶│                       │
-     │◀─── [GitHub.getFile,         │                       │
-     │      GitHub.createPR, ...] ──│                       │
+     │◀─── [GitHub.get_file_contents│                       │
+     │      GitHub.create_pull_request, ...] ─│             │
      │                              │                       │
      │──── tools/call ─────────────▶│                       │
-     │     GitHub.getFile(...)      │──── tools/call ──────▶│
+     │     GitHub.get_file_contents(...)──── tools/call ───▶│
      │                              │◀─── result ───────────│
      │◀─── result ──────────────────│                       │
 ```
@@ -35,11 +35,11 @@ task ReviewPR : TaskBrief uses [GitHub, FileSystem] {
     goal = "Review a pull request and write a summary to a file"
 
     step FetchPR {
-        let pr = perform GitHub.getFile("owner/repo", "CHANGELOG.md", "main")?;
+        let pr = perform GitHub.get_file_contents("owner", "repo", "CHANGELOG.md", "main")?;
     }
 
     step WriteReport {
-        let _ = perform FileSystem.writeFile("/workspace/review.md", "summary")?;
+        let _ = perform FileSystem.write_file("/workspace/review.md", "summary")?;
     }
 }
 ```
@@ -54,10 +54,7 @@ name = "my-project"
 mcp_command = ["npx", "-y", "@modelcontextprotocol/server-github"]
 
 [skills.FileSystem]
-mcp_command = ["npx", "-y", "@brief/filesystem-skill"]
-
-[verifiers."@github-repo"]
-skill = "builtin:github-repo"  # ships with Brief — uses GITHUB_TOKEN if set
+mcp_command = ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"]
 
 [verifiers."@local-path"]
 skill = "builtin:local-path"   # ships with Brief — checks path exists
@@ -93,9 +90,9 @@ Claude Code will now connect to `brief serve` and only see the tools defined in 
 ### 5. Use in Claude Code
 
 Once connected, Claude will have access to exactly these tools:
-- `getFile(repo, path, branch)`
-- `createPR(repo, title, body, head, base)`
-- `listIssues(repo, state)`
+- `get_file_contents(owner, repo, path, ref)`
+- `create_pull_request(owner, repo, title, body, head, base)`
+- `list_issues(owner, repo, state)`
 - etc.
 
 It cannot call any other tools — the contract is enforced at the protocol level.
@@ -181,7 +178,7 @@ This means the AI always operates in a verified context — not a hopeful templa
 
 **`brief check` reports E309:**
 ```
-error[E309]: annotation `@github-repo` on GitHub::getFile has no configured verifier
+error[E309]: annotation `@nonEmpty` on GitHub::get_file_contents has no configured verifier
 ```
 → Add `[verifiers."@github-repo"]` to your `brief.toml`.
 

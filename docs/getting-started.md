@@ -32,17 +32,18 @@ task ReviewPR : TaskBrief uses [GitHub, FileSystem] {
     goal = "Fetch a pull request and write a review summary to a file"
 
     step FetchPR {
-        let pr = perform GitHub.getFile("owner/repo", "CHANGELOG.md", "main")?;
+        let pr = perform GitHub.get_file_contents("owner", "repo", "CHANGELOG.md", "main")?;
     }
 
     step WriteReport {
-        let _ = perform FileSystem.writeFile("/workspace/review.md", "summary")?;
+        let _ = perform FileSystem.write_file("/workspace/review.md", "summary")?;
     }
 }
 
 test "boundary coverage" {
-    let _ = perform GitHub.listIssues("owner/repo", "open")?;
-    let _ = perform GitHub.listIssues("owner/repo", "closed")?;
+    let _ = perform GitHub.list_issues("owner", "repo", "open")?;
+    let _ = perform GitHub.list_issues("owner", "repo", "closed")?;
+    let _ = perform GitHub.list_issues("owner", "repo", "all")?;
 }
 ```
 
@@ -189,13 +190,13 @@ Create `brief.toml` in your project root:
 mcp_command = ["npx", "-y", "@modelcontextprotocol/server-github"]
 
 [skills.FileSystem]
-mcp_command = ["npx", "-y", "@brief/filesystem-skill"]
+mcp_command = ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"]
 
 [verifiers."@url"]
 skill = "builtin:url"          # ships with Brief
 
-[verifiers."@github-repo"]
-skill = "builtin:github-repo"  # ships with Brief — uses GITHUB_TOKEN if set
+[verifiers."@local-path"]
+skill = "builtin:local-path"   # ships with Brief — checks path exists
 ```
 
 ### Step 5 — Verify (seal the contract)
@@ -227,7 +228,7 @@ This starts an MCP server on stdio. Point Claude Code or GitHub Copilot at it:
 }
 ```
 
-The AI now only sees `GitHub.getFile`, `GitHub.listIssues`, `GitHub.createPR`, `FileSystem.writeFile`, etc. — exactly the tools declared in `uses []`. Nothing else.
+The AI now only sees `GitHub.get_file_contents`, `GitHub.list_issues`, `GitHub.create_pull_request`, `FileSystem.write_file`, etc. — exactly the tools declared in `uses []`. Nothing else.
 
 ---
 
@@ -251,8 +252,8 @@ A `.briefskill` file declares the typed API of a skill:
 
 ```
 interface GitHub {
-    fn getFile(repo: @github-repo String, path: String, branch: @nonEmpty String) -> FileContent
-    fn listIssues(repo: @github-repo String, state: @enum("open","closed","all") String) -> IssueList
+    fn get_file_contents(owner: @nonEmpty String, repo: @nonEmpty String, path: String, ref: @nonEmpty String) -> FileContent
+    fn list_issues(owner: @nonEmpty String, repo: @nonEmpty String, state: @enum("open","closed","all") String) -> IssueList
 }
 ```
 
@@ -324,11 +325,11 @@ Write `test { }` blocks directly in your `.brief` files:
 ```brief
 test "lists open and closed issues" {
     mock GitHub {
-        fn listIssues(repo, state) -> Ok([Issue { id: "1", title: "Bug" }])
+        fn list_issues(owner, repo, state) -> Ok([Issue { id: "1", title: "Bug" }])
     }
 
     run ReviewPR.FetchPR
-    assert performed GitHub.getFile
+    assert performed GitHub.get_file_contents
     assert result is Ok
 }
 ```

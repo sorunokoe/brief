@@ -13,8 +13,9 @@ brief serve  YourTask.brief     # start MCP server for AI (requires valid lock)
 **`brief.toml` entry:**
 ```toml
 [skills.Shell]
-# 🔧 Replace with your actual shell MCP server
-mcp_command = ["npx", "-y", "@brief/shell-skill"]
+# 🔧 No official MCP server exists for shell execution — bring your own.
+# Examples: a local Node.js script, a Python subprocess server, or any MCP-compatible server.
+# mcp_command = ["node", "./shell-mcp-server.js"]
 
 [verifiers."@shell-command"]
 # ✅ Ships with Brief — checks that a command exists in PATH

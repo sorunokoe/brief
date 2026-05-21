@@ -34,8 +34,8 @@ mcp_command = ["npx", "-y", "@modelcontextprotocol/server-brave-search"]
 mcp_command = ["npx", "-y", "@modelcontextprotocol/server-memory"]
 
 [skills.Shell]
-# 🔧 Placeholder — replace with your shell MCP server
-mcp_command = ["npx", "-y", "@brief/shell-skill"]
+# 🔧 No official MCP server exists for shell execution — bring your own.
+# e.g. mcp_command = ["node", "./shell-mcp-server.js"]
 
 # ── Verifiers ─────────────────────────────────────────────────────────────────
 # Configure a verifier for each @annotation used in .briefskill files.
