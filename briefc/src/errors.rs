@@ -59,6 +59,10 @@ pub enum ErrorCode {
     GoalIntentNotCovered,
     /// goal mentions a capability that is explicitly denied by deny{} — spec contradiction (E503)
     GoalIntentDenied,
+    /// perform result stored in binding but never used in the step (W410)
+    UnusedPerformResult,
+    /// perform returns Result<T> but no error propagation or match — task may halt silently (W411)
+    UnhandledResultReturn,
     // ── Warnings ──────────────────────────────────────────────────────────
     /// Missing `.briefskill` file — suppress with `--allow-missing-skills` (E107)
     MissingSkillInterface,
@@ -122,6 +126,8 @@ impl fmt::Display for ErrorCode {
             ErrorCode::EmptyAllowBlock => "E424",
             ErrorCode::GoalIntentNotCovered => "E501",
             ErrorCode::GoalIntentDenied => "E503",
+            ErrorCode::UnusedPerformResult => "W410",
+            ErrorCode::UnhandledResultReturn => "W411",
             ErrorCode::MissingSkillInterface => "E107",
             ErrorCode::StaleSkillInterface => "W102",
             ErrorCode::DeprecatedStringExtras => "W103",

@@ -896,7 +896,7 @@ fn check_goal_coverage(
     }
 }
 
-
+// ─────────────────────────────────────────────────────────────────────────────
 fn type_ref_str(ty: &TypeRef) -> String {
     let mut s = ty.name.clone();
     if !ty.args.is_empty() {
@@ -1187,6 +1187,141 @@ fn check_step(
     // Reset use-counts on remaining task_linear entries for the next step.
     for (_, (_, uses)) in task_linear.iter_mut() {
         *uses = 0;
+    }
+
+    // W410: `let x = perform ...` where x is never used in the step.
+    // W411: `perform X` returns Result<T> without `?` propagation.
+    check_step_dataflow(step, env, skill_ifaces, &base_locals, diags);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// W410 / W411 — Step data-flow analysis
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// W410: `let x = perform ...` but `x` is never referenced in subsequent statements.
+/// W411: `perform X` returns `Result<T>` but no `?` propagation is used.
+///
+/// Both checks operate within a single step body.
+fn check_step_dataflow(
+    step: &Step,
+    env: &TypeEnv<'_>,
+    skill_ifaces: &HashMap<String, SkillInterface>,
+    base_locals: &LocalTypes,
+    diags: &mut Vec<BriefError>,
+) {
+    let mut locals = base_locals.clone();
+
+    // Collect perform bindings: (name, span, index_in_body) for non-`_` `let x = perform ...`.
+    let mut perform_bindings: Vec<(String, Span, usize)> = Vec::new();
+
+    for (idx, stmt) in step.body.iter().enumerate() {
+        match stmt {
+            Stmt::Let { name, value, span, .. } => {
+                if let Expr::Perform { skill, func, propagate, span: perform_span, .. } = value {
+                    // Look up return type from inline effects first, then .briefskill interfaces.
+                    let ret_is_result = env
+                        .effect_fn(skill, func)
+                        .map(|sig| sig.ret.name == "Result")
+                        .or_else(|| {
+                            skill_ifaces
+                                .get(skill.as_str())
+                                .and_then(|iface| iface.funcs.iter().find(|f| f.name == *func))
+                                .map(|f| f.return_type.starts_with("Result"))
+                        })
+                        .unwrap_or(false);
+
+                    // W411: `perform X` returns Result<T> without `?`.
+                    if !propagate && ret_is_result {
+                        diags.push(BriefError {
+                            code: ErrorCode::UnhandledResultReturn,
+                            message: format!(
+                                "{}.{} returns Result<T> but no error propagation (`?`) — unhandled error will halt the task silently",
+                                skill, func
+                            ),
+                            span: *perform_span,
+                            hint: Some(format!(
+                                "add `?` to propagate errors: `let {name} = perform {skill}.{func}(...)?`, \
+                                 or match the result: `match {name} {{ Ok(v) => ... Err(e) => ... }}`"
+                            )),
+                        });
+                    }
+
+                    // Track for W410: binding used later?
+                    if name != "_" {
+                        perform_bindings.push((name.clone(), *span, idx));
+                    }
+
+                    if let Some(ty) = env.effect_fn(skill, func).map(|s| s.ret.clone()) {
+                        locals.insert(name.clone(), ty);
+                    }
+                }
+            }
+            Stmt::Expr { value: Expr::Perform { skill, func, propagate, span, .. }, .. } => {
+                // W411: perform result discarded (not even bound) and returns Result<T>.
+                if !propagate {
+                    let ret_is_result = env
+                        .effect_fn(skill, func)
+                        .map(|sig| sig.ret.name == "Result")
+                        .or_else(|| {
+                            skill_ifaces
+                                .get(skill.as_str())
+                                .and_then(|iface| iface.funcs.iter().find(|f| f.name == *func))
+                                .map(|f| f.return_type.starts_with("Result"))
+                        })
+                        .unwrap_or(false);
+                    if ret_is_result {
+                        diags.push(BriefError {
+                            code: ErrorCode::UnhandledResultReturn,
+                            message: format!(
+                                "{}.{} returns Result<T> — result discarded without error handling",
+                                skill, func
+                            ),
+                            span: *span,
+                            hint: Some(format!(
+                                "bind and match the result: `let result = perform {skill}.{func}(...); \
+                                 match result {{ Ok(v) => ... Err(e) => ... }}`"
+                            )),
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // W410: for each `let x = perform ...`, check if x is referenced in any SUBSEQUENT statement.
+    for (name, span, bind_idx) in &perform_bindings {
+        let referenced = step.body[bind_idx + 1..].iter().any(|stmt| {
+            expr_references_ident(stmt_value(stmt), name)
+        });
+        if !referenced {
+            diags.push(BriefError {
+                code: ErrorCode::UnusedPerformResult,
+                message: format!(
+                    "result of perform stored in '{name}' but never used in step '{}'",
+                    step.name
+                ),
+                span: *span,
+                hint: Some(format!(
+                    "use '{name}' in a subsequent expression, or bind to `_` to discard: `let _ = perform ...`"
+                )),
+            });
+        }
+    }
+}
+
+/// True if `expr` contains a reference to `ident` anywhere in its tree.
+fn expr_references_ident(expr: &Expr, ident: &str) -> bool {
+    match expr {
+        Expr::Ident { name, .. } => name == ident,
+        Expr::Perform { args, .. } => args.iter().any(|a| expr_references_ident(a, ident)),
+        Expr::Await { expr: inner, .. } => expr_references_ident(inner, ident),
+        Expr::Call { args, .. } => args.iter().any(|a| expr_references_ident(a, ident)),
+        Expr::Match { scrutinee, arms } => {
+            expr_references_ident(scrutinee, ident)
+                || arms.iter().any(|arm| expr_references_ident(&arm.body, ident))
+        }
+        Expr::Str { .. } | Expr::Int { .. } => false,
     }
 }
 
@@ -4066,5 +4201,193 @@ task Review : TaskBrief uses [GitHub] {
             e501.is_empty(),
             "E501 must not fire when allow_missing_skills=true (no interfaces loaded): {e501:?}"
         );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Step Data Flow Tests (W410 / W411)
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod step_dataflow_tests {
+    use super::*;
+    use crate::errors::ErrorCode;
+
+    fn check_with_iface(source: &str, skills: &[(&str, &str)]) -> Vec<BriefError> {
+        use std::fs;
+        use crate::lexer::lex;
+        use crate::parser::parse;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let skills_root = dir.path().join(".claude").join("skills");
+        for (name, content) in skills {
+            let skill_dir = skills_root.join(name);
+            fs::create_dir_all(&skill_dir).unwrap();
+            fs::write(skill_dir.join(format!("{name}.briefskill")), content).unwrap();
+        }
+        let (tokens, _) = lex(source);
+        let (program, _) = parse(&tokens, source);
+        let ctx = CheckContext {
+            file_dir: dir.path(),
+            cwd: dir.path(),
+            manifest: None,
+            brief_path: None,
+            allow_missing_skills: false,
+        };
+        check(&program, &ctx)
+    }
+
+    // ── W410: unused perform binding ──────────────────────────────────────────
+
+    #[test]
+    fn w410_stored_binding_never_used() {
+        let skill_src = r#"interface GitHub {
+    fn get_pull_request(owner: String, repo: String, number: Int) -> String
+}"#;
+        // `pr` is bound but never referenced in any subsequent statement.
+        let src = r#"
+import skill "GitHub"
+
+task Review : TaskBrief uses [GitHub] {
+    goal = "review pr"
+    step Run {
+        let pr = perform GitHub.get_pull_request("a", "b", 1)
+    }
+}
+"#;
+        let diags = check_with_iface(src, &[("GitHub", skill_src)]);
+        let w410: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code == ErrorCode::UnusedPerformResult)
+            .collect();
+        assert!(!w410.is_empty(), "expected W410 for unused binding: {diags:?}");
+        assert!(
+            w410.iter().any(|d| d.message.contains("pr")),
+            "W410 should name the binding: {w410:?}"
+        );
+    }
+
+    #[test]
+    fn w410_underscore_binding_no_warning() {
+        let skill_src = r#"interface GitHub {
+    fn get_pull_request(owner: String, repo: String, number: Int) -> String
+}"#;
+        // `_` is an explicit discard — no W410.
+        let src = r#"
+import skill "GitHub"
+
+task Review : TaskBrief uses [GitHub] {
+    goal = "review pr"
+    step Run {
+        let _ = perform GitHub.get_pull_request("a", "b", 1)
+    }
+}
+"#;
+        let diags = check_with_iface(src, &[("GitHub", skill_src)]);
+        let w410: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code == ErrorCode::UnusedPerformResult)
+            .collect();
+        assert!(w410.is_empty(), "no W410 when binding is `_`: {w410:?}");
+    }
+
+    #[test]
+    fn w410_no_warning_when_binding_is_used() {
+        let skill_src = r#"interface GitHub {
+    fn get_pull_request(owner: String, repo: String, number: Int) -> String
+    fn create_review_comment(owner: String, repo: String, number: Int, body: String) -> String
+}"#;
+        // `pr` is used as an argument in the subsequent perform.
+        let src = r#"
+import skill "GitHub"
+
+task Review : TaskBrief uses [GitHub] {
+    goal = "review pr"
+    step Run {
+        let pr = perform GitHub.get_pull_request("a", "b", 1)
+        let _ = perform GitHub.create_review_comment("a", "b", 1, pr)
+    }
+}
+"#;
+        let diags = check_with_iface(src, &[("GitHub", skill_src)]);
+        let w410: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code == ErrorCode::UnusedPerformResult)
+            .collect();
+        assert!(w410.is_empty(), "no W410 when binding is used in subsequent statement: {w410:?}");
+    }
+
+    // ── W411: unhandled Result return ─────────────────────────────────────────
+
+    #[test]
+    fn w411_perform_result_without_propagation() {
+        let skill_src = r#"interface GitHub {
+    fn merge_pull_request(owner: String, repo: String, number: Int) -> Result<String>
+}"#;
+        let src = r#"
+import skill "GitHub"
+
+task Merge : TaskBrief uses [GitHub] {
+    goal = "merge pr"
+    step Run {
+        let _ = perform GitHub.merge_pull_request("a", "b", 1)
+    }
+}
+"#;
+        let diags = check_with_iface(src, &[("GitHub", skill_src)]);
+        let w411: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code == ErrorCode::UnhandledResultReturn)
+            .collect();
+        assert!(!w411.is_empty(), "expected W411 for Result<T> without ?: {diags:?}");
+        assert!(
+            w411.iter().any(|d| d.message.contains("merge_pull_request")),
+            "W411 should name the function: {w411:?}"
+        );
+    }
+
+    #[test]
+    fn w411_no_warning_with_propagation() {
+        let skill_src = r#"interface GitHub {
+    fn merge_pull_request(owner: String, repo: String, number: Int) -> Result<String>
+}"#;
+        let src = r#"
+import skill "GitHub"
+
+task Merge : TaskBrief uses [GitHub] {
+    goal = "merge pr"
+    step Run {
+        let result = perform GitHub.merge_pull_request("a", "b", 1)?
+    }
+}
+"#;
+        let diags = check_with_iface(src, &[("GitHub", skill_src)]);
+        let w411: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code == ErrorCode::UnhandledResultReturn)
+            .collect();
+        assert!(w411.is_empty(), "no W411 when ? propagation is used: {w411:?}");
+    }
+
+    #[test]
+    fn w411_no_warning_for_non_result_return() {
+        let skill_src = r#"interface GitHub {
+    fn get_pull_request(owner: String, repo: String, number: Int) -> String
+}"#;
+        let src = r#"
+import skill "GitHub"
+
+task Review : TaskBrief uses [GitHub] {
+    goal = "review pr"
+    step Run {
+        let _ = perform GitHub.get_pull_request("a", "b", 1)
+    }
+}
+"#;
+        let diags = check_with_iface(src, &[("GitHub", skill_src)]);
+        let w411: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code == ErrorCode::UnhandledResultReturn)
+            .collect();
+        assert!(w411.is_empty(), "no W411 for non-Result return type: {w411:?}");
     }
 }
