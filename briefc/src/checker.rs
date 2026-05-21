@@ -385,6 +385,9 @@ fn check_task(
     // E420/E421: `forbids {}` block enforcement.
     check_forbids(task, &expanded_uses, diags);
 
+    // E423/E424/W408/W409: `allow {}/deny {}` block validation.
+    check_allow_deny(task, skill_ifaces, diags);
+
     // W106: skill in `uses []` but never `perform`-ed in any step.
     warn_unused_skills_in_uses(task, &expanded_uses, diags);
 }
@@ -579,6 +582,172 @@ fn check_forbids(
 
 fn collect_func_performs_in_task(task: &Task) -> Vec<(String, Span)> {
     collect_performed_funcs(task)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// E423 / E424 / W408 / W409 — allow{}/deny{} block validation
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Sensitive argument names — an `allow {}` pattern that leaves these unconstrained
+/// may inadvertently grant broader access than intended.
+const SENSITIVE_ARG_NAMES: &[&str] = &[
+    "path", "file", "filename", "ref", "branch", "sha",
+    "content", "body", "command", "query", "url", "key",
+];
+
+fn check_allow_deny(
+    task: &Task,
+    skill_ifaces: &HashMap<String, SkillInterface>,
+    diags: &mut Vec<BriefError>,
+) {
+    // E424: empty allow {} blocks all tool calls.
+    if task.allow.is_empty() && !task.deny.is_empty() {
+        // deny without allow is fine (blacklist mode)
+    } else if !task.allow.is_empty() {
+        // allow is present — validate all patterns
+    }
+
+    // E424: `allow {}` present but empty
+    // (The parser sets allow to empty vec by default, so we check via the source.
+    //  We can detect this by checking if user explicitly wrote `allow {}` with no items.
+    //  Since we can't distinguish "not present" from "present but empty" in the AST,
+    //  we emit E424 only when allow is present in the source = has a span inside the task.)
+    // Note: We skip E424 here because the parser produces an empty vec for both
+    // "not present" and "present but empty". This is a known limitation for Phase 2.
+    // The checker validates patterns within allow/deny below.
+
+    let all_patterns = task.allow.iter().chain(task.deny.iter());
+
+    for pattern in all_patterns.clone() {
+        // E423: skill in pattern must be in uses[]
+        if !task.uses.contains(&pattern.skill) {
+            diags.push(BriefError {
+                code: ErrorCode::AllowDenyPatternInvalid,
+                message: format!(
+                    "pattern references skill '{}' which is not declared in `uses []`",
+                    pattern.skill
+                ),
+                span: pattern.span,
+                hint: Some(format!("add '{}' to `uses [...]`", pattern.skill)),
+            });
+            continue;
+        }
+
+        // E423: function in pattern must exist in the skill's interface
+        if let Some(func_name) = &pattern.func {
+            if let Some(iface) = skill_ifaces.get(&pattern.skill) {
+                if !iface.funcs.iter().any(|f| &f.name == func_name) {
+                    diags.push(BriefError {
+                        code: ErrorCode::AllowDenyPatternInvalid,
+                        message: format!(
+                            "pattern references '{}.{}' but '{}' is not declared in the skill interface",
+                            pattern.skill, func_name, func_name
+                        ),
+                        span: pattern.span,
+                        hint: Some(format!(
+                            "check the .briefskill file for '{}' — available functions: {}",
+                            pattern.skill,
+                            iface.funcs.iter().map(|f| f.name.as_str()).collect::<Vec<_>>().join(", ")
+                        )),
+                    });
+                }
+            }
+            // If no interface file loaded, skip the function check (missing interface
+            // is reported separately via E107).
+        }
+    }
+
+    // W409: allow pattern with sensitive unconstrained args
+    for pattern in &task.allow {
+        let Some(func_name) = &pattern.func else { continue };
+        let Some(iface) = skill_ifaces.get(&pattern.skill) else { continue };
+        let Some(fn_sig) = iface.funcs.iter().find(|f| &f.name == func_name) else { continue };
+
+        let constrained_args: std::collections::HashSet<&str> =
+            pattern.args.iter().map(|(k, _)| k.as_str()).collect();
+
+        for param in &fn_sig.params {
+            if SENSITIVE_ARG_NAMES.contains(&param.name.as_str())
+                && !constrained_args.contains(param.name.as_str())
+            {
+                diags.push(BriefError {
+                    code: ErrorCode::AllowDenyUnconstrained,
+                    message: format!(
+                        "allow pattern for '{}.{}' leaves sensitive argument '{}' unconstrained",
+                        pattern.skill, func_name, param.name
+                    ),
+                    span: pattern.span,
+                    hint: Some(format!(
+                        "add a constraint like `{}=\"/allowed/path/**\"` or `{}=*` to acknowledge any value is permitted",
+                        param.name, param.name,
+                    )),
+                });
+            }
+        }
+    }
+
+    // W408: a deny pattern that subsumes (shadows) an allow pattern
+    for deny_pat in &task.deny {
+        for allow_pat in &task.allow {
+            if deny_subsumes_allow(deny_pat, allow_pat) {
+                diags.push(BriefError {
+                    code: ErrorCode::AllowDenyShadowed,
+                    message: format!(
+                        "deny pattern '{}.{}' subsumes allow pattern '{}.{}' — the allow is unreachable",
+                        deny_pat.skill,
+                        deny_pat.func.as_deref().unwrap_or("*"),
+                        allow_pat.skill,
+                        allow_pat.func.as_deref().unwrap_or("*"),
+                    ),
+                    span: allow_pat.span,
+                    hint: Some("remove the shadowed allow pattern, or narrow the deny pattern".to_string()),
+                });
+            }
+        }
+    }
+}
+
+/// Returns true if `deny` fully subsumes `allow` (i.e., every call matching `allow` also matches `deny`).
+fn deny_subsumes_allow(deny: &crate::ast::CallPattern, allow: &crate::ast::CallPattern) -> bool {
+    use crate::ast::ArgPattern;
+
+    // Different skill — cannot subsume
+    if deny.skill != allow.skill { return false; }
+
+    // deny func wildcard (None) subsumes any allow func
+    match (&deny.func, &allow.func) {
+        (None, _) => {}                   // deny GitHub.* subsumes any GitHub function
+        (Some(d), Some(a)) if d == a => {}  // same function name
+        _ => return false,                // deny targets different function
+    }
+
+    // If deny has no arg constraints → subsumes any call to this function
+    if deny.args.is_empty() { return true; }
+
+    // If allow has arg constraints that deny doesn't cover → deny doesn't subsume
+    for (deny_key, deny_val) in &deny.args {
+        let allow_val = allow.args.iter().find(|(k, _)| k == deny_key).map(|(_, v)| v);
+        match allow_val {
+            None => return false, // allow doesn't constrain this arg; deny does → uncertain
+            Some(av) => {
+                // Deny subsumes allow for this arg if deny's pattern is at least as broad
+                match (deny_val, av) {
+                    (ArgPattern::Any, _) => {}  // deny=* subsumes any allow value
+                    (ArgPattern::Exact(d), ArgPattern::Exact(a)) if d == a => {} // exact same value
+                    (ArgPattern::Glob(dg), ArgPattern::Exact(serde_json::Value::String(as_))) => {
+                        // Deny glob pattern subsumes allow exact string
+                        if let Ok(p) = glob::Pattern::new(dg) {
+                            if !p.matches(as_) { return false; }
+                        } else {
+                            return false;
+                        }
+                    }
+                    _ => return false, // deny is more restrictive than allow → doesn't subsume
+                }
+            }
+        }
+    }
+    true
 }
 
 fn type_ref_str(ty: &TypeRef) -> String {
@@ -3227,3 +3396,309 @@ task EmptyTask : TaskBrief uses [GitHub] {
             .collect();
         assert!(w106.is_empty(), "no W106 for a stub task with no steps: {w106:?}");
     }
+
+// ── E423 / W408 / W409 allow{}/deny{} checker tests ─────────────────────────
+
+#[cfg(test)]
+mod allow_deny_tests {
+    use super::*;
+    use crate::lexer::lex;
+    use crate::parser::parse;
+
+    fn check_no_iface(source: &str) -> Vec<BriefError> {
+        let (tokens, _) = lex(source);
+        let (program, _) = parse(&tokens, source);
+        let ctx = CheckContext {
+            file_dir: std::path::Path::new("."),
+            cwd: std::path::Path::new("."),
+            manifest: None,
+            brief_path: None,
+            allow_missing_skills: true,
+        };
+        check(&program, &ctx)
+    }
+
+    fn check_with_iface(source: &str, skills: &[(&str, &str)]) -> Vec<BriefError> {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let skills_root = dir.path().join(".claude").join("skills");
+        for (name, content) in skills {
+            let skill_dir = skills_root.join(name);
+            fs::create_dir_all(&skill_dir).unwrap();
+            fs::write(skill_dir.join(format!("{name}.briefskill")), content).unwrap();
+        }
+        let (tokens, _) = lex(source);
+        let (program, _) = parse(&tokens, source);
+        let ctx = CheckContext {
+            file_dir: dir.path(),
+            cwd: dir.path(),
+            manifest: None,
+            brief_path: None,
+            allow_missing_skills: false,
+        };
+        check(&program, &ctx)
+    }
+
+    // ── E423: skill in allow pattern not declared in uses[] ──────────────────
+
+    #[test]
+    fn e423_allow_pattern_skill_not_in_uses() {
+        let src = r#"
+import skill "GitHub"
+import skill "FileSystem"
+
+task Review : TaskBrief uses [GitHub] {
+    goal = "review pr"
+    allow {
+        FileSystem.read_file
+    }
+}
+"#;
+        let diags = check_no_iface(src);
+        let e423: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code == ErrorCode::AllowDenyPatternInvalid)
+            .collect();
+        assert!(
+            !e423.is_empty(),
+            "expected E423 when allow pattern references skill not in uses[]: {diags:?}"
+        );
+        assert!(
+            e423[0].message.contains("FileSystem"),
+            "E423 message should name the invalid skill"
+        );
+    }
+
+    #[test]
+    fn e423_deny_pattern_skill_not_in_uses() {
+        let src = r#"
+import skill "GitHub"
+
+task Review : TaskBrief uses [GitHub] {
+    goal = "review pr"
+    deny {
+        Shell.run_command
+    }
+}
+"#;
+        let diags = check_no_iface(src);
+        let e423: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code == ErrorCode::AllowDenyPatternInvalid)
+            .collect();
+        assert!(
+            !e423.is_empty(),
+            "expected E423 when deny pattern references skill not in uses[]: {diags:?}"
+        );
+        assert!(
+            e423[0].message.contains("Shell"),
+            "E423 message should name the undeclared skill"
+        );
+    }
+
+    // ── E423: function in pattern not found in interface ─────────────────────
+
+    #[test]
+    fn e423_allow_pattern_func_not_in_interface() {
+        let skill_src = r#"interface GitHub {
+    fn get_pull_request(owner: String, repo: String, number: Int) -> String
+}"#;
+        let src = r#"
+import skill "GitHub"
+
+task Review : TaskBrief uses [GitHub] {
+    goal = "review pr"
+    allow {
+        GitHub.nonexistent_func
+    }
+}
+"#;
+        let diags = check_with_iface(src, &[("GitHub", skill_src)]);
+        let e423: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code == ErrorCode::AllowDenyPatternInvalid)
+            .collect();
+        assert!(
+            !e423.is_empty(),
+            "expected E423 when allow pattern references function not in interface: {diags:?}"
+        );
+        assert!(
+            e423[0].message.contains("nonexistent_func"),
+            "E423 message should name the bad function"
+        );
+    }
+
+    #[test]
+    fn e423_no_error_for_valid_allow_pattern() {
+        let skill_src = r#"interface GitHub {
+    fn get_pull_request(owner: String, repo: String, number: Int) -> String
+}"#;
+        let src = r#"
+import skill "GitHub"
+
+task Review : TaskBrief uses [GitHub] {
+    goal = "review pr"
+    allow {
+        GitHub.get_pull_request
+    }
+}
+"#;
+        let diags = check_with_iface(src, &[("GitHub", skill_src)]);
+        let e423: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code == ErrorCode::AllowDenyPatternInvalid)
+            .collect();
+        assert!(
+            e423.is_empty(),
+            "no E423 for valid allow pattern referencing real function: {diags:?}"
+        );
+    }
+
+    // ── W408: deny pattern subsumes allow pattern ─────────────────────────────
+
+    #[test]
+    fn w408_deny_wildcard_subsumes_allow() {
+        let src = r#"
+import skill "GitHub"
+
+task Review : TaskBrief uses [GitHub] {
+    goal = "review pr"
+    allow {
+        GitHub.get_pull_request
+    }
+    deny {
+        GitHub.*
+    }
+}
+"#;
+        let diags = check_no_iface(src);
+        let w408: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code == ErrorCode::AllowDenyShadowed)
+            .collect();
+        assert!(
+            !w408.is_empty(),
+            "expected W408 when deny wildcard subsumes allow pattern: {diags:?}"
+        );
+        assert!(
+            w408[0].is_warning(),
+            "W408 should be a warning, not an error"
+        );
+    }
+
+    #[test]
+    fn w408_no_warning_when_deny_does_not_subsume() {
+        let src = r#"
+import skill "GitHub"
+
+task Review : TaskBrief uses [GitHub] {
+    goal = "review pr"
+    allow {
+        GitHub.get_pull_request
+    }
+    deny {
+        GitHub.merge_pull_request
+    }
+}
+"#;
+        let diags = check_no_iface(src);
+        let w408: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code == ErrorCode::AllowDenyShadowed)
+            .collect();
+        assert!(
+            w408.is_empty(),
+            "no W408 when deny targets different function: {diags:?}"
+        );
+    }
+
+    // ── W409: allow pattern leaves sensitive arg unconstrained ────────────────
+
+    #[test]
+    fn w409_allow_pattern_unconstrained_path_arg() {
+        let skill_src = r#"interface FileSystem {
+    fn write_file(path: String, content: String) -> String
+}"#;
+        let src = r#"
+import skill "FileSystem"
+
+task Writer : TaskBrief uses [FileSystem] {
+    goal = "write files"
+    allow {
+        FileSystem.write_file(content="hello")
+    }
+}
+"#;
+        let diags = check_with_iface(src, &[("FileSystem", skill_src)]);
+        let w409: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code == ErrorCode::AllowDenyUnconstrained)
+            .collect();
+        assert!(
+            !w409.is_empty(),
+            "expected W409 for allow pattern with unconstrained 'path' arg: {diags:?}"
+        );
+        assert!(
+            w409[0].message.contains("path"),
+            "W409 message should name the unconstrained sensitive arg"
+        );
+        assert!(w409[0].is_warning(), "W409 should be a warning");
+    }
+
+    #[test]
+    fn w409_no_warning_when_sensitive_arg_constrained() {
+        let skill_src = r#"interface FileSystem {
+    fn write_file(path: String, content: String) -> String
+}"#;
+        let src = r#"
+import skill "FileSystem"
+
+task Writer : TaskBrief uses [FileSystem] {
+    goal = "write files"
+    allow {
+        FileSystem.write_file(path="/tmp/**", content=*)
+    }
+}
+"#;
+        let diags = check_with_iface(src, &[("FileSystem", skill_src)]);
+        let w409: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code == ErrorCode::AllowDenyUnconstrained)
+            .collect();
+        assert!(
+            w409.is_empty(),
+            "no W409 when all sensitive args are constrained: {diags:?}"
+        );
+    }
+
+    // ── Backward compatibility ────────────────────────────────────────────────
+
+    #[test]
+    fn no_allow_deny_errors_for_task_without_blocks() {
+        let src = r#"
+import skill "GitHub"
+
+task Review : TaskBrief uses [GitHub] {
+    goal = "review pr"
+    step Fetch {
+        let _ = perform GitHub.get_pull_request("acme", "brief", 1)
+    }
+}
+"#;
+        let diags = check_no_iface(src);
+        let allow_deny_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| matches!(
+                d.code,
+                ErrorCode::AllowDenyPatternInvalid
+                    | ErrorCode::EmptyAllowBlock
+                    | ErrorCode::AllowDenyShadowed
+                    | ErrorCode::AllowDenyUnconstrained
+            ))
+            .collect();
+        assert!(
+            allow_deny_diags.is_empty(),
+            "no allow/deny errors for task without allow/deny blocks: {diags:?}"
+        );
+    }
+}

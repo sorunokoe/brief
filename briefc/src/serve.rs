@@ -26,8 +26,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use colored::Colorize;
 use serde_json::{json, Value};
 
-use crate::ast::{ForbidKind, NeedKind, Program};
+use crate::ast::{CallPattern, ForbidKind, NeedKind, Program};
 use crate::checker::{self, CheckContext};
+use crate::enforcer;
 use crate::lexer::lex;
 use crate::lock::{self, LockState};
 use crate::manifest;
@@ -132,6 +133,9 @@ pub fn run_serve(path: &Path, draft: bool) -> bool {
 
     // ── 4b. Collect forbidden skills/funcs from all tasks ──────────────────
     let (forbidden_skills, forbidden_funcs) = collect_forbidden(&program);
+
+    // ── 4c. Collect allow/deny patterns from all tasks ─────────────────────
+    let (task_allow, task_deny) = collect_allow_deny(&program);
 
     // ── 4c. Re-check env needs at startup ──────────────────────────────────
     // Env vars may differ between `brief verify` time and `brief serve` time.
@@ -259,6 +263,30 @@ pub fn run_serve(path: &Path, draft: bool) -> bool {
                             .or_else(|| tool_name.split_once('.'))
                             .map(|(_, f)| f)
                             .unwrap_or(tool_name);
+
+                        // ── allow{}/deny{} enforcement (E422) ──────────────
+                        let decision = enforcer::check_call(
+                            &sn, fn_name, &arguments, &task_allow, &task_deny,
+                        );
+                        if let crate::enforcer::CallDecision::Blocked { reason } = decision {
+                            let err = json_error(id, -32022, &format!(
+                                "Brief policy blocked call: {sn}.{fn_name} — {reason}",
+                            ));
+                            // Emit structured data for agent consumption.
+                            let mut err_obj = err.clone();
+                            if let Some(e) = err_obj["error"].as_object_mut() {
+                                e.insert("data".to_string(), json!({
+                                    "brief_code": "E422",
+                                    "skill": sn,
+                                    "function": fn_name,
+                                    "reason": reason,
+                                }));
+                            }
+                            send_line(&mut out, &err_obj);
+                            eprintln!("{} E422 blocked: {sn}.{fn_name} — {reason}",
+                                "✗".red().bold());
+                            continue;
+                        }
 
                         // Proxy call to skill MCP server.
                         let result = proxy_tool_call(&sn, fn_name, arguments, &ctx, mf.as_ref());
@@ -572,6 +600,22 @@ fn write_jsonrpc(w: &mut impl Write, msg: &Value) -> std::io::Result<()> {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Forbidden tool helpers
+
+/// Collect allow/deny call patterns from all tasks (union).
+///
+/// Semantics at runtime:
+/// - Any task's deny blocks the call (union deny is more restrictive — safe).
+/// - Whitelist mode is active if any task in the file has a non-empty allow list.
+///   In whitelist mode, the call must match at least one allow pattern.
+fn collect_allow_deny(program: &Program) -> (Vec<CallPattern>, Vec<CallPattern>) {
+    let mut allow: Vec<CallPattern> = Vec::new();
+    let mut deny: Vec<CallPattern> = Vec::new();
+    for task in &program.tasks {
+        allow.extend_from_slice(&task.allow);
+        deny.extend_from_slice(&task.deny);
+    }
+    (allow, deny)
+}
 
 /// Collect forbidden skill names and func tool names from all tasks.
 fn collect_forbidden(program: &Program) -> (HashSet<String>, HashSet<String>) {

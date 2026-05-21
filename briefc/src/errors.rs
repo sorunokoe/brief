@@ -51,6 +51,10 @@ pub enum ErrorCode {
     ForbiddenSkill,
     /// `forbids { func "Skill.fn" }` — task calls a function that is explicitly forbidden (E421)
     ForbiddenFunc,
+    /// `allow{}/deny{}` pattern references a skill/function not found in the declared skill interfaces (E423)
+    AllowDenyPatternInvalid,
+    /// `allow {}` block with zero patterns — blocks all tool calls, almost certainly a mistake (E424)
+    EmptyAllowBlock,
     // ── Warnings ──────────────────────────────────────────────────────────
     /// Missing `.briefskill` file — suppress with `--allow-missing-skills` (E107)
     MissingSkillInterface,
@@ -76,6 +80,10 @@ pub enum ErrorCode {
     SkillAbiUnknownType,
     /// Skill declared in `uses []` but never `perform`-ed in any step (W106)
     UnusedSkillInUses,
+    /// A `deny {}` pattern subsumes (shadows) an `allow {}` pattern, making the allow unreachable (W408)
+    AllowDenyShadowed,
+    /// An `allow {}` pattern for a function with sensitive argument names leaves those args unconstrained (W409)
+    AllowDenyUnconstrained,
 }
 
 impl fmt::Display for ErrorCode {
@@ -106,12 +114,16 @@ impl fmt::Display for ErrorCode {
             ErrorCode::NeedNotMet => "E411",
             ErrorCode::ForbiddenSkill => "E420",
             ErrorCode::ForbiddenFunc => "E421",
+            ErrorCode::AllowDenyPatternInvalid => "E423",
+            ErrorCode::EmptyAllowBlock => "E424",
             ErrorCode::MissingSkillInterface => "E107",
             ErrorCode::StaleSkillInterface => "W102",
             ErrorCode::DeprecatedStringExtras => "W103",
             ErrorCode::BriefBuilderProvidesMissing => "W104",
             ErrorCode::OpaqueTypeUnused => "W105",
             ErrorCode::UnusedSkillInUses => "W106",
+            ErrorCode::AllowDenyShadowed => "W408",
+            ErrorCode::AllowDenyUnconstrained => "W409",
         };
         write!(f, "{code}")
     }
@@ -145,6 +157,8 @@ impl ErrorCode {
                 | ErrorCode::NeedNotMet
                 | ErrorCode::ForbiddenSkill
                 | ErrorCode::ForbiddenFunc
+                | ErrorCode::AllowDenyPatternInvalid
+                | ErrorCode::EmptyAllowBlock
                 | ErrorCode::MissingSkillInterface
         )
     }

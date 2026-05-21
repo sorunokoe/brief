@@ -3,6 +3,7 @@ mod checker;
 mod ci;
 mod codegen;
 mod doc;
+mod enforcer;
 mod errors;
 mod fmt;
 mod gen;
@@ -14,6 +15,7 @@ mod lsp;
 mod manifest;
 mod mcp_schema;
 mod parser;
+mod policy_check;
 mod registry;
 mod repl;
 mod runner;
@@ -207,6 +209,25 @@ enum Commands {
 
     /// Run all checks listed in brief.toml [ci] examples
     Ci,
+
+    /// Test allow/deny policy against a simulated tool call (no MCP server needed)
+    PolicyCheck {
+        /// Path to the .brief file (defaults to auto-detecting in current directory)
+        #[arg(long)]
+        file: Option<PathBuf>,
+
+        /// Task name to check policy for
+        #[arg(long)]
+        task: String,
+
+        /// Tool call in Skill.function format (e.g. FileSystem.write_file)
+        #[arg(long)]
+        tool: String,
+
+        /// Tool arguments as a JSON object (e.g. '{"path":"./src/main.rs"}')
+        #[arg(long, default_value = "{}")]
+        args: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -376,6 +397,12 @@ fn main() -> std::process::ExitCode {
             print_brief_banner();
             let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
             let ok  = ci::run_ci(&cwd);
+            if ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::FAILURE }
+        }
+
+        Commands::PolicyCheck { file, task, tool, args } => {
+            print_brief_banner();
+            let ok = policy_check::run_policy_check(file.as_deref(), &task, &tool, &args);
             if ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::FAILURE }
         }
     }

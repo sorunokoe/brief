@@ -897,6 +897,8 @@ impl<'a> Parser<'a> {
         let mut provides = None;
         let mut needs: Vec<crate::ast::NeedItem> = Vec::new();
         let mut forbids: Vec<crate::ast::ForbidItem> = Vec::new();
+        let mut allow: Vec<crate::ast::CallPattern> = Vec::new();
+        let mut deny: Vec<crate::ast::CallPattern> = Vec::new();
         let mut step_groups = Vec::new();
         let mut steps = Vec::new();
 
@@ -971,6 +973,16 @@ impl<'a> Parser<'a> {
                     let parsed = self.parse_forbids_block();
                     forbids.extend(parsed);
                 }
+                Some(Token::Ident(ref s)) if s == "allow" => {
+                    self.advance();
+                    let parsed = self.parse_allow_deny_block();
+                    allow.extend(parsed);
+                }
+                Some(Token::Ident(ref s)) if s == "deny" => {
+                    self.advance();
+                    let parsed = self.parse_allow_deny_block();
+                    deny.extend(parsed);
+                }
                 Some(Token::Ident(ref s)) if s == "parallel" => {
                     if let Some(group) = self.parse_parallel_group() {
                         step_groups.push(group);
@@ -998,7 +1010,7 @@ impl<'a> Parser<'a> {
                         code: ErrorCode::ParseError,
                         message: format!("unexpected token `{got:?}` inside task body"),
                         span,
-                        hint: Some("expected `goal`, `effects`, `extras`, `provides`, `needs`, `forbids`, `parallel`, `retry`, `fallback`, or `step`".to_string()),
+                        hint: Some("expected `goal`, `effects`, `extras`, `provides`, `needs`, `forbids`, `allow`, `deny`, `parallel`, `retry`, `fallback`, or `step`".to_string()),
                     });
                     self.advance();
                 }
@@ -1023,6 +1035,8 @@ impl<'a> Parser<'a> {
             provides,
             needs,
             forbids,
+            allow,
+            deny,
             step_groups,
             steps,
             span: Span::new(start, end),
@@ -1091,6 +1105,108 @@ impl<'a> Parser<'a> {
                 }
                 _ => { self.advance(); }
             }
+            if self.peek() == Some(&Token::Comma) { self.advance(); }
+        }
+        self.expect(&Token::RBrace);
+        items
+    }
+
+    // ── allow { Skill.func(key="val", ...) } / deny { ... } ─────────────────
+
+    fn parse_allow_deny_block(&mut self) -> Vec<crate::ast::CallPattern> {
+        use crate::ast::{ArgPattern, CallPattern};
+        let mut items = Vec::new();
+        if self.expect(&Token::LBrace).is_none() {
+            return items;
+        }
+        while self.peek() != Some(&Token::RBrace) && !self.at_end() {
+            let span_start = self.current_span().start;
+
+            // Expect: Ident (skill name)
+            let skill = match self.peek().cloned() {
+                Some(Token::Ident(s)) => { self.advance(); s }
+                _ => { self.advance(); continue; }
+            };
+
+            // Expect: Dot then either Ident (func name) or Star (wildcard)
+            if self.peek() != Some(&Token::Dot) {
+                // No dot — skip this entry
+                continue;
+            }
+            self.advance(); // consume '.'
+
+            let func = match self.peek().cloned() {
+                Some(Token::Star) => {
+                    self.advance();
+                    None // GitHub.* — wildcard
+                }
+                Some(Token::Ident(fname)) => {
+                    self.advance();
+                    Some(fname)
+                }
+                Some(Token::Fn) => {
+                    // `fn` is a keyword but valid function names like `fn` appear in briefskill
+                    self.advance();
+                    Some("fn".to_string())
+                }
+                _ => None,
+            };
+
+            // Optional: (key=value, ...)
+            let mut args = Vec::new();
+            if self.peek() == Some(&Token::LParen) {
+                self.advance(); // consume '('
+                while self.peek() != Some(&Token::RParen) && !self.at_end() {
+                    // key name
+                    let key = match self.peek().cloned() {
+                        Some(Token::Ident(k)) => { self.advance(); k }
+                        _ => { self.advance(); continue; }
+                    };
+                    if self.peek() != Some(&Token::Eq) {
+                        continue;
+                    }
+                    self.advance(); // consume '='
+
+                    // value: string, int, true, false, or *
+                    let pat = match self.peek().cloned() {
+                        Some(Token::Star) => {
+                            self.advance();
+                            ArgPattern::Any
+                        }
+                        Some(Token::Str(s)) => {
+                            self.advance();
+                            // If the string contains glob metacharacters → Glob
+                            if s.contains('*') || s.contains('?') || s.contains('[') {
+                                ArgPattern::Glob(s)
+                            } else {
+                                ArgPattern::Exact(serde_json::Value::String(s))
+                            }
+                        }
+                        Some(Token::Int(n)) => {
+                            self.advance();
+                            ArgPattern::Exact(serde_json::Value::Number(
+                                serde_json::Number::from(n)
+                            ))
+                        }
+                        Some(Token::Ident(ref b)) if b == "true" => {
+                            self.advance();
+                            ArgPattern::Exact(serde_json::Value::Bool(true))
+                        }
+                        Some(Token::Ident(ref b)) if b == "false" => {
+                            self.advance();
+                            ArgPattern::Exact(serde_json::Value::Bool(false))
+                        }
+                        _ => { self.advance(); continue; }
+                    };
+                    args.push((key, pat));
+                    if self.peek() == Some(&Token::Comma) { self.advance(); }
+                }
+                self.expect(&Token::RParen);
+            }
+
+            let span = Span::new(span_start, self.prev_span().end);
+            items.push(CallPattern { skill, func, args, span });
+
             if self.peek() == Some(&Token::Comma) { self.advance(); }
         }
         self.expect(&Token::RBrace);

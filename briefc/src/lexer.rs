@@ -88,6 +88,7 @@ pub enum Token {
     #[token("=")] Eq,
     #[token("?")] Question,
     #[token(";")] Semi,
+    #[token("*")] Star,
 }
 
 /// A token paired with its byte-offset span in the source.

@@ -4,6 +4,9 @@
 //! structs, protocols, effects, and their type expressions.
 #![allow(dead_code)]
 
+// serde_json::Value is used in ArgPattern::Exact for type-correct argument matching.
+use serde_json::Value as JsonValue;
+
 /// Byte-offset span in the source file, used for error messages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Span {
@@ -240,6 +243,44 @@ pub struct ForbidItem {
     pub span: Span,
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// allow {} / deny {} blocks
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A single argument constraint in an `allow {}` or `deny {}` pattern.
+///
+/// `path="/tmp/**"` → `Glob("/tmp/**")`
+/// `owner="acme"`   → `Exact(Value::String("acme"))`
+/// `number=*`       → `Any`
+#[derive(Debug, Clone, PartialEq)]
+pub enum ArgPattern {
+    /// Exact JSON-value match: string equality, number equality, bool equality.
+    Exact(JsonValue),
+    /// Shell-style glob on string values only (e.g. `path="/tmp/**"`).
+    /// Strings containing `*`, `?`, or `[` are parsed as Glob.
+    Glob(String),
+    /// Wildcard — matches any value for this argument.
+    Any,
+}
+
+/// A call-level permission pattern used in `allow {}` and `deny {}` blocks.
+///
+/// ```brief
+/// GitHub.get_file_contents(owner="acme", repo="brief")
+/// FileSystem.write_file(path="/tmp/**")
+/// GitHub.*
+/// ```
+#[derive(Debug, Clone)]
+pub struct CallPattern {
+    /// Skill name, e.g. `"GitHub"`.
+    pub skill: String,
+    /// Function name, e.g. `"get_file_contents"`. `None` = wildcard (`GitHub.*`).
+    pub func: Option<String>,
+    /// Argument constraints. Empty = any arguments accepted.
+    pub args: Vec<(String, ArgPattern)>,
+    pub span: Span,
+}
+
 /// A full task declaration.
 ///
 /// ```brief
@@ -283,6 +324,10 @@ pub struct Task {
     pub needs: Vec<NeedItem>,
     /// Capabilities the AI must never use (`forbids {}`).
     pub forbids: Vec<ForbidItem>,
+    /// Argument-level permit list (`allow {}`). When non-empty, only listed patterns are permitted.
+    pub allow: Vec<CallPattern>,
+    /// Argument-level block list (`deny {}`). Always blocks matching calls, overrides allow.
+    pub deny: Vec<CallPattern>,
     pub step_groups: Vec<StepGroup>,
     pub steps: Vec<Step>,
     pub span: Span,
