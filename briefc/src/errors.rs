@@ -74,6 +74,8 @@ pub enum ErrorCode {
     SkillAbiVersionMismatch,
     /// Skill ABI references a type the checker cannot resolve (E213)
     SkillAbiUnknownType,
+    /// Skill declared in `uses []` but never `perform`-ed in any step (W106)
+    UnusedSkillInUses,
 }
 
 impl fmt::Display for ErrorCode {
@@ -109,6 +111,7 @@ impl fmt::Display for ErrorCode {
             ErrorCode::DeprecatedStringExtras => "W103",
             ErrorCode::BriefBuilderProvidesMissing => "W104",
             ErrorCode::OpaqueTypeUnused => "W105",
+            ErrorCode::UnusedSkillInUses => "W106",
         };
         write!(f, "{code}")
     }

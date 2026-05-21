@@ -424,8 +424,8 @@ mod tests {
 
     #[test]
     fn test_run_mode_does_not_panic() {
-        let path = example_path("50-full-v05-showcase.brief");
-        assert!(path.exists(), "expected showcase example to exist");
+        let path = example_path("02-review-pr.brief");
+        assert!(path.exists(), "expected canonical example to exist");
         assert!(cmd_run(&path));
     }
 }

@@ -384,6 +384,47 @@ fn check_task(
 
     // E420/E421: `forbids {}` block enforcement.
     check_forbids(task, &expanded_uses, diags);
+
+    // W106: skill in `uses []` but never `perform`-ed in any step.
+    warn_unused_skills_in_uses(task, &expanded_uses, diags);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// W106 — unused skill in uses []
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// W106: skill declared in `uses []` but never `perform`-ed in any step.
+/// Fires only when the task has at least one step — a task with no steps yet
+/// is a stub and shouldn't produce noise.
+fn warn_unused_skills_in_uses(
+    task: &Task,
+    expanded_uses: &[&str],
+    diags: &mut Vec<BriefError>,
+) {
+    if task.steps.is_empty() {
+        return;
+    }
+
+    let performed: HashSet<String> = collect_performed_skills(task)
+        .into_iter()
+        .map(|(s, _)| s)
+        .collect();
+
+    for skill in expanded_uses {
+        if !performed.contains(*skill) {
+            diags.push(BriefError {
+                code: ErrorCode::UnusedSkillInUses,
+                message: format!(
+                    "skill '{skill}' is declared in `uses []` but never called in any step"
+                ),
+                span: task.span,
+                hint: Some(format!(
+                    "add a step that calls `perform {skill}.fn(...)`, \
+                     or remove '{skill}' from `uses []`"
+                )),
+            });
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3120,4 +3161,69 @@ task Checkout : TaskBrief uses [Payment] {
         let diags = check_source_no_ctx(src);
         let e421: Vec<_> = diags.iter().filter(|d| d.code == ErrorCode::ForbiddenFunc).collect();
         assert!(e421.is_empty(), "no E421 when only allowed func is called");
+    }
+
+    #[test]
+    fn w106_skill_in_uses_but_never_performed() {
+        let src = r#"
+import skill "GitHub"
+import skill "FileSystem"
+
+task ReviewPR : TaskBrief uses [GitHub, FileSystem] {
+    goal = "review a pull request"
+    step FetchData {
+        let data = perform GitHub.get_file_contents("owner", "repo", "README.md", "main")
+    }
+}
+"#;
+        // FileSystem is in uses[] but never perform-ed → W106
+        let diags = check_source_no_ctx(src);
+        let w106: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code == ErrorCode::UnusedSkillInUses)
+            .collect();
+        assert!(!w106.is_empty(), "expected W106 for unused FileSystem skill: {diags:?}");
+        assert!(w106[0].is_warning(), "W106 should be a warning, not an error");
+        assert!(w106[0].message.contains("FileSystem"), "W106 should name the unused skill");
+    }
+
+    #[test]
+    fn w106_no_warning_when_all_skills_used() {
+        let src = r#"
+import skill "GitHub"
+import skill "FileSystem"
+
+task ReviewPR : TaskBrief uses [GitHub, FileSystem] {
+    goal = "review a pull request"
+    step FetchData {
+        let data = perform GitHub.get_file_contents("owner", "repo", "README.md", "main")
+    }
+    step WriteReport {
+        let _ = perform FileSystem.write_file("/workspace/report.md", "summary")
+    }
+}
+"#;
+        let diags = check_source_no_ctx(src);
+        let w106: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code == ErrorCode::UnusedSkillInUses)
+            .collect();
+        assert!(w106.is_empty(), "no W106 when all skills are used: {w106:?}");
+    }
+
+    #[test]
+    fn w106_no_warning_for_task_with_no_steps() {
+        let src = r#"
+import skill "GitHub"
+
+task EmptyTask : TaskBrief uses [GitHub] {
+    goal = "stub task with no steps yet"
+}
+"#;
+        let diags = check_source_no_ctx(src);
+        let w106: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code == ErrorCode::UnusedSkillInUses)
+            .collect();
+        assert!(w106.is_empty(), "no W106 for a stub task with no steps: {w106:?}");
     }
