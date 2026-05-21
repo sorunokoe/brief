@@ -45,14 +45,17 @@ jobs:
       - name: brief run — hello
         run: cargo run --bin brief -- run examples/01-hello.brief
 
-      - name: brief check — profile screen
-        run: cargo run --bin brief -- check examples/02-profile-screen.brief
+      - name: brief check — review PR
+        run: cargo run --bin brief -- check examples/02-review-pr.brief
 
-      - name: brief check — test suite (must have 0 errors)
-        run: cargo run --bin brief -- check examples/14-test-suite.brief
+      - name: brief check — CI release
+        run: cargo run --bin brief -- check examples/15-checkout-flow.brief
 
-      # ── Check all 32 examples pass brief check ───────────────────────────
-      - name: brief check — all examples (no hard errors)
+      - name: brief check — research pipeline
+        run: cargo run --bin brief -- check examples/28-ai-pipeline.brief
+
+      # ── Check all examples pass brief check (no errors) ──────────────────
+      - name: brief check — all examples
         run: |
           FAIL=0
           for f in examples/[0-9]*.brief; do
@@ -67,14 +70,14 @@ jobs:
           exit $FAIL
 
       # ── brief test on files with test blocks ─────────────────────────────
-      - name: brief test — 14-test-suite
-        run: cargo run --bin brief -- test examples/14-test-suite.brief
+      - name: brief test — review PR
+        run: cargo run --bin brief -- test examples/02-review-pr.brief
 
-      - name: brief test — 28-ai-pipeline
+      - name: brief test — CI release
+        run: cargo run --bin brief -- test examples/15-checkout-flow.brief
+
+      - name: brief test — research pipeline
         run: cargo run --bin brief -- test examples/28-ai-pipeline.brief
-
-      - name: brief test — 32-mcp-integration
-        run: cargo run --bin brief -- test examples/32-mcp-integration.brief
 
       # ── brief fmt --check on all examples ────────────────────────────────
       - name: brief fmt --check — all examples
@@ -88,26 +91,6 @@ jobs:
             fi
           done
           exit $FAIL
-
-      # ── Phase 3 power types examples ─────────────────────────────────────
-      - name: brief check — linear types (23)
-        run: cargo run --bin brief -- check examples/23-linear-types.brief
-
-      - name: brief check — type aliases (24)
-        run: cargo run --bin brief -- check examples/24-type-aliases.brief
-
-      - name: brief check — effect groups (25)
-        run: cargo run --bin brief -- check examples/25-effect-groups.brief
-
-      # ── Advanced pattern examples ─────────────────────────────────────────
-      - name: brief check — task composition (27)
-        run: cargo run --bin brief -- check examples/27-task-composition.brief
-
-      - name: brief check — AI pipeline (28)
-        run: cargo run --bin brief -- check examples/28-ai-pipeline.brief
-
-      - name: brief check — MCP integration (32)
-        run: cargo run --bin brief -- check examples/32-mcp-integration.brief
 
   # ── Docs site ───────────────────────────────────────────────────────────────
   docs:

@@ -3,6 +3,26 @@ name = "brief"
 version = "1.0.0"
 authors = ["Brief Contributors"]
 
+# ── Verification settings ─────────────────────────────────────────────────────
+# require_lock = false lets `brief check` pass without a .brief.lock file.
+# Useful in CI and development. Set to true in production workflows.
+[verify]
+require_lock = false
+
+# ── Builtin verifiers ─────────────────────────────────────────────────────────
+[verifiers."@url"]
+skill = "builtin:url"
+
+[verifiers."@local-path"]
+skill = "builtin:local-path"
+
+[verifiers."@github-repo"]
+skill = "builtin:github-repo"
+
+[verifiers."@shell-command"]
+skill = "builtin:shell-command"
+
+# ── Compiler skills ───────────────────────────────────────────────────────────
 [skills.CheckerPrimitives]
 path = "compiler/skills/CheckerPrimitives"
 
@@ -20,6 +40,22 @@ path = "compiler/skills/HirPrimitives"
 
 [skills.CompilerDriver]
 path = "compiler/skills/CompilerDriver"
+
+# ── Reference skill paths (used by CI examples) ──────────────────────────────
+[skills.GitHub]
+path = "examples/skills/GitHub"
+
+[skills.FileSystem]
+path = "examples/skills/FileSystem"
+
+[skills.WebSearch]
+path = "examples/skills/WebSearch"
+
+[skills.Memory]
+path = "examples/skills/Memory"
+
+[skills.Shell]
+path = "examples/skills/Shell"
 
 [ci]
 examples = [

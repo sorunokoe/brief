@@ -1,25 +1,30 @@
 import skill "GitHub"
-import skill "FileSystem"
 
-task ReviewPR : TaskBrief uses [GitHub, FileSystem] {
-    goal = "Fetch a pull request, review changed files, and write a summary to a file"
+import skill "Memory"
+
+task ReviewPR : TaskBrief uses [GitHub, Memory] {
+    goal   = "Fetch open issues, review a file, and cache a summary"
+
+    step FetchIssues {
+        let issues = perform GitHub.list_issues("owner", "repo", "open")?;
+    }
 
     step FetchChangelog {
         let changelog = perform GitHub.get_file_contents("owner", "repo", "CHANGELOG.md", "main")?;
     }
 
-    step ReviewIssues {
-        let issues = perform GitHub.list_issues("owner", "repo", "open")?;
-    }
-
-    step WriteReport {
-        let _ = perform FileSystem.write_file("/workspace/review.md", "summary")?;
+    step Cache {
+        let _ = perform Memory.store("review-summary", "cached", 3600)?;
     }
 }
 
-test "boundary coverage" {
-    // @enum coverage: brief check verifies all 3 values are tested
-    let _ = perform GitHub.list_issues("owner", "repo", "open")?;
-    let _ = perform GitHub.list_issues("owner", "repo", "closed")?;
-    let _ = perform GitHub.list_issues("owner", "repo", "all")?;
+test "issue state coverage" {
+    perform GitHub.list_issues("owner", "repo", "open")?;
+    perform GitHub.list_issues("owner", "repo", "closed")?;
+    perform GitHub.list_issues("owner", "repo", "all")?;
+}
+
+test "memory TTL bounds" {
+    perform Memory.store("key", "value", 0)?;
+    perform Memory.store("key", "value", 86400)?;
 }

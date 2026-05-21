@@ -1,82 +1,39 @@
-import skill "Cart"
+import skill "GitHub"
 
-import skill "Payment"
+import skill "Shell"
 
-import skill "Inventory"
+import skill "Memory"
 
-import skill "Notifications"
+task CIRelease : TaskBrief uses [GitHub, Shell, Memory] {
+    goal   = "Run tests, check open issues, and cache a release report"
 
-sealed type Currency = USD | EUR | GBP | JPY
-
-sealed type PaymentMethod = CreditCard(String) | ApplePay | GooglePay | Crypto(String)
-sealed type CheckoutStage = Validation | Payment | Confirmation
-
-struct CartItem {
-    productId: @nonEmpty String
-    quantity: @nonEmpty String
-    price: @nonEmpty String
-}
-
-struct Order {
-    id: @nonEmpty String
-    total: @nonEmpty String
-    currency: @nonEmpty String
-    status: @nonEmpty String
-}
-
-@BriefBuilder
-task ValidateCart : TaskBrief uses [Cart, Inventory] {
-    goal = "Validate cart items are in stock and prices are current"
-
-    extras {
-        domain: String
-        stage: CheckoutStage
+    step CheckIssues {
+        let issues = perform GitHub.list_issues("owner", "repo", "open")?;
     }
 
-    step CheckStock {
-        let items = perform Cart.getItems(sessionToken)?;
-        let stock = perform Inventory.checkAvailability(items)?;
+    step RunTests {
+        let result = perform Shell.runScript("cargo test --all", "bash")?;
     }
 
-    step RefreshPrices {
-        let prices = perform Cart.refreshPrices(sessionToken)?;
+    step Cache {
+        let _ = perform Memory.store("ci-result", "passed", 86400)?;
     }
 }
 
-@BriefBuilder
-task ProcessPayment : TaskBrief uses [Payment] {
-    goal = "Charge the customer and obtain a payment confirmation"
-
-    extras {
-        currency: Currency
-        domain: String
-        pciScope: Bool
-    }
-
-    step Authorise {
-        let intent = perform Payment.createIntent(amount, currency, method)?;
-    }
-
-    step Capture {
-        let receipt = perform Payment.captureIntent(intent)?;
-    }
+test "issue state coverage" {
+    perform GitHub.list_issues("owner", "repo", "open")?;
+    perform GitHub.list_issues("owner", "repo", "closed")?;
+    perform GitHub.list_issues("owner", "repo", "all")?;
 }
 
-@BriefBuilder
-task ConfirmOrder : TaskBrief uses [Cart, Notifications] {
-    goal = "Create the order record and notify the customer"
+test "script interpreter coverage" {
+    perform Shell.runScript("echo test", "bash")?;
+    perform Shell.runScript("echo test", "sh")?;
+    perform Shell.runScript("print('test')", "python")?;
+    perform Shell.runScript("console.log('test')", "node")?;
+}
 
-    extras {
-        domain: String
-        notificationChannels: String
-    }
-
-    step CreateRecord {
-        let order = perform Cart.convertToOrder(sessionToken, receipt)?;
-    }
-
-    step NotifyCustomer {
-        let email = perform Notifications.sendOrderConfirmation(order, email)?;
-        let push = perform Notifications.sendPushAlert(order, deviceToken)?;
-    }
+test "memory TTL bounds" {
+    perform Memory.store("key", "value", 0)?;
+    perform Memory.store("key", "value", 86400)?;
 }

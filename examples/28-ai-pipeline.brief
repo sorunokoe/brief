@@ -1,123 +1,31 @@
-import skill "LLM"
+import skill "WebSearch"
 
-import skill "Embeddings"
+import skill "Memory"
 
-import skill "VectorStore"
+import skill "GitHub"
 
-import skill "GraphQL"
-
-sealed type SearchMode = Semantic | Keyword | Hybrid
-
-struct Document {
-    id: @nonEmpty String
-    content: @nonEmpty String
-    source: @nonEmpty String
-}
-
-struct SearchResult {
-    document: Document
-    score: String
-}
-
-struct Answer {
-    text: @nonEmpty String
-    confidence: String
-    sources: String
-}
-
-effect LLM {
-    fn complete(prompt: String, temperature: String) -> Answer
-    fn classify(text: String, categories: String) -> String
-    fn summarize(documents: String, maxWords: String) -> String
-}
-
-effect Embeddings {
-    fn embed(text: String) -> String
-    fn similarity(vecA: String, vecB: String) -> String
-}
-
-effect VectorStore {
-    fn search(embedding: String, topK: String) -> SearchResult
-    fn upsert(document: Document, embedding: String) -> String
-}
-
-@BriefBuilder
-task EmbedQuery : TaskBrief uses [Embeddings] {
-    goal   = "Convert a user query into a vector embedding for semantic search"
-    extras = ["model": "text-embedding-3-small"]
-
-    step Embed {
-        let embedding = perform Embeddings.embed(userQuery)?;
-    }
-}
-
-@BriefBuilder
-task RetrieveDocuments : TaskBrief uses [VectorStore] {
-    goal   = "Retrieve the top-K most relevant documents for a query embedding"
-    extras = [
-        "domain": "knowledge-base",
-        "topK": "5"
-    ]
+task ResearchPipeline : TaskBrief uses [WebSearch, Memory, GitHub] {
+    goal   = "Search a topic, cache results, and open a tracking issue"
 
     step Search {
-        let results = perform VectorStore.search(queryEmbedding, topK)?;
+        let results = perform WebSearch.search("AI safety research", 10)?;
     }
 
-    step Filter {
-        let relevant = perform VectorStore.search(queryEmbedding, minScore)?;
-    }
-}
-
-@BriefBuilder
-task GenerateAnswer : TaskBrief uses [LLM] {
-    goal   = "Generate a grounded answer from retrieved documents using RAG"
-    extras = [
-        "model": "gpt-4o",
-        "pattern": "RAG",
-        "temperature": "0.2"
-    ]
-
-    step BuildPrompt {
-        let context = perform LLM.summarize(documents, maxContextWords)?;
+    step Cache {
+        let _ = perform Memory.store("research-results", "cached", 3600)?;
     }
 
-    step Answer {
-        let answer = perform LLM.complete(ragPrompt, temperature)?;
+    step CreateIssue {
+        let issue = perform GitHub.create_issue("owner", "repo", "Research findings", "summary")?;
     }
 }
 
-@BriefBuilder
-task RagSearch : TaskBrief uses [Embeddings, VectorStore, LLM, GraphQL] {
-    goal   = "Run the complete RAG pipeline: embed → retrieve → generate answer"
-    extras = [
-        "pattern": "RAG",
-        "timeout": "30s",
-        "version": "2"
-    ]
-
-    step Embed {
-        let embedding = perform Embeddings.embed(userQuery)?;
-    }
-
-    step Retrieve {
-        let results = perform VectorStore.search(embedding, topK)?;
-    }
-
-    step Classify {
-        let category = perform LLM.classify(userQuery, supportedCategories)?;
-    }
-
-    step Generate {
-        let answer = perform LLM.complete(ragPrompt, temperature)?;
-    }
-
-    step LogQuery {
-        let logged = perform GraphQL.mutation(LogQueryMutation)?;
-    }
+test "search result count bounds" {
+    perform WebSearch.search("test", 1)?;
+    perform WebSearch.search("test", 20)?;
 }
 
-test "RagSearch embeds query before searching" {
-}
-
-test "RagSearch fails gracefully when LLM errors" {
+test "memory TTL bounds" {
+    perform Memory.store("key", "value", 0)?;
+    perform Memory.store("key", "value", 86400)?;
 }
